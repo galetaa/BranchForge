@@ -1,0 +1,6 @@
+[alias]
+xtask-check = "check --workspace"
+xtask-test = "test --workspace"
+xtask-lint = "clippy --workspace --all-targets --all-features -- -D warnings"
+xtask-fmt = "fmt --all"
+

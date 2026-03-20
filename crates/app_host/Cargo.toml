@@ -1,0 +1,16 @@
+[package]
+name = "app_host"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+action_engine = { path = "../action_engine" }
+job_system = { path = "../job_system" }
+plugin_host = { path = "../plugin_host" }
+state_store = { path = "../state_store" }
+ui_shell = { path = "../ui_shell" }
+plugin_api = { path = "../plugin_api" }
+

@@ -1,0 +1,12 @@
+[package]
+name = "ui_shell"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+plugin_api = { path = "../plugin_api" }
+state_store = { path = "../state_store" }
+

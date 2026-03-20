@@ -1,0 +1,10 @@
+[package]
+name = "git_service"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+

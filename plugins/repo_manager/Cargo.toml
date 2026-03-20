@@ -1,0 +1,12 @@
+[package]
+name = "repo_manager"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+plugin_api = { path = "../../crates/plugin_api" }
+serde_json = "1.0"
+

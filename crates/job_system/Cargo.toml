@@ -1,0 +1,13 @@
+[package]
+name = "job_system"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+git_service = { path = "../git_service" }
+plugin_api = { path = "../plugin_api" }
+state_store = { path = "../state_store" }
+
