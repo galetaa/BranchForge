@@ -1,1 +1,5 @@
 /target
+
+# Local IDE/macOS artifacts
+.DS_Store
+.idea/
