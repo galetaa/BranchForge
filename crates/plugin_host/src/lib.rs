@@ -507,6 +507,31 @@ pub fn repo_manager_registration_payload() -> PluginRegister {
     }
 }
 
+pub fn status_registration_payload() -> PluginRegister {
+    PluginRegister {
+        actions: vec![
+            ActionSpec {
+                action_id: "index.stage_selected".to_string(),
+                title: "Stage Selected".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+            },
+            ActionSpec {
+                action_id: "index.unstage_selected".to_string(),
+                title: "Unstage Selected".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+            },
+        ],
+        views: vec![plugin_api::ViewSpec {
+            view_id: "status.panel".to_string(),
+            title: "Status".to_string(),
+            slot: "left".to_string(),
+            when: Some("repo.is_open".to_string()),
+        }],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -825,5 +850,23 @@ mod tests {
         let outbox = session.drain_notifications();
         assert_eq!(outbox.len(), 1);
         assert_eq!(outbox[0].method, METHOD_EVENT_STATE_UPDATED);
+    }
+
+    #[test]
+    fn status_registration_payload_contains_view_and_actions() {
+        let payload = status_registration_payload();
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "index.stage_selected")
+        );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "index.unstage_selected")
+        );
+        assert!(payload.views.iter().any(|v| v.view_id == "status.panel"));
     }
 }

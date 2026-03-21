@@ -1,4 +1,4 @@
-use app_host::{OpenRepoOutcome, run_repo_open_flow_with_picker};
+use app_host::{OpenRepoOutcome, run_repo_open_flow_with_picker, run_status_stage_unstage_smoke};
 
 fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
     let nanos = std::time::SystemTime::now()
@@ -30,4 +30,21 @@ fn open_repo_flow_smoke_success() {
 fn open_repo_flow_smoke_cancel() {
     let outcome = run_repo_open_flow_with_picker(|| None);
     assert!(matches!(outcome, OpenRepoOutcome::Cancelled));
+}
+
+#[test]
+fn status_stage_unstage_flow_smoke() {
+    let repo_dir = unique_temp_dir("status-stage-unstage");
+    assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+    assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+    let file = "file.txt".to_string();
+    assert!(std::fs::write(repo_dir.join(&file), "payload\n").is_ok());
+
+    let result = run_status_stage_unstage_smoke(&repo_dir, vec![file.clone()]);
+    assert!(result.is_ok());
+    if let Ok(snapshot) = result {
+        assert!(snapshot.status.untracked.iter().any(|p| p == &file));
+    }
+
+    let _ = std::fs::remove_dir_all(&repo_dir);
 }

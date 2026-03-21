@@ -217,6 +217,7 @@ pub fn run_git_jobs_smoke(
         &JobRequest {
             op: "repo.open".to_string(),
             lock: JobLock::Read,
+            paths: Vec::new(),
         },
         &mut store,
     )
@@ -267,6 +268,7 @@ where
         &JobRequest {
             op: "repo.open".to_string(),
             lock: JobLock::Read,
+            paths: Vec::new(),
         },
         &mut store,
     );
@@ -278,6 +280,52 @@ where
         }
         Err(_) => OpenRepoOutcome::Failed("Selected folder is not a git repository.".to_string()),
     }
+}
+
+pub fn run_status_stage_unstage_smoke(
+    repo_dir: &std::path::Path,
+    selected_files: Vec<String>,
+) -> Result<state_store::StoreSnapshot, String> {
+    let mut store = StateStore::new();
+
+    execute_job_op(
+        repo_dir,
+        &JobRequest {
+            op: "repo.open".to_string(),
+            lock: JobLock::Read,
+            paths: Vec::new(),
+        },
+        &mut store,
+    )
+    .map_err(|e| format!("repo.open failed: {e:?}"))?;
+
+    store.update_selection(SelectionState {
+        selected_paths: selected_files.clone(),
+    });
+
+    execute_job_op(
+        repo_dir,
+        &JobRequest {
+            op: "index.stage_paths".to_string(),
+            lock: JobLock::IndexWrite,
+            paths: selected_files.clone(),
+        },
+        &mut store,
+    )
+    .map_err(|e| format!("stage failed: {e:?}"))?;
+
+    execute_job_op(
+        repo_dir,
+        &JobRequest {
+            op: "index.unstage_paths".to_string(),
+            lock: JobLock::IndexWrite,
+            paths: selected_files,
+        },
+        &mut store,
+    )
+    .map_err(|e| format!("unstage failed: {e:?}"))?;
+
+    Ok(store.snapshot().clone())
 }
 
 #[cfg(test)]
@@ -407,5 +455,27 @@ mod tests {
         ));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn status_stage_unstage_smoke_updates_status_without_restart() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let repo_dir = std::env::temp_dir().join(format!("branchforge-status-smoke-{nanos}"));
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+
+        let file = "tracked.txt".to_string();
+        assert!(std::fs::write(repo_dir.join(&file), "data\n").is_ok());
+
+        let result = run_status_stage_unstage_smoke(&repo_dir, vec![file.clone()]);
+        assert!(result.is_ok());
+        if let Ok(snapshot) = result {
+            assert!(snapshot.status.untracked.iter().any(|p| p == &file));
+        }
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
     }
 }
