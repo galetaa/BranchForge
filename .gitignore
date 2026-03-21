@@ -3,3 +3,6 @@
 # Local IDE/macOS artifacts
 .DS_Store
 .idea/
+
+# Local working pack (tracked files remain tracked)
+mvp_dev_pack/
