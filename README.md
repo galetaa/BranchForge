@@ -1,6 +1,6 @@
 # Branchforge
 
-Current state: Sprint 04 (Repo Manager Plugin) implemented locally on top of Sprint 00/01/02/03 foundations.
+Current state: Sprint 05 (Status Plugin) implemented locally on top of Sprint 00/01/02/03/04 foundations.
 
 Reports:
 
@@ -9,11 +9,12 @@ Reports:
 - `SPRINT_02_REPORT.md`
 - `SPRINT_03_REPORT.md`
 - `SPRINT_04_REPORT.md`
+- `SPRINT_05_REPORT.md`
 
 ## Quick start
 
 ```bash
-./scripts/verify-sprint-04.sh
+./scripts/verify-sprint-05.sh
 ./scripts/check-deps.sh
 cargo check --workspace
 cargo test --workspace
@@ -31,5 +32,3 @@ cargo test --workspace
 - `crates/` host-side crates
 - `plugins/` bundled plugin executables
 - `docs/` architecture and delivery rules
-
-

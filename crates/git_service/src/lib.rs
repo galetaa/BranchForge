@@ -103,6 +103,43 @@ pub fn status_refresh(cwd: &Path) -> Result<StatusSummary, GitServiceError> {
     parse_status_porcelain_v2_z(&out.stdout)
 }
 
+pub fn stage_paths(cwd: &Path, paths: &[String]) -> Result<(), GitServiceError> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+
+    let mut args = vec!["add".to_string(), "--".to_string()];
+    args.extend(paths.iter().cloned());
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let _ = run_git(cwd, &refs)?;
+    Ok(())
+}
+
+pub fn unstage_paths(cwd: &Path, paths: &[String]) -> Result<(), GitServiceError> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+
+    let mut args = vec![
+        "restore".to_string(),
+        "--staged".to_string(),
+        "--".to_string(),
+    ];
+    args.extend(paths.iter().cloned());
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    match run_git(cwd, &refs) {
+        Ok(_) => Ok(()),
+        Err(_) => {
+            // In repos without commits, restore --staged may fail; rm --cached keeps file in working tree.
+            let mut fallback = vec!["rm".to_string(), "--cached".to_string(), "--".to_string()];
+            fallback.extend(paths.iter().cloned());
+            let fallback_refs: Vec<&str> = fallback.iter().map(String::as_str).collect();
+            let _ = run_git(cwd, &fallback_refs)?;
+            Ok(())
+        }
+    }
+}
+
 pub fn parse_status_porcelain_v2_z(raw: &[u8]) -> Result<StatusSummary, GitServiceError> {
     let mut summary = StatusSummary::default();
     let tokens: Vec<&[u8]> = raw.split(|b| *b == 0).filter(|t| !t.is_empty()).collect();
@@ -227,6 +264,32 @@ mod tests {
         assert!(status.is_ok());
         if let Ok(summary) = status {
             assert!(summary.untracked.iter().any(|p| p == "README.md"));
+        }
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn stage_then_unstage_moves_file_between_groups() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+
+        let file = "README.md".to_string();
+        assert!(std::fs::write(repo_dir.join(&file), "hello\n").is_ok());
+
+        assert!(stage_paths(&repo_dir, std::slice::from_ref(&file)).is_ok());
+        let staged = status_refresh(&repo_dir);
+        assert!(staged.is_ok());
+        if let Ok(summary) = staged {
+            assert!(summary.staged.iter().any(|p| p == &file));
+        }
+
+        assert!(unstage_paths(&repo_dir, std::slice::from_ref(&file)).is_ok());
+        let unstaged = status_refresh(&repo_dir);
+        assert!(unstaged.is_ok());
+        if let Ok(summary) = unstaged {
+            assert!(summary.untracked.iter().any(|p| p == &file));
         }
 
         let _ = std::fs::remove_dir_all(&repo_dir);

@@ -17,6 +17,7 @@ pub enum JobLock {
 pub struct JobRequest {
     pub op: String,
     pub lock: JobLock,
+    pub paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,6 +159,26 @@ pub fn execute_job_op(
                 state_version: store.snapshot().version,
             })
         }
+        "index.stage_paths" => {
+            git_service::stage_paths(cwd, &request.paths)?;
+            let status = git_service::status_refresh(cwd)?;
+            apply_status(store, &status);
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "index.unstage_paths" => {
+            git_service::unstage_paths(cwd, &request.paths)?;
+            let status = git_service::status_refresh(cwd)?;
+            apply_status(store, &status);
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
         _ => Err(JobExecutionError::UnsupportedOp {
             op: request.op.clone(),
         }),
@@ -207,14 +228,17 @@ mod tests {
         let read_id = queue.enqueue(JobRequest {
             op: "status.refresh".to_string(),
             lock: JobLock::Read,
+            paths: Vec::new(),
         });
         let write_id = queue.enqueue(JobRequest {
             op: "index.stage_paths".to_string(),
             lock: JobLock::IndexWrite,
+            paths: vec!["README.md".to_string()],
         });
         let read2_id = queue.enqueue(JobRequest {
             op: "status.refresh".to_string(),
             lock: JobLock::Read,
+            paths: Vec::new(),
         });
 
         let first = queue.try_start_next();
@@ -265,6 +289,7 @@ mod tests {
         let req = JobRequest {
             op: "repo.open".to_string(),
             lock: JobLock::Read,
+            paths: Vec::new(),
         };
         let result = execute_job_op(&repo_dir, &req, &mut store);
         assert!(result.is_ok());
@@ -292,6 +317,7 @@ mod tests {
         let req = JobRequest {
             op: "status.refresh".to_string(),
             lock: JobLock::Read,
+            paths: Vec::new(),
         };
         let result = execute_job_op(&repo_dir, &req, &mut store);
         assert!(result.is_ok());
@@ -304,6 +330,47 @@ mod tests {
                 .iter()
                 .any(|p| p == "notes.txt")
         );
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn execute_stage_and_unstage_paths_updates_status_groups() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+
+        let file = "file.txt".to_string();
+        assert!(std::fs::write(repo_dir.join(&file), "data\n").is_ok());
+
+        let mut store = StateStore::new();
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "index.stage_paths".to_string(),
+                    lock: JobLock::IndexWrite,
+                    paths: vec![file.clone()],
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert!(store.snapshot().status.staged.iter().any(|p| p == &file));
+
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "index.unstage_paths".to_string(),
+                    lock: JobLock::IndexWrite,
+                    paths: vec![file.clone()],
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert!(store.snapshot().status.untracked.iter().any(|p| p == &file));
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }
