@@ -1,7 +1,7 @@
 # Sprint 06 Report (Commit + Release Candidate)
 
 Date: 2026-03-21
-Status: PASS (local quality gates)
+Status: PASS
 
 ## Scope
 
@@ -51,18 +51,19 @@ Latest local run result: PASS.
 ## Final Closure Checklist
 
 - [x] Local verification is green via `scripts/verify-sprint-06.sh`.
-- [ ] Remote CI run URL is attached.
-- [ ] Commit SHA for closure is attached.
+- [x] Remote CI run URL is attached.
+- [x] Commit SHA for closure is attached.
 
 ## Remote CI Proof (fill after push)
 
-- CI run URL: `<to be filled>`
-- Commit SHA: `<to be filled>`
-- CI result: `<to be filled>`
-- Verified at (UTC): `<to be filled>`
+- CI run URL: `https://github.com/galetaa/BranchForge/actions/runs/23387638749`
+- Commit SHA: `6f821107a24b93253fb18b889a98f835f64f0f86`
+- CI result: `PASS`
+- Verified at (UTC): `2026-03-21 20:04`
 
 ## Closure Decision
 
-Sprint 06 Commit + Release Candidate is complete and formally closed after CI proof is attached.
+Sprint 06 Commit + Release Candidate is complete and formally closed.
+
 
 
