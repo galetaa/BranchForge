@@ -8,6 +8,7 @@ workspace = true
 
 [dependencies]
 action_engine = { path = "../action_engine" }
+git_service = { path = "../git_service" }
 job_system = { path = "../job_system" }
 plugin_host = { path = "../plugin_host" }
 state_store = { path = "../state_store" }

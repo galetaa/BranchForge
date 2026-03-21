@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 use action_engine::{ActionRequest, InvokeError, route_action_invoke, route_action_response};
+use job_system::{JobLock, JobRequest, execute_job_op};
 use plugin_api::{
     ActionContext, ActionSpec, METHOD_EVENT_REPO_OPENED, METHOD_EVENT_STATE_UPDATED, PluginHello,
     RpcMessage, RpcNotification, RpcResponse,
@@ -181,6 +182,28 @@ pub fn run_selection_event_smoke(selected_paths: Vec<String>) -> SelectionState 
     store.snapshot().selection.clone()
 }
 
+pub fn run_git_jobs_smoke(
+    repo_dir: &std::path::Path,
+) -> Result<state_store::StoreSnapshot, String> {
+    let mut store = StateStore::new();
+
+    let open = execute_job_op(
+        repo_dir,
+        &JobRequest {
+            op: "repo.open".to_string(),
+            lock: JobLock::Read,
+        },
+        &mut store,
+    )
+    .map_err(|err| format!("repo.open failed: {err:?}"))?;
+
+    if !open.success {
+        return Err("repo.open returned unsuccessful result".to_string());
+    }
+
+    Ok(store.snapshot().clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,5 +277,27 @@ mod tests {
             run_selection_event_smoke(vec!["README.md".to_string(), "src/lib.rs".to_string()]);
         assert_eq!(selection.selected_paths.len(), 2);
         assert!(selection.selected_paths.iter().any(|p| p == "README.md"));
+    }
+
+    #[test]
+    fn git_jobs_smoke_updates_repo_and_status() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let repo_dir = std::env::temp_dir().join(format!("branchforge-app-host-git-smoke-{nanos}"));
+
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(std::fs::write(repo_dir.join("README.md"), "hello\n").is_ok());
+
+        let result = run_git_jobs_smoke(&repo_dir);
+        assert!(result.is_ok());
+        if let Ok(snapshot) = result {
+            assert!(snapshot.repo.is_some());
+            assert!(snapshot.status.untracked.iter().any(|p| p == "README.md"));
+        }
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
     }
 }

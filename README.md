@@ -1,17 +1,18 @@
 # Branchforge
 
-Current state: Sprint 02 (UI Shell + State) implemented locally on top of Sprint 00/01 foundations.
+Current state: Sprint 03 (Git Service + Jobs) implemented locally on top of Sprint 00/01/02 foundations.
 
 Reports:
 
 - `SPRINT_00_REPORT.md`
 - `SPRINT_01_REPORT.md`
 - `SPRINT_02_REPORT.md`
+- `SPRINT_03_REPORT.md`
 
 ## Quick start
 
 ```bash
-./scripts/verify-sprint-02.sh
+./scripts/verify-sprint-03.sh
 ./scripts/check-deps.sh
 cargo check --workspace
 cargo test --workspace
