@@ -1,6 +1,6 @@
 # Branchforge
 
-Current state: Sprint 03 (Git Service + Jobs) implemented locally on top of Sprint 00/01/02 foundations.
+Current state: Sprint 04 (Repo Manager Plugin) implemented locally on top of Sprint 00/01/02/03 foundations.
 
 Reports:
 
@@ -8,11 +8,12 @@ Reports:
 - `SPRINT_01_REPORT.md`
 - `SPRINT_02_REPORT.md`
 - `SPRINT_03_REPORT.md`
+- `SPRINT_04_REPORT.md`
 
 ## Quick start
 
 ```bash
-./scripts/verify-sprint-03.sh
+./scripts/verify-sprint-04.sh
 ./scripts/check-deps.sh
 cargo check --workspace
 cargo test --workspace

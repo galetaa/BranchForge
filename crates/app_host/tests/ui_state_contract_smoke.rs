@@ -1,6 +1,7 @@
 use app_host::{
     run_palette_invoke_smoke, run_palette_when_smoke, run_selection_event_smoke,
-    run_state_notification_smoke, run_ui_state_smoke, run_window_layout_smoke,
+    run_state_notification_smoke, run_ui_state_smoke, run_window_after_open_smoke,
+    run_window_layout_smoke,
 };
 
 #[test]
@@ -35,7 +36,15 @@ fn window_layout_smoke_contains_slots_and_active_view() {
     let rendered = run_window_layout_smoke();
     assert!(rendered.contains("[left-slot]"));
     assert!(rendered.contains("[service]"));
+    assert!(rendered.contains("active_view: empty.state"));
+    assert!(rendered.contains("No repository opened"));
+}
+
+#[test]
+fn window_layout_smoke_switches_after_repo_open() {
+    let rendered = run_window_after_open_smoke();
     assert!(rendered.contains("active_view: status.panel"));
+    assert!(rendered.contains("Status Panel"));
 }
 
 #[test]
