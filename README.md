@@ -1,6 +1,6 @@
 # Branchforge
 
-Current state: Sprint 05 (Status Plugin) implemented locally on top of Sprint 00/01/02/03/04 foundations.
+Current state: Sprint 06 (Commit + Release Candidate) implemented locally on top of Sprint 00/01/02/03/04/05 foundations.
 
 Reports:
 
@@ -10,11 +10,12 @@ Reports:
 - `SPRINT_03_REPORT.md`
 - `SPRINT_04_REPORT.md`
 - `SPRINT_05_REPORT.md`
+- `SPRINT_06_REPORT.md`
 
 ## Quick start
 
 ```bash
-./scripts/verify-sprint-05.sh
+./scripts/verify-sprint-06.sh
 ./scripts/check-deps.sh
 cargo check --workspace
 cargo test --workspace
