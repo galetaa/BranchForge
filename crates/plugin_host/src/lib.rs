@@ -181,6 +181,7 @@ impl From<RegistryError> for SessionError {
 pub struct PluginRegistry {
     action_owners: HashMap<String, String>,
     view_owners: HashMap<String, String>,
+    actions: HashMap<String, ActionSpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -282,6 +283,8 @@ impl PluginRegistry {
         for action in &request.actions {
             self.action_owners
                 .insert(action.action_id.clone(), plugin_id.to_string());
+            self.actions
+                .insert(action.action_id.clone(), action.clone());
         }
 
         for view in &request.views {
@@ -302,6 +305,10 @@ impl PluginRegistry {
     pub fn action_owner(&self, action_id: &str) -> Option<&str> {
         self.action_owners.get(action_id).map(String::as_str)
     }
+
+    pub fn actions(&self) -> Vec<ActionSpec> {
+        self.actions.values().cloned().collect()
+    }
 }
 
 #[derive(Debug)]
@@ -312,6 +319,8 @@ pub struct RuntimeSession {
     request_ids: RequestIdGenerator,
     pending: PendingRequestMap,
     timeout_policy: TimeoutPolicy,
+    subscriptions: Vec<String>,
+    notification_outbox: Vec<RpcNotification>,
 }
 
 impl RuntimeSession {
@@ -323,6 +332,8 @@ impl RuntimeSession {
             request_ids: RequestIdGenerator::default(),
             pending: PendingRequestMap::default(),
             timeout_policy: TimeoutPolicy::default(),
+            subscriptions: Vec::new(),
+            notification_outbox: Vec::new(),
         }
     }
 
@@ -337,6 +348,8 @@ impl RuntimeSession {
             request_ids: RequestIdGenerator::default(),
             pending: PendingRequestMap::default(),
             timeout_policy,
+            subscriptions: Vec::new(),
+            notification_outbox: Vec::new(),
         }
     }
 
@@ -435,6 +448,29 @@ impl RuntimeSession {
     pub fn action_owner(&self, action_id: &str) -> Option<&str> {
         self.registry.action_owner(action_id)
     }
+
+    pub fn list_actions(&self) -> Vec<ActionSpec> {
+        self.registry.actions()
+    }
+
+    pub fn subscribe(&mut self, method: &str) {
+        if !self.subscriptions.iter().any(|s| s == method) {
+            self.subscriptions.push(method.to_string());
+        }
+    }
+
+    pub fn deliver_notification(&mut self, notification: RpcNotification) -> bool {
+        if self.subscriptions.iter().any(|s| s == &notification.method) {
+            self.notification_outbox.push(notification);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn drain_notifications(&mut self) -> Vec<RpcNotification> {
+        std::mem::take(&mut self.notification_outbox)
+    }
 }
 
 pub fn handle_hello(_hello: &PluginHello) -> HelloAck {
@@ -470,7 +506,10 @@ pub fn default_registration_payload() -> PluginRegister {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use plugin_api::{METHOD_EVENT_STATE_UPDATED, METHOD_PLUGIN_HELLO, RpcRequest, RpcResponse};
+    use plugin_api::{
+        METHOD_EVENT_REPO_OPENED, METHOD_EVENT_STATE_UPDATED, METHOD_PLUGIN_HELLO, RpcRequest,
+        RpcResponse,
+    };
 
     #[test]
     fn builds_ready_envelope() {
@@ -741,5 +780,46 @@ mod tests {
         if let Ok(Some(method)) = result {
             assert_eq!(method, METHOD_EVENT_STATE_UPDATED);
         }
+    }
+
+    #[test]
+    fn runtime_session_lists_registered_actions() {
+        let mut session = RuntimeSession::new("status");
+        let hello = PluginHello {
+            plugin_id: "status".to_string(),
+            version: "0.1".to_string(),
+        };
+        assert!(session.handle_hello(&hello).is_ok());
+        assert!(
+            session
+                .handle_register(&default_registration_payload())
+                .is_ok()
+        );
+
+        let actions = session.list_actions();
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].action_id, "repo.open");
+    }
+
+    #[test]
+    fn runtime_session_delivers_only_subscribed_notifications() {
+        let mut session = RuntimeSession::new("status");
+        session.subscribe(METHOD_EVENT_STATE_UPDATED);
+
+        let delivered = session.deliver_notification(RpcNotification::new(
+            METHOD_EVENT_STATE_UPDATED,
+            serde_json::json!({"reason": "refresh"}),
+        ));
+        assert!(delivered);
+
+        let dropped = session.deliver_notification(RpcNotification::new(
+            METHOD_EVENT_REPO_OPENED,
+            serde_json::json!({"repo": "."}),
+        ));
+        assert!(!dropped);
+
+        let outbox = session.drain_notifications();
+        assert_eq!(outbox.len(), 1);
+        assert_eq!(outbox[0].method, METHOD_EVENT_STATE_UPDATED);
     }
 }

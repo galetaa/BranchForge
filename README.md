@@ -1,16 +1,17 @@
 # Branchforge
 
-Current state: Sprint 01 (Plugin Runtime) implemented locally on top of Sprint 00 foundation.
+Current state: Sprint 02 (UI Shell + State) implemented locally on top of Sprint 00/01 foundations.
 
 Reports:
 
 - `SPRINT_00_REPORT.md`
 - `SPRINT_01_REPORT.md`
+- `SPRINT_02_REPORT.md`
 
 ## Quick start
 
 ```bash
-./scripts/verify-sprint-01.sh
+./scripts/verify-sprint-02.sh
 ./scripts/check-deps.sh
 cargo check --workspace
 cargo test --workspace
