@@ -140,6 +140,18 @@ pub fn unstage_paths(cwd: &Path, paths: &[String]) -> Result<(), GitServiceError
     }
 }
 
+pub fn commit_create(cwd: &Path, message: &str) -> Result<(), GitServiceError> {
+    let trimmed = message.trim();
+    if trimmed.is_empty() {
+        return Err(GitServiceError::ParseError(
+            "commit message cannot be empty".to_string(),
+        ));
+    }
+
+    let _ = run_git(cwd, &["commit", "-m", trimmed])?;
+    Ok(())
+}
+
 pub fn parse_status_porcelain_v2_z(raw: &[u8]) -> Result<StatusSummary, GitServiceError> {
     let mut summary = StatusSummary::default();
     let tokens: Vec<&[u8]> = raw.split(|b| *b == 0).filter(|t| !t.is_empty()).collect();
@@ -290,6 +302,28 @@ mod tests {
         assert!(unstaged.is_ok());
         if let Ok(summary) = unstaged {
             assert!(summary.untracked.iter().any(|p| p == &file));
+        }
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn commit_create_creates_commit_for_staged_file() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let file = "README.md".to_string();
+        assert!(std::fs::write(repo_dir.join(&file), "hello\n").is_ok());
+        assert!(stage_paths(&repo_dir, std::slice::from_ref(&file)).is_ok());
+        assert!(commit_create(&repo_dir, "Initial commit").is_ok());
+
+        let status = status_refresh(&repo_dir);
+        assert!(status.is_ok());
+        if let Ok(summary) = status {
+            assert!(summary.staged.is_empty());
         }
 
         let _ = std::fs::remove_dir_all(&repo_dir);

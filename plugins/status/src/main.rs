@@ -23,6 +23,12 @@ fn build_register_request() -> RpcRequest {
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
             },
+            ActionSpec {
+                action_id: "commit.create".to_string(),
+                title: "Commit".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+            },
         ],
         views: vec![ViewSpec {
             view_id: "status.panel".to_string(),

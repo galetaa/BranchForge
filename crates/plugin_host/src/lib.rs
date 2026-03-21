@@ -522,6 +522,12 @@ pub fn status_registration_payload() -> PluginRegister {
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
             },
+            ActionSpec {
+                action_id: "commit.create".to_string(),
+                title: "Commit".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+            },
         ],
         views: vec![plugin_api::ViewSpec {
             view_id: "status.panel".to_string(),
@@ -866,6 +872,12 @@ mod tests {
                 .actions
                 .iter()
                 .any(|a| a.action_id == "index.unstage_selected")
+        );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "commit.create")
         );
         assert!(payload.views.iter().any(|v| v.view_id == "status.panel"));
     }

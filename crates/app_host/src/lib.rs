@@ -237,6 +237,14 @@ pub enum OpenRepoOutcome {
     Failed(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommitFlowOutcome {
+    Committed(state_store::StoreSnapshot),
+    Cancelled,
+    ValidationError(String),
+    Failed(String),
+}
+
 pub fn run_repo_open_flow_with_picker<F>(mut pick_folder: F) -> OpenRepoOutcome
 where
     F: FnMut() -> Option<std::path::PathBuf>,
@@ -326,6 +334,58 @@ pub fn run_status_stage_unstage_smoke(
     .map_err(|e| format!("unstage failed: {e:?}"))?;
 
     Ok(store.snapshot().clone())
+}
+
+pub fn run_commit_flow_with_prompt<F>(
+    repo_dir: &std::path::Path,
+    mut prompt_message: F,
+) -> CommitFlowOutcome
+where
+    F: FnMut() -> Option<String>,
+{
+    let mut store = StateStore::new();
+
+    if execute_job_op(
+        repo_dir,
+        &JobRequest {
+            op: "repo.open".to_string(),
+            lock: JobLock::Read,
+            paths: Vec::new(),
+        },
+        &mut store,
+    )
+    .is_err()
+    {
+        return CommitFlowOutcome::Failed("Selected folder is not a git repository.".to_string());
+    }
+
+    if store.snapshot().status.staged.is_empty() {
+        return CommitFlowOutcome::ValidationError("No staged changes to commit.".to_string());
+    }
+
+    let message = match prompt_message() {
+        Some(message) => message,
+        None => return CommitFlowOutcome::Cancelled,
+    };
+
+    if message.trim().is_empty() {
+        return CommitFlowOutcome::ValidationError("Commit message cannot be empty.".to_string());
+    }
+
+    let result = execute_job_op(
+        repo_dir,
+        &JobRequest {
+            op: "commit.create".to_string(),
+            lock: JobLock::RefsWrite,
+            paths: vec![message],
+        },
+        &mut store,
+    );
+
+    match result {
+        Ok(_) => CommitFlowOutcome::Committed(store.snapshot().clone()),
+        Err(_) => CommitFlowOutcome::Failed("Commit failed.".to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -475,6 +535,85 @@ mod tests {
         if let Ok(snapshot) = result {
             assert!(snapshot.status.untracked.iter().any(|p| p == &file));
         }
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn commit_flow_with_prompt_commits_staged_changes() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let repo_dir = std::env::temp_dir().join(format!("branchforge-commit-smoke-{nanos}"));
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let file = "commit.txt".to_string();
+        assert!(std::fs::write(repo_dir.join(&file), "payload\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, std::slice::from_ref(&file)).is_ok());
+
+        let outcome =
+            run_commit_flow_with_prompt(&repo_dir, || Some("feat: add commit flow".to_string()));
+        assert!(matches!(outcome, CommitFlowOutcome::Committed(_)));
+        if let CommitFlowOutcome::Committed(snapshot) = outcome {
+            assert!(snapshot.status.staged.is_empty());
+        }
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn commit_flow_with_prompt_supports_cancel() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let repo_dir = std::env::temp_dir().join(format!("branchforge-commit-cancel-{nanos}"));
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let file = "cancel.txt".to_string();
+        assert!(std::fs::write(repo_dir.join(&file), "payload\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, std::slice::from_ref(&file)).is_ok());
+
+        let outcome = run_commit_flow_with_prompt(&repo_dir, || None);
+        assert!(matches!(outcome, CommitFlowOutcome::Cancelled));
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn commit_flow_with_prompt_rejects_empty_message() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let repo_dir = std::env::temp_dir().join(format!("branchforge-commit-empty-{nanos}"));
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let file = "empty.txt".to_string();
+        assert!(std::fs::write(repo_dir.join(&file), "payload\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, std::slice::from_ref(&file)).is_ok());
+
+        let outcome = run_commit_flow_with_prompt(&repo_dir, || Some("   ".to_string()));
+        assert!(matches!(
+            outcome,
+            CommitFlowOutcome::ValidationError(message) if message == "Commit message cannot be empty."
+        ));
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }
