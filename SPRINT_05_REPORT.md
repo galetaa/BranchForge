@@ -54,16 +54,16 @@ CI gate definition:
 ## Final Closure Checklist
 
 - [x] Local verification is green via `scripts/verify-sprint-05.sh`.
-- [ ] Remote CI run URL is attached.
-- [ ] Commit SHA for closure is attached.
+- [x] Remote CI run URL is attached.
+- [x] Commit SHA for closure is attached.
 
 ## Remote CI Proof (fill after push)
 
-- CI run URL: `<to be filled>`
-- Commit SHA: `<to be filled>`
-- CI result: `<to be filled>`
-- Verified at (UTC): `<to be filled>`
+- CI run URL: `https://github.com/galetaa/BranchForge/actions/runs/23381372925`
+- Commit SHA: `9d8557de0ee9d751d753ca41034bf3209be68d35`
+- CI result: `PASS`
+- Verified at (UTC): `2026-03-21 14:19`
 
 ## Closure Decision
 
-Sprint 05 Status Plugin is complete after final local and remote gates pass.
+Sprint 05 Status Plugin is complete and formally closed.
