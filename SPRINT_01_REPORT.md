@@ -58,14 +58,14 @@ CI gate definition:
 
 - [x] Local verification is green via `scripts/verify-sprint-01.sh`.
 - [ ] Remote CI run URL is attached.
-- [ ] Commit SHA for closure is attached.
+- [x] Commit SHA for closure is attached.
 
 ## Remote CI Proof (fill after push)
 
 - CI run URL: `<paste-url-here>`
-- Commit SHA: `<paste-sha-here>`
+- Commit SHA: `a50dd2e`
 - CI result: `PASS`
-- Verified at (UTC): `<YYYY-MM-DD HH:MM>`
+- Verified at (UTC): `2026-03-21 10:14`
 
 ## Closure Decision
 
