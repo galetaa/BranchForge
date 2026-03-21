@@ -13,4 +13,5 @@ plugin_host = { path = "../plugin_host" }
 state_store = { path = "../state_store" }
 ui_shell = { path = "../ui_shell" }
 plugin_api = { path = "../plugin_api" }
+serde_json = "1.0"
 

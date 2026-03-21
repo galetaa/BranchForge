@@ -1,7 +1,7 @@
 # Sprint 00 Report (Foundation)
 
 Date: 2026-03-20
-Status: PASS
+Status: PASS (local), PENDING remote CI proof
 
 ## Scope
 
@@ -43,6 +43,7 @@ Reference: `mvp_dev_pack/06_sprints/sprint-00-foundation/README.md`
 
 Latest local run result: PASS.
 
+- `./scripts/verify-sprint-00.sh`
 - `./scripts/check-deps.sh`
 - `cargo fmt --all --check`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
@@ -52,6 +53,19 @@ CI gate definition:
 
 - PR and push-to-main triggers configured in `.github/workflows/ci.yml`
 
+## Final Closure Checklist
+
+- [x] Local verification is green via `scripts/verify-sprint-00.sh`.
+- [ ] Remote CI run URL is attached.
+- [ ] Commit SHA for closure is attached.
+
+## Remote CI Proof (fill after push)
+
+- CI run URL: `<paste-url-here>`
+- Commit SHA: `<paste-sha-here>`
+- CI result: `PASS`
+- Verified at (UTC): `<YYYY-MM-DD HH:MM>`
+
 ## Risks and Follow-ups
 
 - Keep dependency guards aligned with future crates added in Sprint 01+.
@@ -60,5 +74,6 @@ CI gate definition:
 
 ## Closure Decision
 
-Sprint 00 Foundation is ready to close and hand off to Sprint 01 (Plugin Runtime), with the current local quality gates passing and required Sprint 00 artifacts in place.
+Sprint 00 Foundation is locally complete and ready for handoff to Sprint 01 (Plugin Runtime).
+Final procedural closure requires attaching one green remote CI run URL and commit SHA.
 

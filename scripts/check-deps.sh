@@ -1,7 +1,8 @@
-#!/usr/bin/env zsh
+#!/usr/bin/env bash
 set -euo pipefail
 
 workspace_root="$(cd "$(dirname "$0")/.." && pwd)"
+shopt -s nullglob
 
 # T05 guard: bundled plugins must not depend on git_service directly.
 for manifest in "$workspace_root"/plugins/*/Cargo.toml; do
