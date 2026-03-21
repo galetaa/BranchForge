@@ -16,9 +16,23 @@ pub fn render_status_panel(store: &StateStore) -> String {
     viewmodel::render(&panel, store.snapshot())
 }
 
+pub fn render_empty_state() -> String {
+    "No repository opened. Use `Open Repository` from command palette.".to_string()
+}
+
 pub fn render_window(store: &StateStore, palette_items: &[palette::PaletteItem]) -> String {
-    let status = render_status_panel(store);
-    let layout = layout::build_layout(&status, palette_items, Some("status.panel".to_string()));
+    let left_slot = if store.repo().is_some() {
+        render_status_panel(store)
+    } else {
+        render_empty_state()
+    };
+    let active_view = if store.repo().is_some() {
+        Some("status.panel".to_string())
+    } else {
+        Some("empty.state".to_string())
+    };
+
+    let layout = layout::build_layout(&left_slot, palette_items, active_view);
     layout::render_layout(&layout)
 }
 
@@ -66,12 +80,7 @@ mod tests {
 
     #[test]
     fn renders_window_with_slots() {
-        let mut store = StateStore::new();
-        store.update_status(state_store::StatusSnapshot {
-            staged: vec!["src/lib.rs".to_string()],
-            unstaged: Vec::new(),
-            untracked: Vec::new(),
-        });
+        let store = StateStore::new();
 
         let palette_items = palette::build_palette(
             &[plugin_api::ActionSpec {
@@ -87,5 +96,36 @@ mod tests {
         let rendered = render_window(&store, &palette_items);
         assert!(rendered.contains("[left-slot]"));
         assert!(rendered.contains("[service]"));
+        assert!(rendered.contains("No repository opened"));
+        assert!(rendered.contains("active_view: empty.state"));
+    }
+
+    #[test]
+    fn switches_to_status_panel_after_repo_open() {
+        let mut store = StateStore::new();
+        store.update_repo(plugin_api::RepoSnapshot {
+            root: "/tmp/demo".to_string(),
+            head: Some("main".to_string()),
+        });
+        store.update_status(state_store::StatusSnapshot {
+            staged: vec!["src/lib.rs".to_string()],
+            unstaged: Vec::new(),
+            untracked: Vec::new(),
+        });
+
+        let palette_items = palette::build_palette(
+            &[plugin_api::ActionSpec {
+                action_id: "repo.open".to_string(),
+                title: "Open Repository".to_string(),
+                when: Some("always".to_string()),
+                params_schema: None,
+            }],
+            "",
+            true,
+        );
+
+        let rendered = render_window(&store, &palette_items);
+        assert!(rendered.contains("active_view: status.panel"));
+        assert!(rendered.contains("Status Panel"));
     }
 }

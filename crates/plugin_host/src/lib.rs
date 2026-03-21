@@ -492,6 +492,10 @@ pub fn handshake(plugin_id: &str) -> (PluginRegistration, RpcMessage) {
 }
 
 pub fn default_registration_payload() -> PluginRegister {
+    repo_manager_registration_payload()
+}
+
+pub fn repo_manager_registration_payload() -> PluginRegister {
     PluginRegister {
         actions: vec![ActionSpec {
             action_id: "repo.open".to_string(),

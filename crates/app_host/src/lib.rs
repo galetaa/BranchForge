@@ -6,8 +6,12 @@ use plugin_api::{
     ActionContext, ActionSpec, METHOD_EVENT_REPO_OPENED, METHOD_EVENT_STATE_UPDATED, PluginHello,
     RpcMessage, RpcNotification, RpcResponse,
 };
-use plugin_host::{RuntimeSession, default_registration_payload};
+use plugin_host::{
+    RuntimeSession, default_registration_payload, repo_manager_registration_payload,
+};
 use state_store::{SelectionState, StateEvent, StateStore, StatusSnapshot};
+
+pub mod recent_repos;
 
 pub fn run_action_roundtrip(action_id: &str) -> Result<String, InvokeError> {
     let mut session = RuntimeSession::new("status");
@@ -133,7 +137,28 @@ pub fn run_state_notification_smoke() -> Vec<String> {
 }
 
 pub fn run_window_layout_smoke() -> String {
+    let store = StateStore::new();
+
+    let palette_items = ui_shell::palette::build_palette(
+        &[plugin_api::ActionSpec {
+            action_id: "repo.open".to_string(),
+            title: "Open Repository".to_string(),
+            when: Some("always".to_string()),
+            params_schema: None,
+        }],
+        "",
+        false,
+    );
+
+    ui_shell::render_window(&store, &palette_items)
+}
+
+pub fn run_window_after_open_smoke() -> String {
     let mut store = StateStore::new();
+    store.update_repo(plugin_api::RepoSnapshot {
+        root: "/tmp/demo".to_string(),
+        head: Some("main".to_string()),
+    });
     store.update_status(StatusSnapshot {
         staged: vec!["src/lib.rs".to_string()],
         unstaged: vec!["README.md".to_string()],
@@ -148,7 +173,7 @@ pub fn run_window_layout_smoke() -> String {
             params_schema: None,
         }],
         "",
-        false,
+        true,
     );
 
     ui_shell::render_window(&store, &palette_items)
@@ -204,6 +229,57 @@ pub fn run_git_jobs_smoke(
     Ok(store.snapshot().clone())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpenRepoOutcome {
+    Opened(state_store::StoreSnapshot),
+    Cancelled,
+    Failed(String),
+}
+
+pub fn run_repo_open_flow_with_picker<F>(mut pick_folder: F) -> OpenRepoOutcome
+where
+    F: FnMut() -> Option<std::path::PathBuf>,
+{
+    let mut session = RuntimeSession::new("repo_manager");
+    let hello = PluginHello {
+        plugin_id: "repo_manager".to_string(),
+        version: "0.1".to_string(),
+    };
+    if session.handle_hello(&hello).is_err() {
+        return OpenRepoOutcome::Failed("repo manager handshake failed".to_string());
+    }
+    if session
+        .handle_register(&repo_manager_registration_payload())
+        .is_err()
+    {
+        return OpenRepoOutcome::Failed("repo manager registration failed".to_string());
+    }
+
+    let selected = pick_folder();
+    let repo_dir = match selected {
+        Some(path) => path,
+        None => return OpenRepoOutcome::Cancelled,
+    };
+
+    let mut store = StateStore::new();
+    let result = execute_job_op(
+        &repo_dir,
+        &JobRequest {
+            op: "repo.open".to_string(),
+            lock: JobLock::Read,
+        },
+        &mut store,
+    );
+
+    match result {
+        Ok(_) => {
+            let _ = recent_repos::persist_recent_repo(&repo_dir);
+            OpenRepoOutcome::Opened(store.snapshot().clone())
+        }
+        Err(_) => OpenRepoOutcome::Failed("Selected folder is not a git repository.".to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,7 +322,15 @@ mod tests {
         let rendered = run_window_layout_smoke();
         assert!(rendered.contains("[left-slot]"));
         assert!(rendered.contains("[service]"));
+        assert!(rendered.contains("active_view: empty.state"));
+        assert!(rendered.contains("No repository opened"));
+    }
+
+    #[test]
+    fn window_layout_switches_after_repo_open() {
+        let rendered = run_window_after_open_smoke();
         assert!(rendered.contains("active_view: status.panel"));
+        assert!(rendered.contains("Status Panel"));
     }
 
     #[test]
@@ -299,5 +383,29 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn repo_open_flow_handles_cancel_path() {
+        let outcome = run_repo_open_flow_with_picker(|| None);
+        assert!(matches!(outcome, OpenRepoOutcome::Cancelled));
+    }
+
+    #[test]
+    fn repo_open_flow_reports_invalid_repo_error() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("branchforge-invalid-repo-{nanos}"));
+        assert!(std::fs::create_dir_all(&dir).is_ok());
+
+        let outcome = run_repo_open_flow_with_picker(|| Some(dir.clone()));
+        assert!(matches!(
+            outcome,
+            OpenRepoOutcome::Failed(message) if message == "Selected folder is not a git repository."
+        ));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
