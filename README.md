@@ -1,10 +1,16 @@
 # Branchforge
 
-Sprint 00 bootstraps a Rust workspace with crate boundaries, developer tooling, and CI quality gates.
+Current state: Sprint 01 (Plugin Runtime) implemented locally on top of Sprint 00 foundation.
+
+Reports:
+
+- `SPRINT_00_REPORT.md`
+- `SPRINT_01_REPORT.md`
 
 ## Quick start
 
 ```bash
+./scripts/verify-sprint-01.sh
 ./scripts/check-deps.sh
 cargo check --workspace
 cargo test --workspace

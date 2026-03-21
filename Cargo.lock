@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "plugin_api",
  "plugin_host",
+ "serde_json",
  "state_store",
 ]
 
@@ -19,6 +20,7 @@ dependencies = [
  "job_system",
  "plugin_api",
  "plugin_host",
+ "serde_json",
  "state_store",
  "ui_shell",
 ]

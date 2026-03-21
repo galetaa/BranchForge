@@ -1,8 +1,14 @@
 use action_engine::{ActionRequest, validate_action};
+use app_host::run_action_roundtrip;
 use plugin_api::RepoSnapshot;
 use state_store::StateStore;
 
 fn main() {
+    let roundtrip = run_action_roundtrip("repo.open");
+    if let Ok(action_id) = roundtrip {
+        println!("runtime roundtrip ok for action: {action_id}");
+    }
+
     let request = ActionRequest {
         action: "repo.open".to_string(),
     };
