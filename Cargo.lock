@@ -17,6 +17,7 @@ name = "app_host"
 version = "0.1.0"
 dependencies = [
  "action_engine",
+ "git_service",
  "job_system",
  "plugin_api",
  "plugin_host",
