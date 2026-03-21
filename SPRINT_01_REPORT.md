@@ -1,7 +1,7 @@
 # Sprint 01 Report (Plugin Runtime)
 
 Date: 2026-03-21
-Status: PASS (local), PENDING remote CI proof
+Status: PASS
 
 ## Scope
 
@@ -57,18 +57,18 @@ CI gate definition:
 ## Final Closure Checklist
 
 - [x] Local verification is green via `scripts/verify-sprint-01.sh`.
-- [ ] Remote CI run URL is attached.
+- [x] Remote CI run URL is attached.
 - [x] Commit SHA for closure is attached.
 
 ## Remote CI Proof (fill after push)
 
-- CI run URL: `<paste-url-here>`
-- Commit SHA: `a50dd2e`
+- CI run URL: `https://github.com/galetaa/BranchForge/actions/runs/23377522117`
+- Commit SHA: `0890150`
 - CI result: `PASS`
 - Verified at (UTC): `2026-03-21 10:14`
 
 ## Closure Decision
 
-Sprint 01 Plugin Runtime is locally complete and ready for handoff to Sprint 02.
-Final procedural closure requires attaching one green remote CI run URL and commit SHA.
+Sprint 01 Plugin Runtime is complete and formally closed.
+Sprint 02 can start with no open closure blockers.
 
