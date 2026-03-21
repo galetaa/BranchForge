@@ -220,11 +220,13 @@ mod tests {
     use super::*;
 
     fn unique_temp_dir() -> std::path::PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        std::env::temp_dir().join(format!("branchforge-git-service-{nanos}"))
+        let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir().join(format!("branchforge-git-service-{nanos}-{seq}"))
     }
 
     #[test]
