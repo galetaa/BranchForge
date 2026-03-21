@@ -1,7 +1,7 @@
 # Sprint 06 Report (Commit + Release Candidate)
 
 Date: 2026-03-21
-Status: IN PROGRESS
+Status: PASS (local quality gates)
 
 ## Scope
 
@@ -16,7 +16,9 @@ Reference: `mvp_dev_pack/06_sprints/sprint-06-commit-and-rc/README.md`
 - [x] Commit message prompt handles cancel and empty-message validation.
   - Evidence: `crates/app_host/src/lib.rs`, `crates/app_host/tests/open_repo_flow_smoke.rs`
 - [x] Unified MVP smoke suite exists and passes locally.
-  - Evidence: `crates/app_host/tests/mvp_smoke_suite.rs`
+  - Evidence: `crates/app_host/tests/mvp_smoke_suite.rs`, `scripts/verify-sprint-06.sh`
+- [x] Local package layout for RC validation is available.
+  - Evidence: `scripts/package-local.sh`, `docs/process/sprint-06-packaging-layout.md`
 
 ## Task-Level Coverage (Sprint 06)
 
@@ -24,28 +26,31 @@ Reference: `mvp_dev_pack/06_sprints/sprint-06-commit-and-rc/README.md`
   - Evidence: `plugins/status/src/main.rs`, `crates/plugin_host/src/lib.rs`, `crates/job_system/src/lib.rs`
 - T02 Commit message prompt and feedback: completed.
   - Evidence: `crates/app_host/src/lib.rs`, `crates/app_host/tests/open_repo_flow_smoke.rs`
-- T03 MVP smoke suite: in progress.
+- T03 MVP smoke suite: completed.
   - Evidence: `crates/app_host/tests/mvp_smoke_suite.rs`, `scripts/verify-sprint-06.sh`
-- T04 Packaging and local distribution: pending.
-- T05 RC checklist: pending.
-- T06 Post-MVP backlog cut: pending.
+- T04 Packaging and local distribution: completed.
+  - Evidence: `scripts/package-local.sh`, `docs/process/sprint-06-packaging-layout.md`
+- T05 RC checklist: completed.
+  - Evidence: `docs/process/sprint-06-rc-checklist.md`
+- T06 Post-MVP backlog cut: completed.
+  - Evidence: `docs/process/sprint-06-post-mvp-backlog-cut.md`
 
 ## Quality Gates
 
-Latest local run result: PASS (T01/T02/T03 scope).
+Latest local run result: PASS.
 
 - `cargo fmt --all --check`
-- `cargo test -p git_service -p job_system -p app_host -p plugin_host -p status`
+- `./scripts/verify-sprint-06.sh`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 
 ## Risks and Follow-ups
 
-- Packaging/distribution (T04) is not implemented yet and remains the main release risk.
-- RC checklist and backlog cut tasks remain open and can reveal additional documentation sync work.
+- Packaging currently targets local RC distribution layout only (installer/signing postponed post-MVP).
+- Commit UX remains intentionally minimal for MVP (prompt + validation + basic feedback path).
 
 ## Final Closure Checklist
 
-- [ ] Local verification is green via `scripts/verify-sprint-06.sh`.
+- [x] Local verification is green via `scripts/verify-sprint-06.sh`.
 - [ ] Remote CI run URL is attached.
 - [ ] Commit SHA for closure is attached.
 
@@ -55,4 +60,9 @@ Latest local run result: PASS (T01/T02/T03 scope).
 - Commit SHA: `<to be filled>`
 - CI result: `<to be filled>`
 - Verified at (UTC): `<to be filled>`
+
+## Closure Decision
+
+Sprint 06 Commit + Release Candidate is complete and formally closed after CI proof is attached.
+
 
