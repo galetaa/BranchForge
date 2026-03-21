@@ -30,6 +30,7 @@ pub struct JobExecutionResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobExecutionError {
     UnsupportedOp { op: String },
+    InvalidInput { message: String },
     Git(GitServiceError),
 }
 
@@ -173,6 +174,24 @@ pub fn execute_job_op(
             git_service::unstage_paths(cwd, &request.paths)?;
             let status = git_service::status_refresh(cwd)?;
             apply_status(store, &status);
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "commit.create" => {
+            let message = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "commit.create requires message in request.paths[0]".to_string(),
+                }
+            })?;
+
+            git_service::commit_create(cwd, message)?;
+            let repo = git_service::repo_open(cwd)?;
+            let status = git_service::status_refresh(cwd)?;
+            apply_repo_open(store, &repo, &status);
+
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -371,6 +390,51 @@ mod tests {
             .is_ok()
         );
         assert!(store.snapshot().status.untracked.iter().any(|p| p == &file));
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn execute_commit_create_updates_repo_and_clears_staged() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let file = "commit.txt".to_string();
+        assert!(std::fs::write(repo_dir.join(&file), "data\n").is_ok());
+
+        let mut store = StateStore::new();
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "index.stage_paths".to_string(),
+                    lock: JobLock::IndexWrite,
+                    paths: vec![file.clone()],
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+
+        let commit_result = execute_job_op(
+            &repo_dir,
+            &JobRequest {
+                op: "commit.create".to_string(),
+                lock: JobLock::RefsWrite,
+                paths: vec!["Initial commit".to_string()],
+            },
+            &mut store,
+        );
+        assert!(commit_result.is_ok());
+
+        let snapshot = store.snapshot();
+        assert!(snapshot.repo.is_some());
+        assert!(snapshot.status.staged.is_empty());
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }
