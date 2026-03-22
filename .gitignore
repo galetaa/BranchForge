@@ -1,4 +1,6 @@
 /target
+SPRINT_*_REPORT.md
+mvp_dev_pack/
 
 # Local IDE/macOS artifacts
 .DS_Store
