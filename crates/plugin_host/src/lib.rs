@@ -859,6 +859,28 @@ mod tests {
     }
 
     #[test]
+    fn runtime_session_drains_notifications_in_order() {
+        let mut session = RuntimeSession::new("status");
+        session.subscribe(METHOD_EVENT_STATE_UPDATED);
+        session.subscribe(METHOD_EVENT_REPO_OPENED);
+
+        assert!(session.deliver_notification(RpcNotification::new(
+            METHOD_EVENT_STATE_UPDATED,
+            serde_json::json!({"reason": "refresh"})
+        )));
+        assert!(session.deliver_notification(RpcNotification::new(
+            METHOD_EVENT_REPO_OPENED,
+            serde_json::json!({"repo": "."})
+        )));
+
+        let outbox = session.drain_notifications();
+        assert_eq!(outbox.len(), 2);
+        assert_eq!(outbox[0].method, METHOD_EVENT_STATE_UPDATED);
+        assert_eq!(outbox[1].method, METHOD_EVENT_REPO_OPENED);
+        assert!(session.drain_notifications().is_empty());
+    }
+
+    #[test]
     fn status_registration_payload_contains_view_and_actions() {
         let payload = status_registration_payload();
         assert!(

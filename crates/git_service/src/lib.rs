@@ -249,6 +249,37 @@ mod tests {
     }
 
     #[test]
+    fn parses_status_porcelain_rename_record() {
+        let fixture = b"2 R. N... 100644 100644 100644 abcdef abcdef new_name.txt\0old_name.txt\0";
+        let parsed = parse_status_porcelain_v2_z(fixture);
+        assert!(parsed.is_ok());
+
+        if let Ok(summary) = parsed {
+            assert_eq!(summary.staged, vec!["new_name.txt".to_string()]);
+            assert!(summary.unstaged.is_empty());
+        }
+    }
+
+    #[test]
+    fn parses_status_porcelain_copy_record() {
+        let fixture = b"2 C. N... 100644 100644 100644 abcdef abcdef copy.txt\0orig.txt\0";
+        let parsed = parse_status_porcelain_v2_z(fixture);
+        assert!(parsed.is_ok());
+
+        if let Ok(summary) = parsed {
+            assert_eq!(summary.staged, vec!["copy.txt".to_string()]);
+            assert!(summary.unstaged.is_empty());
+        }
+    }
+
+    #[test]
+    fn parse_rejects_unsupported_status_kind() {
+        let fixture = b"u UU N... 100644 100644 100644 abcdef abcdef conflict.txt\0";
+        let parsed = parse_status_porcelain_v2_z(fixture);
+        assert!(parsed.is_err());
+    }
+
+    #[test]
     fn run_git_executes_without_shell() {
         let cwd = std::env::current_dir();
         assert!(cwd.is_ok());
@@ -284,6 +315,27 @@ mod tests {
     }
 
     #[test]
+    fn repo_open_fails_for_non_repo() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        let result = repo_open(&repo_dir);
+        assert!(matches!(result, Err(GitServiceError::GitError { .. })));
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn stage_paths_fails_for_missing_file() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+
+        let result = stage_paths(&repo_dir, &["missing.txt".to_string()]);
+        assert!(matches!(result, Err(GitServiceError::GitError { .. })));
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
     fn stage_then_unstage_moves_file_between_groups() {
         let repo_dir = unique_temp_dir();
         assert!(std::fs::create_dir_all(&repo_dir).is_ok());
@@ -305,6 +357,57 @@ mod tests {
         if let Ok(summary) = unstaged {
             assert!(summary.untracked.iter().any(|p| p == &file));
         }
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn stage_paths_handles_multiple_files() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+
+        let first = "first.txt".to_string();
+        let second = "second.txt".to_string();
+        assert!(std::fs::write(repo_dir.join(&first), "one\n").is_ok());
+        assert!(std::fs::write(repo_dir.join(&second), "two\n").is_ok());
+
+        assert!(stage_paths(&repo_dir, &[first.clone(), second.clone()]).is_ok());
+        let status = status_refresh(&repo_dir);
+        assert!(status.is_ok());
+        if let Ok(summary) = status {
+            assert!(summary.staged.iter().any(|p| p == &first));
+            assert!(summary.staged.iter().any(|p| p == &second));
+        }
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn commit_create_rejects_empty_message() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let result = commit_create(&repo_dir, "   ");
+        assert!(matches!(result, Err(GitServiceError::ParseError(_))));
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn commit_create_fails_without_staged_changes() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+        assert!(std::fs::write(repo_dir.join("README.md"), "hello\n").is_ok());
+
+        let result = commit_create(&repo_dir, "Initial commit");
+        assert!(matches!(result, Err(GitServiceError::GitError { .. })));
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }
