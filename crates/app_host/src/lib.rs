@@ -617,4 +617,29 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }
+
+    #[test]
+    fn commit_flow_rejects_without_staged_changes() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let repo_dir = std::env::temp_dir().join(format!("branchforge-commit-empty-stage-{nanos}"));
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+        assert!(std::fs::write(repo_dir.join("README.md"), "hello\n").is_ok());
+
+        let outcome =
+            run_commit_flow_with_prompt(&repo_dir, || Some("feat: try commit".to_string()));
+        assert!(matches!(
+            outcome,
+            CommitFlowOutcome::ValidationError(message) if message == "No staged changes to commit."
+        ));
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
 }

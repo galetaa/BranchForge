@@ -438,4 +438,30 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }
+
+    #[test]
+    fn commit_create_fails_without_staged_changes() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+        assert!(std::fs::write(repo_dir.join("README.md"), "hello\n").is_ok());
+
+        let mut store = StateStore::new();
+        let commit_result = execute_job_op(
+            &repo_dir,
+            &JobRequest {
+                op: "commit.create".to_string(),
+                lock: JobLock::RefsWrite,
+                paths: vec!["Initial commit".to_string()],
+            },
+            &mut store,
+        );
+        assert!(commit_result.is_err());
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
 }

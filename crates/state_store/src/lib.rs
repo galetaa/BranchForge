@@ -159,4 +159,51 @@ mod tests {
             Some(StateEvent::Updated { version }) if *version == 1
         ));
     }
+
+    #[test]
+    fn multiple_subscribers_receive_events_in_order() {
+        let mut store = StateStore::new();
+        let first = store.subscribe();
+        let second = store.subscribe();
+
+        store.update_repo(RepoSnapshot {
+            root: "./demo".to_string(),
+            head: Some("main".to_string()),
+        });
+        store.update_status(StatusSnapshot {
+            staged: Vec::new(),
+            unstaged: vec!["README.md".to_string()],
+            untracked: Vec::new(),
+        });
+
+        let first_events = store.poll_events(first);
+        let second_events = store.poll_events(second);
+        assert_eq!(first_events, second_events);
+        assert_eq!(first_events.len(), 3);
+        assert!(matches!(first_events.first(), Some(StateEvent::RepoOpened)));
+        assert!(matches!(
+            first_events.get(1),
+            Some(StateEvent::Updated { version }) if *version == 1
+        ));
+        assert!(matches!(
+            first_events.get(2),
+            Some(StateEvent::Updated { version }) if *version == 2
+        ));
+
+        assert!(store.poll_events(first).is_empty());
+        assert!(store.poll_events(second).is_empty());
+    }
+
+    #[test]
+    fn poll_events_returns_empty_for_unknown_subscriber() {
+        let mut store = StateStore::new();
+        store.update_status(StatusSnapshot {
+            staged: vec!["src/main.rs".to_string()],
+            unstaged: Vec::new(),
+            untracked: Vec::new(),
+        });
+
+        let events = store.poll_events(999);
+        assert!(events.is_empty());
+    }
 }
