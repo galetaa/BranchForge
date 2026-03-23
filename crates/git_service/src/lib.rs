@@ -50,6 +50,13 @@ pub struct CommitDetails {
     pub message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchInfo {
+    pub name: String,
+    pub is_current: bool,
+    pub upstream: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct StatusSummary {
     pub staged: Vec<String>,
@@ -273,6 +280,72 @@ pub fn diff_commit(cwd: &Path, oid: &str, max_bytes: usize) -> Result<String, Gi
         text.push_str("\n... diff truncated ...\n");
     }
     Ok(text)
+}
+
+pub fn list_local_branches(cwd: &Path) -> Result<Vec<BranchInfo>, GitServiceError> {
+    let out = run_git(
+        cwd,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)%00%(HEAD)%00%(upstream:short)",
+            "refs/heads",
+        ],
+    )?;
+    let text = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+    let mut branches = Vec::new();
+
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = line.split('\0').collect();
+        if parts.len() < 2 {
+            return Err(GitServiceError::ParseError(
+                "invalid branch record".to_string(),
+            ));
+        }
+        let name = parts[0].to_string();
+        let is_current = parts[1] == "*";
+        let upstream = parts.get(2).and_then(|value| {
+            if value.trim().is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            }
+        });
+        branches.push(BranchInfo {
+            name,
+            is_current,
+            upstream,
+        });
+    }
+
+    Ok(branches)
+}
+
+pub fn worktree_is_clean(cwd: &Path) -> Result<bool, GitServiceError> {
+    let out = run_git(cwd, &["status", "--porcelain"])?;
+    Ok(out.stdout.is_empty())
+}
+
+pub fn checkout_branch(cwd: &Path, name: &str) -> Result<(), GitServiceError> {
+    let _ = run_git(cwd, &["checkout", name])?;
+    Ok(())
+}
+
+pub fn create_branch(cwd: &Path, name: &str) -> Result<(), GitServiceError> {
+    let _ = run_git(cwd, &["branch", name])?;
+    Ok(())
+}
+
+pub fn rename_branch(cwd: &Path, old: &str, new: &str) -> Result<(), GitServiceError> {
+    let _ = run_git(cwd, &["branch", "-m", old, new])?;
+    Ok(())
+}
+
+pub fn delete_branch(cwd: &Path, name: &str) -> Result<(), GitServiceError> {
+    let _ = run_git(cwd, &["branch", "-d", name])?;
+    Ok(())
 }
 
 pub fn parse_status_porcelain_v2_z(raw: &[u8]) -> Result<StatusSummary, GitServiceError> {
@@ -610,6 +683,39 @@ mod tests {
         if let Ok(diff) = commit_diff {
             assert!(diff.contains("commit"));
         }
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn branch_list_create_checkout_rename_delete() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        assert!(std::fs::write(repo_dir.join("README.md"), "hello\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["README.md".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "base").is_ok());
+
+        assert!(create_branch(&repo_dir, "feature").is_ok());
+        let branches = list_local_branches(&repo_dir).expect("branches");
+        assert!(branches.iter().any(|b| b.name == "feature"));
+
+        assert!(checkout_branch(&repo_dir, "feature").is_ok());
+        let branches = list_local_branches(&repo_dir).expect("branches");
+        assert!(branches.iter().any(|b| b.name == "feature" && b.is_current));
+
+        assert!(rename_branch(&repo_dir, "feature", "feature-renamed").is_ok());
+        let branches = list_local_branches(&repo_dir).expect("branches");
+        assert!(branches.iter().any(|b| b.name == "feature-renamed"));
+
+        assert!(
+            checkout_branch(&repo_dir, "main").is_ok()
+                || checkout_branch(&repo_dir, "master").is_ok()
+        );
+        assert!(delete_branch(&repo_dir, "feature-renamed").is_ok());
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }

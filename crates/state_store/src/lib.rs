@@ -15,6 +15,7 @@ pub struct StatusSnapshot {
 pub struct SelectionState {
     pub selected_paths: Vec<String>,
     pub selected_commit_oid: Option<String>,
+    pub selected_branch: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +61,18 @@ pub struct DiffState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchInfo {
+    pub name: String,
+    pub is_current: bool,
+    pub upstream: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BranchesState {
+    pub branches: Vec<BranchInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginHealth {
     Ready,
     Unavailable { message: String },
@@ -79,6 +92,7 @@ pub struct StoreSnapshot {
     pub history: HistoryState,
     pub commit_cache: HashMap<String, CommitDetails>,
     pub diff: DiffState,
+    pub branches: BranchesState,
     pub active_view: Option<String>,
     pub plugins: Vec<PluginStatus>,
     pub version: StoreVersion,
@@ -129,11 +143,20 @@ impl StateStore {
     pub fn update_selected_paths(&mut self, paths: Vec<String>) {
         self.snapshot.selection.selected_paths = paths;
         self.snapshot.selection.selected_commit_oid = None;
+        self.snapshot.selection.selected_branch = None;
         self.bump_version();
     }
 
     pub fn update_selected_commit(&mut self, oid: Option<String>) {
         self.snapshot.selection.selected_commit_oid = oid;
+        self.snapshot.selection.selected_paths.clear();
+        self.snapshot.selection.selected_branch = None;
+        self.bump_version();
+    }
+
+    pub fn update_selected_branch(&mut self, name: Option<String>) {
+        self.snapshot.selection.selected_branch = name;
+        self.snapshot.selection.selected_commit_oid = None;
         self.snapshot.selection.selected_paths.clear();
         self.bump_version();
     }
@@ -172,6 +195,11 @@ impl StateStore {
 
     pub fn update_diff(&mut self, diff: DiffState) {
         self.snapshot.diff = diff;
+        self.bump_version();
+    }
+
+    pub fn update_branches(&mut self, branches: Vec<BranchInfo>) {
+        self.snapshot.branches.branches = branches;
         self.bump_version();
     }
 
@@ -266,6 +294,7 @@ mod tests {
         store.update_selection(SelectionState {
             selected_paths: vec!["README.md".to_string()],
             selected_commit_oid: None,
+            selected_branch: None,
         });
 
         assert_eq!(store.snapshot().status.staged.len(), 1);
@@ -326,6 +355,18 @@ mod tests {
         assert_eq!(
             store.snapshot().selection.selected_commit_oid.as_deref(),
             Some("abc123")
+        );
+    }
+
+    #[test]
+    fn updates_branch_selection_clears_commit() {
+        let mut store = StateStore::new();
+        store.update_selected_commit(Some("abc123".to_string()));
+        store.update_selected_branch(Some("feature".to_string()));
+        assert!(store.snapshot().selection.selected_commit_oid.is_none());
+        assert_eq!(
+            store.snapshot().selection.selected_branch.as_deref(),
+            Some("feature")
         );
     }
 

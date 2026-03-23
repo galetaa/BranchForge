@@ -11,6 +11,7 @@ members = [
   "plugins/repo_manager",
   "plugins/status",
   "plugins/history",
+  "plugins/branches",
 ]
 resolver = "3"
 

@@ -42,6 +42,11 @@ pub fn render_history_panel(store: &StateStore) -> String {
     viewmodel::render(&panel, store.snapshot())
 }
 
+pub fn render_branches_panel(store: &StateStore) -> String {
+    let panel = viewmodel::build_branches_panel(store.snapshot());
+    viewmodel::render(&panel, store.snapshot())
+}
+
 pub fn render_diff_panel(store: &StateStore) -> String {
     let diff = &store.snapshot().diff;
     if diff.loading {
@@ -63,6 +68,7 @@ pub fn render_empty_state() -> String {
 pub fn render_window(store: &StateStore, palette_items: &[palette::PaletteItem]) -> String {
     let left_slot = match store.snapshot().active_view.as_deref() {
         Some("history.panel") => render_history_panel(store),
+        Some("branches.panel") => render_branches_panel(store),
         Some("status.panel") => render_status_panel(store),
         _ => {
             if store.repo().is_some() {
@@ -206,6 +212,29 @@ mod tests {
         let rendered = render_window(&store, &palette_items);
         assert!(rendered.contains("History Panel"));
         assert!(rendered.contains("commits: abc123 Initial commit"));
+    }
+
+    #[test]
+    fn renders_branches_panel_when_active_view_set() {
+        let mut store = StateStore::new();
+        store.set_active_view(Some("branches.panel".to_string()));
+        store.update_branches(vec![
+            state_store::BranchInfo {
+                name: "main".to_string(),
+                is_current: true,
+                upstream: None,
+            },
+            state_store::BranchInfo {
+                name: "feature".to_string(),
+                is_current: false,
+                upstream: None,
+            },
+        ]);
+
+        let palette_items = palette::build_palette(&[], "", true);
+        let rendered = render_window(&store, &palette_items);
+        assert!(rendered.contains("Branches Panel"));
+        assert!(rendered.contains("branches: *main,  feature"));
     }
 
     #[test]
