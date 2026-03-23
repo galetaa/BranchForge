@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use plugin_api::{
@@ -689,6 +690,7 @@ pub fn history_registration_payload() -> PluginRegister {
 }
 
 pub fn branches_registration_payload() -> PluginRegister {
+    let rebase_beta = rebase_beta_enabled();
     PluginRegister {
         actions: vec![
             ActionSpec {
@@ -727,6 +729,13 @@ pub fn branches_registration_payload() -> PluginRegister {
                 danger: None,
             },
             ActionSpec {
+                action_id: "rebase.interactive".to_string(),
+                title: "Interactive Rebase (beta)".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+                danger: Some(DangerLevel::High),
+            },
+            ActionSpec {
                 action_id: "tag.checkout".to_string(),
                 title: "Checkout Tag".to_string(),
                 when: Some("repo.is_open".to_string()),
@@ -740,7 +749,16 @@ pub fn branches_registration_payload() -> PluginRegister {
                 params_schema: None,
                 danger: Some(DangerLevel::Low),
             },
-        ],
+        ]
+        .into_iter()
+        .filter(|spec| {
+            if spec.action_id == "rebase.interactive" {
+                rebase_beta
+            } else {
+                true
+            }
+        })
+        .collect(),
         views: vec![plugin_api::ViewSpec {
             view_id: "branches.panel".to_string(),
             title: "Branches".to_string(),
@@ -748,6 +766,26 @@ pub fn branches_registration_payload() -> PluginRegister {
             when: Some("repo.is_open".to_string()),
         }],
     }
+}
+
+static REBASE_BETA_OVERRIDE: AtomicU8 = AtomicU8::new(2);
+
+fn rebase_beta_enabled() -> bool {
+    match REBASE_BETA_OVERRIDE.load(Ordering::Relaxed) {
+        0 => false,
+        1 => true,
+        _ => matches!(std::env::var("BRANCHFORGE_REBASE_BETA").as_deref(), Ok("1")),
+    }
+}
+
+#[cfg(test)]
+fn set_rebase_beta_override(value: Option<bool>) {
+    let encoded = match value {
+        Some(true) => 1,
+        Some(false) => 0,
+        None => 2,
+    };
+    REBASE_BETA_OVERRIDE.store(encoded, Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -1201,6 +1239,12 @@ mod tests {
             payload
                 .actions
                 .iter()
+                .any(|a| a.action_id == "compare.refs")
+        );
+        assert!(
+            payload
+                .actions
+                .iter()
                 .any(|a| a.action_id == "branch.checkout")
         );
         assert!(
@@ -1235,5 +1279,28 @@ mod tests {
         );
         assert!(payload.actions.iter().any(|a| a.action_id == "tag.create"));
         assert!(payload.views.iter().any(|v| v.view_id == "branches.panel"));
+    }
+
+    #[test]
+    fn branches_payload_rebase_gate_respects_env() {
+        set_rebase_beta_override(Some(false));
+        let payload = branches_registration_payload();
+        assert!(
+            !payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "rebase.interactive")
+        );
+
+        set_rebase_beta_override(Some(true));
+        let payload = branches_registration_payload();
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "rebase.interactive")
+        );
+
+        set_rebase_beta_override(None);
     }
 }

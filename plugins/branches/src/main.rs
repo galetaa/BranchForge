@@ -9,6 +9,7 @@ fn build_hello_request() -> RpcRequest {
 }
 
 fn build_register_request() -> RpcRequest {
+    let rebase_beta = rebase_beta_enabled();
     PluginRegister {
         actions: vec![
             ActionSpec {
@@ -47,6 +48,13 @@ fn build_register_request() -> RpcRequest {
                 danger: None,
             },
             ActionSpec {
+                action_id: "rebase.interactive".to_string(),
+                title: "Interactive Rebase (beta)".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+                danger: Some(DangerLevel::High),
+            },
+            ActionSpec {
                 action_id: "tag.checkout".to_string(),
                 title: "Checkout Tag".to_string(),
                 when: Some("repo.is_open".to_string()),
@@ -60,7 +68,16 @@ fn build_register_request() -> RpcRequest {
                 params_schema: None,
                 danger: Some(DangerLevel::Low),
             },
-        ],
+        ]
+        .into_iter()
+        .filter(|spec| {
+            if spec.action_id == "rebase.interactive" {
+                rebase_beta
+            } else {
+                true
+            }
+        })
+        .collect(),
         views: vec![ViewSpec {
             view_id: "branches.panel".to_string(),
             title: "Branches".to_string(),
@@ -69,6 +86,10 @@ fn build_register_request() -> RpcRequest {
         }],
     }
     .to_request("register-1")
+}
+
+fn rebase_beta_enabled() -> bool {
+    matches!(std::env::var("BRANCHFORGE_REBASE_BETA").as_deref(), Ok("1"))
 }
 
 fn main() {
