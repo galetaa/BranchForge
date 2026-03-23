@@ -51,6 +51,7 @@ pub struct HistoryState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiffSource {
     Worktree { paths: Vec<String> },
+    Index { paths: Vec<String> },
     Commit { oid: String },
 }
 
@@ -58,8 +59,17 @@ pub enum DiffSource {
 pub struct DiffState {
     pub source: Option<DiffSource>,
     pub content: Option<String>,
+    pub hunks: Vec<DiffHunk>,
     pub loading: bool,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffHunk {
+    pub file_path: String,
+    pub hunk_index: usize,
+    pub header: String,
+    pub lines: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

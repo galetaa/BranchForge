@@ -1,0 +1,5 @@
+id = "sample_external"
+name = "Sample External Plugin"
+version = "0.1.0"
+binary = "sample_external_plugin"
+entry = "sample_external_plugin"

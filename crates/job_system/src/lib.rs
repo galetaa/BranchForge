@@ -184,6 +184,49 @@ pub fn execute_job_op(
                 state_version: store.snapshot().version,
             })
         }
+        "index.stage_hunk" => {
+            let path = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "index.stage_hunk requires path in request.paths[0]".to_string(),
+                }
+            })?;
+            let hunk_index = request
+                .paths
+                .get(1)
+                .and_then(|value| value.parse::<usize>().ok())
+                .ok_or_else(|| JobExecutionError::InvalidInput {
+                    message: "index.stage_hunk requires hunk index in request.paths[1]".to_string(),
+                })?;
+            git_service::stage_hunk(cwd, path, hunk_index)?;
+            refresh_status(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "index.unstage_hunk" => {
+            let path = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "index.unstage_hunk requires path in request.paths[0]".to_string(),
+                }
+            })?;
+            let hunk_index = request
+                .paths
+                .get(1)
+                .and_then(|value| value.parse::<usize>().ok())
+                .ok_or_else(|| JobExecutionError::InvalidInput {
+                    message: "index.unstage_hunk requires hunk index in request.paths[1]"
+                        .to_string(),
+                })?;
+            git_service::unstage_hunk(cwd, path, hunk_index)?;
+            refresh_status(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
         "commit.create" => {
             let message = request.paths.first().map(String::as_str).ok_or_else(|| {
                 JobExecutionError::InvalidInput {
@@ -271,12 +314,22 @@ pub fn execute_job_op(
             })
         }
         "diff.worktree" => {
-            let diff = git_service::diff_worktree(cwd, &request.paths, 64 * 1024)?;
+            let diff = git_service::diff_worktree_with_hunks(cwd, &request.paths, 256 * 1024)?;
             store.update_diff(DiffState {
                 source: Some(DiffSource::Worktree {
                     paths: request.paths.clone(),
                 }),
-                content: Some(diff),
+                content: Some(diff.text),
+                hunks: diff
+                    .hunks
+                    .into_iter()
+                    .map(|hunk| state_store::DiffHunk {
+                        file_path: hunk.file_path,
+                        hunk_index: hunk.hunk_index,
+                        header: hunk.header,
+                        lines: hunk.lines,
+                    })
+                    .collect(),
                 loading: false,
                 error: None,
             });
@@ -298,6 +351,33 @@ pub fn execute_job_op(
                     oid: oid.to_string(),
                 }),
                 content: Some(diff),
+                hunks: Vec::new(),
+                loading: false,
+                error: None,
+            });
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "diff.index" => {
+            let diff = git_service::diff_index_with_hunks(cwd, &request.paths, 256 * 1024)?;
+            store.update_diff(DiffState {
+                source: Some(DiffSource::Index {
+                    paths: request.paths.clone(),
+                }),
+                content: Some(diff.text),
+                hunks: diff
+                    .hunks
+                    .into_iter()
+                    .map(|hunk| state_store::DiffHunk {
+                        file_path: hunk.file_path,
+                        hunk_index: hunk.hunk_index,
+                        header: hunk.header,
+                        lines: hunk.lines,
+                    })
+                    .collect(),
                 loading: false,
                 error: None,
             });
@@ -535,6 +615,8 @@ fn is_journaled_op(op: &str) -> bool {
         op,
         "index.stage_paths"
             | "index.unstage_paths"
+            | "index.stage_hunk"
+            | "index.unstage_hunk"
             | "commit.create"
             | "commit.amend"
             | "branch.checkout"
@@ -756,6 +838,42 @@ mod tests {
             .is_ok()
         );
         assert!(store.snapshot().status.untracked.iter().any(|p| p == &file));
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn execute_stage_hunk_updates_status() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let file = "hunk.txt".to_string();
+        assert!(std::fs::write(repo_dir.join(&file), "line1\nline2\nline3\nline4\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, std::slice::from_ref(&file)).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "base").is_ok());
+
+        assert!(
+            std::fs::write(repo_dir.join(&file), "line1-updated\nline2\nline3\nline4\n").is_ok()
+        );
+
+        let mut store = StateStore::new();
+        let result = execute_job_op(
+            &repo_dir,
+            &JobRequest {
+                op: "index.stage_hunk".to_string(),
+                lock: JobLock::IndexWrite,
+                paths: vec![file.clone(), "0".to_string()],
+                job_id: None,
+            },
+            &mut store,
+        );
+        assert!(result.is_ok());
+        assert!(store.snapshot().status.staged.iter().any(|p| p == &file));
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }

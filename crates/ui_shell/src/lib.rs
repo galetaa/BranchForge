@@ -55,10 +55,34 @@ pub fn render_diff_panel(store: &StateStore) -> String {
     if let Some(err) = &diff.error {
         return format!("Diff error: {err}");
     }
-    diff.content
+    let mut out = diff
+        .content
         .as_ref()
         .map(|content| format!("Diff:\n{content}"))
-        .unwrap_or_else(|| "Diff: <empty>".to_string())
+        .unwrap_or_else(|| "Diff: <empty>".to_string());
+
+    if !diff.hunks.is_empty() {
+        out.push_str("\nHunks:\n");
+        for hunk in &diff.hunks {
+            out.push_str(&format!(
+                "  {}[{}] {}\n",
+                hunk.file_path, hunk.hunk_index, hunk.header
+            ));
+            let action = match diff.source {
+                Some(state_store::DiffSource::Worktree { .. }) => Some("index.stage_hunk"),
+                Some(state_store::DiffSource::Index { .. }) => Some("index.unstage_hunk"),
+                _ => None,
+            };
+            if let Some(action_id) = action {
+                out.push_str(&format!(
+                    "  [Hunk Action] enabled -> {} {} {}\n",
+                    action_id, hunk.file_path, hunk.hunk_index
+                ));
+            }
+        }
+    }
+
+    out
 }
 
 pub fn render_empty_state() -> String {

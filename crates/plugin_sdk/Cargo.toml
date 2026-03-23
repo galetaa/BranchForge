@@ -1,0 +1,10 @@
+[package]
+name = "plugin_sdk"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+plugin_api = { path = "../plugin_api" }

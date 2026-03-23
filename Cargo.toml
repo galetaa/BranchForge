@@ -8,6 +8,7 @@ members = [
   "crates/job_system",
   "crates/git_service",
   "crates/ui_shell",
+  "crates/plugin_sdk",
   "plugins/repo_manager",
   "plugins/status",
   "plugins/history",
