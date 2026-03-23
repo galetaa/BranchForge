@@ -14,6 +14,49 @@ pub struct StatusSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SelectionState {
     pub selected_paths: Vec<String>,
+    pub selected_commit_oid: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitSummary {
+    pub oid: String,
+    pub author: String,
+    pub time: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitDetails {
+    pub oid: String,
+    pub author: String,
+    pub time: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryCursor {
+    pub offset: usize,
+    pub page_size: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HistoryState {
+    pub commits: Vec<CommitSummary>,
+    pub next_cursor: Option<HistoryCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffSource {
+    Worktree { paths: Vec<String> },
+    Commit { oid: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DiffState {
+    pub source: Option<DiffSource>,
+    pub content: Option<String>,
+    pub loading: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +76,10 @@ pub struct StoreSnapshot {
     pub repo: Option<RepoSnapshot>,
     pub status: StatusSnapshot,
     pub selection: SelectionState,
+    pub history: HistoryState,
+    pub commit_cache: HashMap<String, CommitDetails>,
+    pub diff: DiffState,
+    pub active_view: Option<String>,
     pub plugins: Vec<PluginStatus>,
     pub version: StoreVersion,
 }
@@ -76,6 +123,60 @@ impl StateStore {
 
     pub fn update_selection(&mut self, selection: SelectionState) {
         self.snapshot.selection = selection;
+        self.bump_version();
+    }
+
+    pub fn update_selected_paths(&mut self, paths: Vec<String>) {
+        self.snapshot.selection.selected_paths = paths;
+        self.snapshot.selection.selected_commit_oid = None;
+        self.bump_version();
+    }
+
+    pub fn update_selected_commit(&mut self, oid: Option<String>) {
+        self.snapshot.selection.selected_commit_oid = oid;
+        self.snapshot.selection.selected_paths.clear();
+        self.bump_version();
+    }
+
+    pub fn update_history_page(
+        &mut self,
+        commits: Vec<CommitSummary>,
+        next_cursor: Option<HistoryCursor>,
+        append: bool,
+    ) {
+        if append {
+            self.snapshot.history.commits.extend(commits);
+        } else {
+            self.snapshot.history.commits = commits;
+        }
+        self.snapshot.history.next_cursor = next_cursor;
+        self.bump_version();
+    }
+
+    pub fn clear_history(&mut self) {
+        self.snapshot.history = HistoryState::default();
+        self.snapshot.commit_cache.clear();
+        self.bump_version();
+    }
+
+    pub fn update_commit_details(&mut self, details: CommitDetails) {
+        self.snapshot
+            .commit_cache
+            .insert(details.oid.clone(), details);
+        self.bump_version();
+    }
+
+    pub fn commit_details(&self, oid: &str) -> Option<&CommitDetails> {
+        self.snapshot.commit_cache.get(oid)
+    }
+
+    pub fn update_diff(&mut self, diff: DiffState) {
+        self.snapshot.diff = diff;
+        self.bump_version();
+    }
+
+    pub fn set_active_view(&mut self, view: Option<String>) {
+        self.snapshot.active_view = view;
         self.bump_version();
     }
 
@@ -164,6 +265,7 @@ mod tests {
         });
         store.update_selection(SelectionState {
             selected_paths: vec!["README.md".to_string()],
+            selected_commit_oid: None,
         });
 
         assert_eq!(store.snapshot().status.staged.len(), 1);
@@ -212,6 +314,49 @@ mod tests {
             PluginHealth::Unavailable { ref message } if message == "crashed"
         ));
         assert_eq!(store.snapshot().version, 2);
+    }
+
+    #[test]
+    fn updates_commit_selection_clears_paths() {
+        let mut store = StateStore::new();
+        store.update_selected_paths(vec!["README.md".to_string()]);
+        assert_eq!(store.snapshot().selection.selected_paths.len(), 1);
+        store.update_selected_commit(Some("abc123".to_string()));
+        assert!(store.snapshot().selection.selected_paths.is_empty());
+        assert_eq!(
+            store.snapshot().selection.selected_commit_oid.as_deref(),
+            Some("abc123")
+        );
+    }
+
+    #[test]
+    fn history_page_appends_and_tracks_cursor() {
+        let mut store = StateStore::new();
+        store.update_history_page(
+            vec![CommitSummary {
+                oid: "a".to_string(),
+                author: "Dev".to_string(),
+                time: "now".to_string(),
+                summary: "first".to_string(),
+            }],
+            Some(HistoryCursor {
+                offset: 1,
+                page_size: 1,
+            }),
+            false,
+        );
+        store.update_history_page(
+            vec![CommitSummary {
+                oid: "b".to_string(),
+                author: "Dev".to_string(),
+                time: "now".to_string(),
+                summary: "second".to_string(),
+            }],
+            None,
+            true,
+        );
+        assert_eq!(store.snapshot().history.commits.len(), 2);
+        assert!(store.snapshot().history.next_cursor.is_none());
     }
 
     #[test]

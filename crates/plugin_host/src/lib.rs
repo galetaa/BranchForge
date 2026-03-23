@@ -622,6 +622,31 @@ pub fn status_registration_payload() -> PluginRegister {
     }
 }
 
+pub fn history_registration_payload() -> PluginRegister {
+    PluginRegister {
+        actions: vec![
+            ActionSpec {
+                action_id: "history.load_more".to_string(),
+                title: "Load More History".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+            },
+            ActionSpec {
+                action_id: "history.select_commit".to_string(),
+                title: "Select Commit".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+            },
+        ],
+        views: vec![plugin_api::ViewSpec {
+            view_id: "history.panel".to_string(),
+            title: "History".to_string(),
+            slot: "left".to_string(),
+            when: Some("repo.is_open".to_string()),
+        }],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1028,5 +1053,23 @@ mod tests {
                 .any(|a| a.action_id == "commit.create")
         );
         assert!(payload.views.iter().any(|v| v.view_id == "status.panel"));
+    }
+
+    #[test]
+    fn history_registration_payload_contains_view_and_actions() {
+        let payload = history_registration_payload();
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "history.load_more")
+        );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "history.select_commit")
+        );
+        assert!(payload.views.iter().any(|v| v.view_id == "history.panel"));
     }
 }

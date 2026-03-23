@@ -3,7 +3,9 @@ use std::path::Path;
 
 use git_service::{GitCommand, GitServiceError, RepoOpenResult, StatusSummary};
 use plugin_api::RepoSnapshot;
-use state_store::{SelectionState, StateStore, StatusSnapshot};
+use state_store::{
+    CommitDetails, DiffSource, DiffState, HistoryCursor, SelectionState, StateStore, StatusSnapshot,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum JobLock {
@@ -191,6 +193,90 @@ pub fn execute_job_op(
                 state_version: store.snapshot().version,
             })
         }
+        "history.page" => {
+            let (offset, limit) = parse_history_request(request)?;
+            let commits = git_service::commit_log_page(cwd, offset, limit)?;
+            let commit_len = commits.len();
+            let history_commits = commits
+                .into_iter()
+                .map(|commit| state_store::CommitSummary {
+                    oid: commit.oid,
+                    author: commit.author,
+                    time: commit.time,
+                    summary: commit.summary,
+                })
+                .collect();
+            let next_cursor = if commit_len == limit {
+                Some(HistoryCursor {
+                    offset: offset + commit_len,
+                    page_size: limit,
+                })
+            } else {
+                None
+            };
+            store.update_history_page(history_commits, next_cursor, offset > 0);
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "history.details" => {
+            let oid = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "history.details requires commit oid in request.paths[0]".to_string(),
+                }
+            })?;
+            let details = git_service::commit_details(cwd, oid)?;
+            store.update_commit_details(CommitDetails {
+                oid: details.oid,
+                author: details.author,
+                time: details.time,
+                message: details.message,
+            });
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "diff.worktree" => {
+            let diff = git_service::diff_worktree(cwd, &request.paths, 64 * 1024)?;
+            store.update_diff(DiffState {
+                source: Some(DiffSource::Worktree {
+                    paths: request.paths.clone(),
+                }),
+                content: Some(diff),
+                loading: false,
+                error: None,
+            });
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "diff.commit" => {
+            let oid = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "diff.commit requires commit oid in request.paths[0]".to_string(),
+                }
+            })?;
+            let diff = git_service::diff_commit(cwd, oid, 64 * 1024)?;
+            store.update_diff(DiffState {
+                source: Some(DiffSource::Commit {
+                    oid: oid.to_string(),
+                }),
+                content: Some(diff),
+                loading: false,
+                error: None,
+            });
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
         _ => Err(JobExecutionError::UnsupportedOp {
             op: request.op.clone(),
         }),
@@ -204,6 +290,9 @@ fn apply_repo_open(store: &mut StateStore, repo: &RepoOpenResult, status: &Statu
     });
     apply_status(store, status);
     store.update_selection(SelectionState::default());
+    store.clear_history();
+    store.update_diff(DiffState::default());
+    store.set_active_view(Some("status.panel".to_string()));
 }
 
 fn apply_status(store: &mut StateStore, status: &StatusSummary) {
@@ -225,6 +314,20 @@ fn refresh_repo_and_status(cwd: &Path, store: &mut StateStore) -> Result<(), Job
     let status = git_service::status_refresh(cwd)?;
     apply_repo_open(store, &repo, &status);
     Ok(())
+}
+
+fn parse_history_request(request: &JobRequest) -> Result<(usize, usize), JobExecutionError> {
+    let offset = request
+        .paths
+        .first()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    let limit = request
+        .paths
+        .get(1)
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(20);
+    Ok((offset, limit))
 }
 
 #[cfg(test)]
@@ -337,6 +440,7 @@ mod tests {
         let mut store = StateStore::new();
         store.update_selection(SelectionState {
             selected_paths: vec!["README.md".to_string()],
+            selected_commit_oid: None,
         });
         assert_eq!(store.snapshot().selection.selected_paths.len(), 1);
 
@@ -542,6 +646,100 @@ mod tests {
         assert_eq!(store.snapshot().status.staged, status.staged);
         assert_eq!(store.snapshot().status.unstaged, status.unstaged);
         assert_eq!(store.snapshot().status.untracked, status.untracked);
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn history_page_appends_commits() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        assert!(std::fs::write(repo_dir.join("one.txt"), "one\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["one.txt".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "commit one").is_ok());
+
+        assert!(std::fs::write(repo_dir.join("two.txt"), "two\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["two.txt".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "commit two").is_ok());
+
+        let mut store = StateStore::new();
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "history.page".to_string(),
+                    lock: JobLock::Read,
+                    paths: vec!["0".to_string(), "1".to_string()],
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert_eq!(store.snapshot().history.commits.len(), 1);
+
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "history.page".to_string(),
+                    lock: JobLock::Read,
+                    paths: vec!["1".to_string(), "1".to_string()],
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert_eq!(store.snapshot().history.commits.len(), 2);
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn diff_commit_updates_store() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let file = "diff.txt".to_string();
+        assert!(std::fs::write(repo_dir.join(&file), "data\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, std::slice::from_ref(&file)).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "commit diff").is_ok());
+
+        let commits = git_service::commit_log_page(&repo_dir, 0, 1).expect("page");
+        let oid = commits[0].oid.clone();
+
+        let mut store = StateStore::new();
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "diff.commit".to_string(),
+                    lock: JobLock::Read,
+                    paths: vec![oid.clone()],
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert!(
+            store
+                .snapshot()
+                .diff
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .contains("commit")
+        );
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }

@@ -1,11 +1,11 @@
 # Branchforge
 
-Current state: Sprint 07 (Stabilization and Hardening) in progress on top of MVP foundations.
+Current state: Sprint 08 (History and Diff) in progress on top of MVP foundations.
 
 ## Quick start
 
 ```bash
-./scripts/verify-sprint-07.sh
+./scripts/verify-sprint-08.sh
 ./scripts/check-deps.sh
 cargo check --workspace
 cargo test --workspace

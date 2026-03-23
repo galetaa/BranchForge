@@ -4,12 +4,14 @@ use crate::palette::PaletteItem;
 pub struct WindowLayout {
     pub left_slot: String,
     pub service_area: String,
+    pub diff_area: Option<String>,
     pub active_view: Option<String>,
 }
 
 pub fn build_layout(
     status_panel: &str,
     palette: &[PaletteItem],
+    diff_area: Option<String>,
     active_view: Option<String>,
 ) -> WindowLayout {
     let palette_line = if palette.is_empty() {
@@ -32,6 +34,7 @@ pub fn build_layout(
     WindowLayout {
         left_slot: status_panel.to_string(),
         service_area: palette_line,
+        diff_area,
         active_view,
     }
 }
@@ -41,9 +44,13 @@ pub fn render_layout(layout: &WindowLayout) -> String {
         .active_view
         .as_ref()
         .map_or_else(|| "<none>".to_string(), Clone::clone);
+    let diff = layout
+        .diff_area
+        .as_ref()
+        .map_or_else(|| "".to_string(), |text| format!("[diff]\n{text}\n"));
 
     format!(
-        "[window]\nactive_view: {active}\n[left-slot]\n{}\n[service]\n{}\n",
+        "[window]\nactive_view: {active}\n[left-slot]\n{}\n[service]\n{}\n{diff}",
         layout.left_slot, layout.service_area
     )
 }
@@ -61,6 +68,7 @@ mod tests {
                 title: "Open Repository".to_string(),
                 enabled: true,
             }],
+            None,
             Some("status.panel".to_string()),
         );
 

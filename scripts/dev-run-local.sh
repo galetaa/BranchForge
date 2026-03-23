@@ -4,6 +4,6 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 
 cd "$repo_root"
-cargo build -p app_host -p repo_manager -p status
+cargo build -p app_host -p repo_manager -p status -p history
 
 exec "$repo_root/target/debug/app_host"
