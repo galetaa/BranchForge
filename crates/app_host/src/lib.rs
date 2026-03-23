@@ -117,6 +117,7 @@ pub fn run_state_notification_smoke() -> Vec<String> {
     store.update_repo(plugin_api::RepoSnapshot {
         root: ".".to_string(),
         head: Some("main".to_string()),
+        conflict_state: None,
     });
     store.update_status(StatusSnapshot {
         staged: vec!["src/lib.rs".to_string()],
@@ -169,6 +170,7 @@ pub fn run_window_after_open_smoke() -> String {
     store.update_repo(plugin_api::RepoSnapshot {
         root: "/tmp/demo".to_string(),
         head: Some("main".to_string()),
+        conflict_state: None,
     });
     store.update_status(StatusSnapshot {
         staged: vec!["src/lib.rs".to_string()],

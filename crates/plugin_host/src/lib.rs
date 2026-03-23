@@ -720,6 +720,13 @@ pub fn branches_registration_payload() -> PluginRegister {
                 danger: Some(DangerLevel::High),
             },
             ActionSpec {
+                action_id: "compare.refs".to_string(),
+                title: "Compare Branches".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+                danger: None,
+            },
+            ActionSpec {
                 action_id: "tag.checkout".to_string(),
                 title: "Checkout Tag".to_string(),
                 when: Some("repo.is_open".to_string()),
@@ -1213,6 +1220,12 @@ mod tests {
                 .actions
                 .iter()
                 .any(|a| a.action_id == "branch.delete")
+        );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "compare.refs")
         );
         assert!(
             payload

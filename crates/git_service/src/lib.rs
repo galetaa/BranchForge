@@ -33,6 +33,7 @@ pub struct RepoOpenResult {
     pub root: String,
     pub head: Option<String>,
     pub detached: bool,
+    pub conflict_state: Option<ConflictState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +42,13 @@ pub struct CommitSummary {
     pub author: String,
     pub time: String,
     pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConflictState {
+    Merge,
+    Rebase,
+    CherryPick,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,12 +176,45 @@ pub fn repo_open(cwd: &Path) -> Result<RepoOpenResult, GitServiceError> {
 
     let detached = head_raw.is_empty();
     let head = if detached { None } else { Some(head_raw) };
+    let conflict_state = detect_conflict_state(cwd)?;
 
     Ok(RepoOpenResult {
         root,
         head,
         detached,
+        conflict_state,
     })
+}
+
+pub fn detect_conflict_state(cwd: &Path) -> Result<Option<ConflictState>, GitServiceError> {
+    let rebase_apply = git_path(cwd, "rebase-apply")?;
+    if rebase_apply.exists() {
+        return Ok(Some(ConflictState::Rebase));
+    }
+    let rebase_merge = git_path(cwd, "rebase-merge")?;
+    if rebase_merge.exists() {
+        return Ok(Some(ConflictState::Rebase));
+    }
+    let merge_head = git_path(cwd, "MERGE_HEAD")?;
+    if merge_head.exists() {
+        return Ok(Some(ConflictState::Merge));
+    }
+    let cherry_pick = git_path(cwd, "CHERRY_PICK_HEAD")?;
+    if cherry_pick.exists() {
+        return Ok(Some(ConflictState::CherryPick));
+    }
+    Ok(None)
+}
+
+fn git_path(cwd: &Path, sub_path: &str) -> Result<std::path::PathBuf, GitServiceError> {
+    let out = run_git(cwd, &["rev-parse", "--git-path", sub_path])?;
+    let raw = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+    let candidate = std::path::PathBuf::from(raw.trim());
+    if candidate.is_absolute() {
+        Ok(candidate)
+    } else {
+        Ok(cwd.join(candidate))
+    }
 }
 
 pub fn status_refresh(cwd: &Path) -> Result<StatusSummary, GitServiceError> {
@@ -371,6 +412,21 @@ pub fn diff_commit(cwd: &Path, oid: &str, max_bytes: usize) -> Result<String, Gi
     Ok(text)
 }
 
+pub fn diff_compare_with_hunks(
+    cwd: &Path,
+    base_ref: &str,
+    head_ref: &str,
+    max_bytes: usize,
+) -> Result<DiffOutput, GitServiceError> {
+    let text = diff_between_refs_raw(cwd, base_ref, head_ref)?;
+    let hunks = parse_unified_diff_hunks(&text);
+    let truncated = truncate_diff(text, max_bytes);
+    Ok(DiffOutput {
+        text: truncated,
+        hunks,
+    })
+}
+
 pub fn stage_hunk(cwd: &Path, path: &str, hunk_index: usize) -> Result<(), GitServiceError> {
     let hunks =
         diff_worktree_raw(cwd, &[path.to_string()]).map(|text| parse_unified_diff_hunks(&text))?;
@@ -432,6 +488,18 @@ fn diff_index_raw(cwd: &Path, paths: &[String]) -> Result<String, GitServiceErro
     }
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let out = run_git(cwd, &refs)?;
+    String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)
+}
+
+fn diff_between_refs_raw(
+    cwd: &Path,
+    base_ref: &str,
+    head_ref: &str,
+) -> Result<String, GitServiceError> {
+    let out = run_git(
+        cwd,
+        &["diff", "--patch", &format!("{base_ref}..{head_ref}")],
+    )?;
     String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)
 }
 

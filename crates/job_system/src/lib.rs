@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 
 use git_service::{GitCommand, GitServiceError, RepoOpenResult, StatusSummary};
-use plugin_api::RepoSnapshot;
+use plugin_api::{ConflictState, RepoSnapshot};
 use state_store::{
     BranchInfo, CommitDetails, DiffSource, DiffState, HistoryCursor, JournalStatus, SelectionState,
     StateStore, StatusSnapshot,
@@ -228,6 +228,7 @@ pub fn execute_job_op(
             })
         }
         "commit.create" => {
+            ensure_no_conflicts(cwd, "commit.create")?;
             let message = request.paths.first().map(String::as_str).ok_or_else(|| {
                 JobExecutionError::InvalidInput {
                     message: "commit.create requires message in request.paths[0]".to_string(),
@@ -387,7 +388,46 @@ pub fn execute_job_op(
                 state_version: store.snapshot().version,
             })
         }
+        "compare.refs" => {
+            let base_ref = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "compare.refs requires base ref in request.paths[0]".to_string(),
+                }
+            })?;
+            let head_ref = request.paths.get(1).map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "compare.refs requires head ref in request.paths[1]".to_string(),
+                }
+            })?;
+            let diff = git_service::diff_compare_with_hunks(cwd, base_ref, head_ref, 256 * 1024)?;
+            store.update_compare(base_ref.to_string(), head_ref.to_string());
+            store.update_diff(DiffState {
+                source: Some(DiffSource::Compare {
+                    base: base_ref.to_string(),
+                    head: head_ref.to_string(),
+                }),
+                content: Some(diff.text),
+                hunks: diff
+                    .hunks
+                    .into_iter()
+                    .map(|hunk| state_store::DiffHunk {
+                        file_path: hunk.file_path,
+                        hunk_index: hunk.hunk_index,
+                        header: hunk.header,
+                        lines: hunk.lines,
+                    })
+                    .collect(),
+                loading: false,
+                error: None,
+            });
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
         "branch.checkout" => {
+            ensure_no_conflicts(cwd, "branch.checkout")?;
             let name = request.paths.first().map(String::as_str).ok_or_else(|| {
                 JobExecutionError::InvalidInput {
                     message: "branch.checkout requires name in request.paths[0]".to_string(),
@@ -409,6 +449,7 @@ pub fn execute_job_op(
             })
         }
         "branch.create" => {
+            ensure_no_conflicts(cwd, "branch.create")?;
             let name = request.paths.first().map(String::as_str).ok_or_else(|| {
                 JobExecutionError::InvalidInput {
                     message: "branch.create requires name in request.paths[0]".to_string(),
@@ -423,6 +464,7 @@ pub fn execute_job_op(
             })
         }
         "branch.rename" => {
+            ensure_no_conflicts(cwd, "branch.rename")?;
             let old = request.paths.first().map(String::as_str).ok_or_else(|| {
                 JobExecutionError::InvalidInput {
                     message: "branch.rename requires old name in request.paths[0]".to_string(),
@@ -442,6 +484,7 @@ pub fn execute_job_op(
             })
         }
         "branch.delete" => {
+            ensure_no_conflicts(cwd, "branch.delete")?;
             let name = request.paths.first().map(String::as_str).ok_or_else(|| {
                 JobExecutionError::InvalidInput {
                     message: "branch.delete requires name in request.paths[0]".to_string(),
@@ -465,6 +508,7 @@ pub fn execute_job_op(
             })
         }
         "tag.create" => {
+            ensure_no_conflicts(cwd, "tag.create")?;
             let name = request.paths.first().map(String::as_str).ok_or_else(|| {
                 JobExecutionError::InvalidInput {
                     message: "tag.create requires name in request.paths[0]".to_string(),
@@ -479,6 +523,7 @@ pub fn execute_job_op(
             })
         }
         "tag.checkout" => {
+            ensure_no_conflicts(cwd, "tag.checkout")?;
             let name = request.paths.first().map(String::as_str).ok_or_else(|| {
                 JobExecutionError::InvalidInput {
                     message: "tag.checkout requires name in request.paths[0]".to_string(),
@@ -500,6 +545,7 @@ pub fn execute_job_op(
             })
         }
         "commit.amend" => {
+            ensure_no_conflicts(cwd, "commit.amend")?;
             let message = request.paths.first().map(String::as_str);
             git_service::commit_amend(cwd, message)?;
             refresh_repo_and_status(cwd, store)?;
@@ -522,12 +568,44 @@ fn apply_repo_open(store: &mut StateStore, repo: &RepoOpenResult, status: &Statu
     store.update_repo(RepoSnapshot {
         root: repo.root.clone(),
         head: repo.head.clone(),
+        conflict_state: map_conflict_state(repo.conflict_state.as_ref()),
     });
     apply_status(store, status);
     store.update_selection(SelectionState::default());
     store.clear_history();
+    store.clear_compare();
     store.update_diff(DiffState::default());
     store.set_active_view(Some("status.panel".to_string()));
+}
+
+fn map_conflict_state(state: Option<&git_service::ConflictState>) -> Option<ConflictState> {
+    match state {
+        Some(git_service::ConflictState::Merge) => Some(ConflictState::Merge),
+        Some(git_service::ConflictState::Rebase) => Some(ConflictState::Rebase),
+        Some(git_service::ConflictState::CherryPick) => Some(ConflictState::CherryPick),
+        None => None,
+    }
+}
+
+fn ensure_no_conflicts(cwd: &Path, op: &str) -> Result<(), JobExecutionError> {
+    let conflict = git_service::detect_conflict_state(cwd)?;
+    if let Some(state) = conflict {
+        return Err(JobExecutionError::InvalidInput {
+            message: format!(
+                "{op} blocked while repository is in {} state.",
+                conflict_state_label(&state)
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn conflict_state_label(state: &git_service::ConflictState) -> &'static str {
+    match state {
+        git_service::ConflictState::Merge => "merge",
+        git_service::ConflictState::Rebase => "rebase",
+        git_service::ConflictState::CherryPick => "cherry-pick",
+    }
 }
 
 fn apply_status(store: &mut StateStore, status: &StatusSummary) {

@@ -53,6 +53,7 @@ pub enum DiffSource {
     Worktree { paths: Vec<String> },
     Index { paths: Vec<String> },
     Commit { oid: String },
+    Compare { base: String, head: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -62,6 +63,12 @@ pub struct DiffState {
     pub hunks: Vec<DiffHunk>,
     pub loading: bool,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CompareState {
+    pub base_ref: Option<String>,
+    pub head_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +150,7 @@ pub struct StoreSnapshot {
     pub history: HistoryState,
     pub commit_cache: HashMap<String, CommitDetails>,
     pub diff: DiffState,
+    pub compare: CompareState,
     pub branches: BranchesState,
     pub tags: TagsState,
     pub commit_message: CommitMessageState,
@@ -315,6 +323,19 @@ impl StateStore {
         self.bump_version();
     }
 
+    pub fn update_compare(&mut self, base_ref: String, head_ref: String) {
+        self.snapshot.compare = CompareState {
+            base_ref: Some(base_ref),
+            head_ref: Some(head_ref),
+        };
+        self.bump_version();
+    }
+
+    pub fn clear_compare(&mut self) {
+        self.snapshot.compare = CompareState::default();
+        self.bump_version();
+    }
+
     pub fn update_branches(&mut self, branches: Vec<BranchInfo>) {
         self.snapshot.branches.branches = branches;
         self.bump_version();
@@ -395,6 +416,7 @@ mod tests {
         store.update_repo(RepoSnapshot {
             root: "./demo".to_string(),
             head: Some("main".to_string()),
+            conflict_state: None,
         });
 
         let head = store.repo().and_then(|repo| repo.head.as_deref());
@@ -565,6 +587,19 @@ mod tests {
     }
 
     #[test]
+    fn compare_state_tracks_refs() {
+        let mut store = StateStore::new();
+        store.update_compare("main".to_string(), "feature".to_string());
+        assert_eq!(store.snapshot().compare.base_ref.as_deref(), Some("main"));
+        assert_eq!(
+            store.snapshot().compare.head_ref.as_deref(),
+            Some("feature")
+        );
+        store.clear_compare();
+        assert!(store.snapshot().compare.base_ref.is_none());
+    }
+
+    #[test]
     fn multiple_subscribers_receive_events_in_order() {
         let mut store = StateStore::new();
         let first = store.subscribe();
@@ -573,6 +608,7 @@ mod tests {
         store.update_repo(RepoSnapshot {
             root: "./demo".to_string(),
             head: Some("main".to_string()),
+            conflict_state: None,
         });
         store.update_status(StatusSnapshot {
             staged: Vec::new(),
