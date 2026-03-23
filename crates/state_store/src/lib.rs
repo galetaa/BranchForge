@@ -44,6 +44,8 @@ pub struct HistoryCursor {
 pub struct HistoryState {
     pub commits: Vec<CommitSummary>,
     pub next_cursor: Option<HistoryCursor>,
+    pub filter_author: Option<String>,
+    pub filter_text: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +75,22 @@ pub struct BranchesState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagInfo {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TagsState {
+    pub tags: Vec<TagInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CommitMessageState {
+    pub draft: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginHealth {
     Ready,
     Unavailable { message: String },
@@ -93,6 +111,8 @@ pub struct StoreSnapshot {
     pub commit_cache: HashMap<String, CommitDetails>,
     pub diff: DiffState,
     pub branches: BranchesState,
+    pub tags: TagsState,
+    pub commit_message: CommitMessageState,
     pub active_view: Option<String>,
     pub plugins: Vec<PluginStatus>,
     pub version: StoreVersion,
@@ -166,6 +186,8 @@ impl StateStore {
         commits: Vec<CommitSummary>,
         next_cursor: Option<HistoryCursor>,
         append: bool,
+        filter_author: Option<String>,
+        filter_text: Option<String>,
     ) {
         if append {
             self.snapshot.history.commits.extend(commits);
@@ -173,6 +195,8 @@ impl StateStore {
             self.snapshot.history.commits = commits;
         }
         self.snapshot.history.next_cursor = next_cursor;
+        self.snapshot.history.filter_author = filter_author;
+        self.snapshot.history.filter_text = filter_text;
         self.bump_version();
     }
 
@@ -200,6 +224,17 @@ impl StateStore {
 
     pub fn update_branches(&mut self, branches: Vec<BranchInfo>) {
         self.snapshot.branches.branches = branches;
+        self.bump_version();
+    }
+
+    pub fn update_tags(&mut self, tags: Vec<TagInfo>) {
+        self.snapshot.tags.tags = tags;
+        self.bump_version();
+    }
+
+    pub fn update_commit_message(&mut self, draft: String, error: Option<String>) {
+        self.snapshot.commit_message.draft = draft;
+        self.snapshot.commit_message.error = error;
         self.bump_version();
     }
 
@@ -371,6 +406,21 @@ mod tests {
     }
 
     #[test]
+    fn commit_message_update_tracks_error() {
+        let mut store = StateStore::new();
+        store.update_commit_message("feat: msg".to_string(), None);
+        assert_eq!(store.snapshot().commit_message.draft, "feat: msg");
+        assert!(store.snapshot().commit_message.error.is_none());
+
+        store.update_commit_message("".to_string(), Some("empty".to_string()));
+        assert_eq!(store.snapshot().commit_message.draft, "");
+        assert_eq!(
+            store.snapshot().commit_message.error.as_deref(),
+            Some("empty")
+        );
+    }
+
+    #[test]
     fn history_page_appends_and_tracks_cursor() {
         let mut store = StateStore::new();
         store.update_history_page(
@@ -385,6 +435,8 @@ mod tests {
                 page_size: 1,
             }),
             false,
+            None,
+            None,
         );
         store.update_history_page(
             vec![CommitSummary {
@@ -395,6 +447,8 @@ mod tests {
             }],
             None,
             true,
+            None,
+            None,
         );
         assert_eq!(store.snapshot().history.commits.len(), 2);
         assert!(store.snapshot().history.next_cursor.is_none());

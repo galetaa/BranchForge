@@ -35,6 +35,18 @@ fn build_register_request() -> RpcRequest {
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
             },
+            ActionSpec {
+                action_id: "tag.checkout".to_string(),
+                title: "Checkout Tag".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+            },
+            ActionSpec {
+                action_id: "tag.create".to_string(),
+                title: "Create Tag".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+            },
         ],
         views: vec![ViewSpec {
             view_id: "branches.panel".to_string(),

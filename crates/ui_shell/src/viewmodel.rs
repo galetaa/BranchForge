@@ -26,6 +26,9 @@ pub enum ViewNode {
     BranchList {
         title: String,
     },
+    TagList {
+        title: String,
+    },
     Button {
         label: String,
         on_action: String,
@@ -34,30 +37,50 @@ pub enum ViewNode {
 }
 
 pub fn build_status_panel(snapshot: &StoreSnapshot) -> ViewNode {
-    ViewNode::Container {
-        children: vec![
-            ViewNode::Text {
-                value: "Status Panel".to_string(),
-            },
-            ViewNode::List {
-                title: "staged".to_string(),
-                items_ref: ItemsRef::Staged,
-            },
-            ViewNode::List {
-                title: "unstaged".to_string(),
-                items_ref: ItemsRef::Unstaged,
-            },
-            ViewNode::List {
-                title: "untracked".to_string(),
-                items_ref: ItemsRef::Untracked,
-            },
-            ViewNode::Button {
-                label: "Commit".to_string(),
-                on_action: "commit.create".to_string(),
-                enabled_when: !snapshot.status.staged.is_empty(),
-            },
-        ],
+    let commit_line = if snapshot.commit_message.draft.is_empty() {
+        "Commit message: <empty>".to_string()
+    } else {
+        format!("Commit message: {}", snapshot.commit_message.draft)
+    };
+    let commit_error = snapshot
+        .commit_message
+        .error
+        .as_ref()
+        .map(|err| format!("Commit error: {err}"));
+
+    let mut children = vec![
+        ViewNode::Text {
+            value: "Status Panel".to_string(),
+        },
+        ViewNode::List {
+            title: "staged".to_string(),
+            items_ref: ItemsRef::Staged,
+        },
+        ViewNode::List {
+            title: "unstaged".to_string(),
+            items_ref: ItemsRef::Unstaged,
+        },
+        ViewNode::List {
+            title: "untracked".to_string(),
+            items_ref: ItemsRef::Untracked,
+        },
+        ViewNode::Text { value: commit_line },
+    ];
+    if let Some(error) = commit_error {
+        children.push(ViewNode::Text { value: error });
     }
+    children.push(ViewNode::Button {
+        label: "Commit".to_string(),
+        on_action: "commit.create".to_string(),
+        enabled_when: !snapshot.status.staged.is_empty(),
+    });
+    children.push(ViewNode::Button {
+        label: "Amend".to_string(),
+        on_action: "commit.amend".to_string(),
+        enabled_when: snapshot.repo.is_some(),
+    });
+
+    ViewNode::Container { children }
 }
 
 pub fn build_history_panel(snapshot: &StoreSnapshot) -> ViewNode {
@@ -68,9 +91,16 @@ pub fn build_history_panel(snapshot: &StoreSnapshot) -> ViewNode {
         "History Panel (empty)".to_string()
     };
 
+    let filter_line = format!(
+        "Filters: author={}, text={}",
+        snapshot.history.filter_author.as_deref().unwrap_or("<any>"),
+        snapshot.history.filter_text.as_deref().unwrap_or("<any>")
+    );
+
     ViewNode::Container {
         children: vec![
             ViewNode::Text { value: header },
+            ViewNode::Text { value: filter_line },
             ViewNode::HistoryList {
                 title: "commits".to_string(),
             },
@@ -92,6 +122,9 @@ pub fn build_branches_panel(snapshot: &StoreSnapshot) -> ViewNode {
             ViewNode::Text { value: header },
             ViewNode::BranchList {
                 title: "branches".to_string(),
+            },
+            ViewNode::TagList {
+                title: "tags".to_string(),
             },
         ],
     }
@@ -160,6 +193,16 @@ fn render_into(node: &ViewNode, snapshot: &StoreSnapshot, level: usize, out: &mu
                 .join(", ");
             out.push_str(&format!("{indent}{title}: {list}\n"));
         }
+        ViewNode::TagList { title } => {
+            let list = snapshot
+                .tags
+                .tags
+                .iter()
+                .map(|tag| tag.name.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!("{indent}{title}: {list}\n"));
+        }
         ViewNode::Button {
             label,
             on_action,
@@ -190,6 +233,8 @@ mod tests {
             commit_cache: std::collections::HashMap::new(),
             diff: state_store::DiffState::default(),
             branches: state_store::BranchesState::default(),
+            tags: state_store::TagsState::default(),
+            commit_message: state_store::CommitMessageState::default(),
             active_view: None,
             plugins: Vec::new(),
             version: 1,

@@ -180,19 +180,36 @@ pub fn commit_log_page(
     offset: usize,
     limit: usize,
 ) -> Result<Vec<CommitSummary>, GitServiceError> {
+    commit_log_page_filtered(cwd, offset, limit, None, None)
+}
+
+pub fn commit_log_page_filtered(
+    cwd: &Path,
+    offset: usize,
+    limit: usize,
+    author: Option<&str>,
+    text: Option<&str>,
+) -> Result<Vec<CommitSummary>, GitServiceError> {
     let format = "--format=%H%x1f%an%x1f%ad%x1f%s";
     let max_count = limit.to_string();
     let skip = offset.to_string();
-    let args = [
-        "log",
-        "--date=iso-strict",
-        format,
-        "--max-count",
-        max_count.as_str(),
-        "--skip",
-        skip.as_str(),
+    let mut args = vec![
+        "log".to_string(),
+        "--date=iso-strict".to_string(),
+        format.to_string(),
+        "--max-count".to_string(),
+        max_count,
+        "--skip".to_string(),
+        skip,
     ];
-    let out = run_git(cwd, &args)?;
+    if let Some(author) = author {
+        args.push(format!("--author={author}"));
+    }
+    if let Some(text) = text {
+        args.push(format!("--grep={text}"));
+    }
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = run_git(cwd, &refs)?;
     let text = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
     let mut commits = Vec::new();
 
@@ -345,6 +362,45 @@ pub fn rename_branch(cwd: &Path, old: &str, new: &str) -> Result<(), GitServiceE
 
 pub fn delete_branch(cwd: &Path, name: &str) -> Result<(), GitServiceError> {
     let _ = run_git(cwd, &["branch", "-d", name])?;
+    Ok(())
+}
+
+pub fn list_tags(cwd: &Path) -> Result<Vec<String>, GitServiceError> {
+    let out = run_git(cwd, &["tag", "--list"])?;
+    let text = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+    let tags = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.to_string())
+        .collect();
+    Ok(tags)
+}
+
+pub fn create_tag(cwd: &Path, name: &str) -> Result<(), GitServiceError> {
+    let _ = run_git(cwd, &["tag", name])?;
+    Ok(())
+}
+
+pub fn checkout_tag(cwd: &Path, name: &str) -> Result<(), GitServiceError> {
+    let _ = run_git(cwd, &["checkout", name])?;
+    Ok(())
+}
+
+pub fn commit_amend(cwd: &Path, message: Option<&str>) -> Result<(), GitServiceError> {
+    match message {
+        Some(msg) => {
+            let trimmed = msg.trim();
+            if trimmed.is_empty() {
+                return Err(GitServiceError::ParseError(
+                    "commit message cannot be empty".to_string(),
+                ));
+            }
+            let _ = run_git(cwd, &["commit", "--amend", "-m", trimmed])?;
+        }
+        None => {
+            let _ = run_git(cwd, &["commit", "--amend", "--no-edit"])?;
+        }
+    }
     Ok(())
 }
 
@@ -716,6 +772,27 @@ mod tests {
                 || checkout_branch(&repo_dir, "master").is_ok()
         );
         assert!(delete_branch(&repo_dir, "feature-renamed").is_ok());
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn tag_list_create_and_checkout() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        assert!(std::fs::write(repo_dir.join("README.md"), "hello\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["README.md".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "base").is_ok());
+
+        assert!(create_tag(&repo_dir, "v0.1.0").is_ok());
+        let tags = list_tags(&repo_dir).expect("tags");
+        assert!(tags.iter().any(|tag| tag == "v0.1.0"));
+
+        assert!(checkout_tag(&repo_dir, "v0.1.0").is_ok());
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }
