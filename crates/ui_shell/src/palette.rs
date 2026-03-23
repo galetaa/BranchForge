@@ -46,6 +46,7 @@ mod tests {
             title: title.to_string(),
             when: when.map(ToString::to_string),
             params_schema: None,
+            danger: None,
         }
     }
 

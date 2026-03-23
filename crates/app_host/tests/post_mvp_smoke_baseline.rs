@@ -75,6 +75,7 @@ fn post_mvp_smoke_baseline() {
             title: "Open Repository".to_string(),
             when: Some("always".to_string()),
             params_schema: None,
+            danger: None,
         }],
         "",
         true,

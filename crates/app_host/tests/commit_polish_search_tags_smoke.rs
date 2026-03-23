@@ -43,6 +43,7 @@ fn commit_amend_and_search_and_tags_smoke() {
                 op: "tag.create".to_string(),
                 lock: JobLock::RefsWrite,
                 paths: vec!["v0.2.0".to_string()],
+                job_id: None,
             },
             &mut store,
         )

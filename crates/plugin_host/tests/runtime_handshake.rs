@@ -8,6 +8,7 @@ fn register_payload(action_id: &str, view_id: &str) -> PluginRegister {
             title: "Action".to_string(),
             when: Some("always".to_string()),
             params_schema: None,
+            danger: None,
         }],
         views: vec![ViewSpec {
             view_id: view_id.to_string(),

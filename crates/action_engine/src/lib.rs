@@ -1,16 +1,21 @@
 use std::time::Instant;
 
-use plugin_api::{ActionContext, METHOD_HOST_ACTION_INVOKE, RpcRequest};
+use plugin_api::{ActionContext, DangerLevel, METHOD_HOST_ACTION_INVOKE, RpcRequest};
 use plugin_host::{RuntimeSession, SessionError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionRequest {
     pub action: String,
+    pub confirmed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvokeError {
     InvalidAction,
+    ConfirmationRequired {
+        action_id: String,
+        danger: DangerLevel,
+    },
     Session(SessionError),
 }
 
@@ -46,6 +51,25 @@ pub fn route_action_invoke(
         return Err(InvokeError::InvalidAction);
     }
 
+    if !action.confirmed {
+        session
+            .list_actions()
+            .into_iter()
+            .find(|spec| spec.action_id == action.action)
+            .ok_or_else(|| {
+                InvokeError::Session(SessionError::UnknownAction {
+                    action_id: action.action.clone(),
+                })
+            })?
+            .danger
+            .filter(|level| matches!(level, DangerLevel::High))
+            .map(|level| InvokeError::ConfirmationRequired {
+                action_id: action.action.clone(),
+                danger: level.clone(),
+            })
+            .map_or(Ok(()), Err)?;
+    }
+
     session
         .invoke_action(&action.action, ctx, now)
         .map_err(InvokeError::from)
@@ -64,12 +88,15 @@ pub fn route_action_response(
 mod tests {
     use super::*;
     use plugin_api::PluginHello;
-    use plugin_host::{RuntimeSession, default_registration_payload};
+    use plugin_host::{
+        RuntimeSession, branches_registration_payload, default_registration_payload,
+    };
 
     #[test]
     fn rejects_empty_action() {
         let req = ActionRequest {
             action: String::new(),
+            confirmed: false,
         };
         assert!(!validate_action(&req));
     }
@@ -102,6 +129,68 @@ mod tests {
 
         let action = ActionRequest {
             action: "repo.open".to_string(),
+            confirmed: false,
+        };
+        let routed = route_action_invoke(
+            &mut session,
+            &action,
+            ActionContext {
+                selection_files: Vec::new(),
+            },
+            Instant::now(),
+        );
+        assert!(routed.is_ok());
+        assert_eq!(session.pending_count(), 1);
+    }
+
+    #[test]
+    fn route_action_invoke_requires_confirmation_for_high_risk() {
+        let mut session = RuntimeSession::new("branches");
+        let hello = PluginHello {
+            plugin_id: "branches".to_string(),
+            version: "0.1".to_string(),
+        };
+        let hello_result = session.handle_hello(&hello);
+        assert!(hello_result.is_ok());
+
+        let register_result = session.handle_register(&branches_registration_payload());
+        assert!(register_result.is_ok());
+
+        let action = ActionRequest {
+            action: "branch.delete".to_string(),
+            confirmed: false,
+        };
+        let routed = route_action_invoke(
+            &mut session,
+            &action,
+            ActionContext {
+                selection_files: Vec::new(),
+            },
+            Instant::now(),
+        );
+        assert!(matches!(
+            routed,
+            Err(InvokeError::ConfirmationRequired { action_id, danger })
+                if action_id == "branch.delete" && danger == DangerLevel::High
+        ));
+    }
+
+    #[test]
+    fn route_action_invoke_allows_confirmed_high_risk() {
+        let mut session = RuntimeSession::new("branches");
+        let hello = PluginHello {
+            plugin_id: "branches".to_string(),
+            version: "0.1".to_string(),
+        };
+        let hello_result = session.handle_hello(&hello);
+        assert!(hello_result.is_ok());
+
+        let register_result = session.handle_register(&branches_registration_payload());
+        assert!(register_result.is_ok());
+
+        let action = ActionRequest {
+            action: "branch.delete".to_string(),
+            confirmed: true,
         };
         let routed = route_action_invoke(
             &mut session,
@@ -120,6 +209,7 @@ mod tests {
         let mut session = RuntimeSession::new("status");
         let action = ActionRequest {
             action: "  ".to_string(),
+            confirmed: false,
         };
         let routed = route_action_invoke(
             &mut session,
@@ -148,6 +238,7 @@ mod tests {
 
         let action = ActionRequest {
             action: "unknown.action".to_string(),
+            confirmed: false,
         };
         let routed = route_action_invoke(
             &mut session,
@@ -179,6 +270,7 @@ mod tests {
 
         let action = ActionRequest {
             action: "repo.open".to_string(),
+            confirmed: false,
         };
         let request_result = route_action_invoke(
             &mut session,

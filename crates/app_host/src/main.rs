@@ -12,6 +12,7 @@ fn main() {
 
     let request = ActionRequest {
         action: "repo.open".to_string(),
+        confirmed: false,
     };
 
     if !validate_action(&request) {

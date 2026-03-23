@@ -23,6 +23,7 @@ fn repo_open_then_status_refresh_updates_snapshots() {
         op: "repo.open".to_string(),
         lock: JobLock::Read,
         paths: Vec::new(),
+        job_id: None,
     };
     let open_result = execute_job_op(&repo_dir, &open_req, &mut store);
     assert!(open_result.is_ok());
@@ -43,6 +44,7 @@ fn repo_open_then_status_refresh_updates_snapshots() {
         op: "status.refresh".to_string(),
         lock: JobLock::Read,
         paths: Vec::new(),
+        job_id: None,
     };
     let refresh_result = execute_job_op(&repo_dir, &refresh_req, &mut store);
     assert!(refresh_result.is_ok());

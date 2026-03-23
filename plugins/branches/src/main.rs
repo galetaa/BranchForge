@@ -1,4 +1,4 @@
-use plugin_api::{ActionSpec, PluginHello, PluginRegister, RpcRequest, ViewSpec};
+use plugin_api::{ActionSpec, DangerLevel, PluginHello, PluginRegister, RpcRequest, ViewSpec};
 
 fn build_hello_request() -> RpcRequest {
     PluginHello {
@@ -16,36 +16,42 @@ fn build_register_request() -> RpcRequest {
                 title: "Checkout Branch".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: None,
             },
             ActionSpec {
                 action_id: "branch.create".to_string(),
                 title: "Create Branch".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: None,
             },
             ActionSpec {
                 action_id: "branch.rename".to_string(),
                 title: "Rename Branch".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: None,
             },
             ActionSpec {
                 action_id: "branch.delete".to_string(),
                 title: "Delete Branch".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: Some(DangerLevel::High),
             },
             ActionSpec {
                 action_id: "tag.checkout".to_string(),
                 title: "Checkout Tag".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: Some(DangerLevel::Medium),
             },
             ActionSpec {
                 action_id: "tag.create".to_string(),
                 title: "Create Tag".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: Some(DangerLevel::Low),
             },
         ],
         views: vec![ViewSpec {

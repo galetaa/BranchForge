@@ -55,10 +55,65 @@ fn translate_git_error(error: &GitServiceError) -> UserFacingError {
                     Some(stderr.clone()),
                 );
             }
+            if lowered.contains("you have nothing to amend") || lowered.contains("nothing to amend")
+            {
+                return UserFacingError::new(
+                    "Nothing to amend",
+                    "Create a commit before amending.",
+                    Some(stderr.clone()),
+                );
+            }
+            if lowered.contains("would be overwritten by checkout")
+                || lowered.contains("please commit your changes")
+            {
+                return UserFacingError::new(
+                    "Working tree not clean",
+                    "Commit or stash changes before checkout.",
+                    Some(stderr.clone()),
+                );
+            }
+            if lowered.contains("not fully merged") {
+                return UserFacingError::new(
+                    "Branch not fully merged",
+                    "Merge the branch or use a force delete.",
+                    Some(stderr.clone()),
+                );
+            }
+            if lowered.contains("cannot delete branch") && lowered.contains("checked out") {
+                return UserFacingError::new(
+                    "Cannot delete current branch",
+                    "Checkout another branch before deleting.",
+                    Some(stderr.clone()),
+                );
+            }
+            if lowered.contains("already exists") {
+                return UserFacingError::new(
+                    "Name already exists",
+                    "Use a different name or delete the existing ref.",
+                    Some(stderr.clone()),
+                );
+            }
+            if lowered.contains("unknown revision")
+                || lowered.contains("not a commit")
+                || lowered.contains("not a valid object name")
+            {
+                return UserFacingError::new(
+                    "Reference not found",
+                    "Check the branch or tag name and try again.",
+                    Some(stderr.clone()),
+                );
+            }
             if lowered.contains("pathspec") {
                 return UserFacingError::new(
-                    "File not found",
-                    "One or more paths could not be staged.",
+                    "Not found",
+                    "Check the reference or file path and try again.",
+                    Some(stderr.clone()),
+                );
+            }
+            if lowered.contains("unmerged files") || lowered.contains("you have unmerged paths") {
+                return UserFacingError::new(
+                    "Unresolved conflicts",
+                    "Resolve conflicts before continuing.",
                     Some(stderr.clone()),
                 );
             }

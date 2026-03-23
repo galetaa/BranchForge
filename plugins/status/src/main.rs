@@ -1,4 +1,4 @@
-use plugin_api::{ActionSpec, PluginHello, PluginRegister, RpcRequest, ViewSpec};
+use plugin_api::{ActionSpec, DangerLevel, PluginHello, PluginRegister, RpcRequest, ViewSpec};
 
 fn build_hello_request() -> RpcRequest {
     PluginHello {
@@ -16,24 +16,28 @@ fn build_register_request() -> RpcRequest {
                 title: "Stage Selected".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: None,
             },
             ActionSpec {
                 action_id: "index.unstage_selected".to_string(),
                 title: "Unstage Selected".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: None,
             },
             ActionSpec {
                 action_id: "commit.create".to_string(),
                 title: "Commit".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: None,
             },
             ActionSpec {
                 action_id: "commit.amend".to_string(),
                 title: "Amend Commit".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: Some(DangerLevel::Medium),
             },
         ],
         views: vec![ViewSpec {

@@ -11,6 +11,14 @@ pub const METHOD_EVENT_REPO_OPENED: &str = "event.repo.opened";
 pub const METHOD_EVENT_STATE_UPDATED: &str = "event.state.updated";
 pub const METHOD_EVENT_JOB_FINISHED: &str = "event.job.finished";
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DangerLevel {
+    Low,
+    Medium,
+    High,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RpcRequest {
     pub id: String,
@@ -235,6 +243,7 @@ pub struct ActionSpec {
     pub title: String,
     pub when: Option<String>,
     pub params_schema: Option<serde_json::Value>,
+    pub danger: Option<DangerLevel>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -274,6 +283,12 @@ impl RegisterAck {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionContext {
     pub selection_files: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfirmRequest {
+    pub action_id: String,
+    pub danger: DangerLevel,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -396,6 +411,7 @@ mod tests {
                 title: "Open Repository".to_string(),
                 when: Some("always".to_string()),
                 params_schema: None,
+                danger: None,
             }],
             views: vec![ViewSpec {
                 view_id: "status.panel".to_string(),
