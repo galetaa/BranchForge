@@ -26,6 +26,20 @@ fn build_register_request() -> RpcRequest {
                 danger: None,
             },
             ActionSpec {
+                action_id: "index.stage_hunk".to_string(),
+                title: "Stage Hunk".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+                danger: None,
+            },
+            ActionSpec {
+                action_id: "index.unstage_hunk".to_string(),
+                title: "Unstage Hunk".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+                danger: None,
+            },
+            ActionSpec {
                 action_id: "commit.create".to_string(),
                 title: "Commit".to_string(),
                 when: Some("repo.is_open".to_string()),

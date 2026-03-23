@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::process::Command;
+use std::process::Stdio;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitCommand {
@@ -65,6 +66,21 @@ pub struct StatusSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffHunk {
+    pub file_path: String,
+    pub hunk_index: usize,
+    pub header: String,
+    pub lines: Vec<String>,
+    pub patch: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffOutput {
+    pub text: String,
+    pub hunks: Vec<DiffHunk>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GitServiceError {
     ProcessLaunch(String),
     GitError { exit_code: i32, stderr: String },
@@ -77,6 +93,45 @@ pub fn run_git(cwd: &Path, args: &[&str]) -> Result<GitRunResult, GitServiceErro
         .args(args)
         .current_dir(cwd)
         .output()
+        .map_err(|err| GitServiceError::ProcessLaunch(err.to_string()))?;
+
+    let exit_code = output.status.code().unwrap_or(-1);
+    let result = GitRunResult {
+        stdout: output.stdout,
+        stderr: output.stderr,
+        exit_code,
+    };
+
+    if exit_code != 0 {
+        let stderr = String::from_utf8(result.stderr.clone())
+            .unwrap_or_else(|_| "<non-utf8 stderr>".to_string());
+        return Err(GitServiceError::GitError { exit_code, stderr });
+    }
+
+    Ok(result)
+}
+
+pub fn run_git_with_input(
+    cwd: &Path,
+    args: &[&str],
+    input: &[u8],
+) -> Result<GitRunResult, GitServiceError> {
+    let mut child = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| GitServiceError::ProcessLaunch(err.to_string()))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        std::io::Write::write_all(&mut stdin, input)
+            .map_err(|err| GitServiceError::ProcessLaunch(err.to_string()))?;
+    }
+
+    let output = child
+        .wait_with_output()
         .map_err(|err| GitServiceError::ProcessLaunch(err.to_string()))?;
 
     let exit_code = output.status.code().unwrap_or(-1);
@@ -274,19 +329,36 @@ pub fn diff_worktree(
     paths: &[String],
     max_bytes: usize,
 ) -> Result<String, GitServiceError> {
-    let mut args = vec!["diff".to_string(), "--patch".to_string()];
-    if !paths.is_empty() {
-        args.push("--".to_string());
-        args.extend(paths.iter().cloned());
-    }
-    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let out = run_git(cwd, &refs)?;
-    let mut text = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
-    if text.len() > max_bytes {
-        text.truncate(max_bytes);
-        text.push_str("\n... diff truncated ...\n");
-    }
-    Ok(text)
+    let text = diff_worktree_raw(cwd, paths)?;
+    Ok(truncate_diff(text, max_bytes))
+}
+
+pub fn diff_worktree_with_hunks(
+    cwd: &Path,
+    paths: &[String],
+    max_bytes: usize,
+) -> Result<DiffOutput, GitServiceError> {
+    let text = diff_worktree_raw(cwd, paths)?;
+    let hunks = parse_unified_diff_hunks(&text);
+    let truncated = truncate_diff(text, max_bytes);
+    Ok(DiffOutput {
+        text: truncated,
+        hunks,
+    })
+}
+
+pub fn diff_index_with_hunks(
+    cwd: &Path,
+    paths: &[String],
+    max_bytes: usize,
+) -> Result<DiffOutput, GitServiceError> {
+    let text = diff_index_raw(cwd, paths)?;
+    let hunks = parse_unified_diff_hunks(&text);
+    let truncated = truncate_diff(text, max_bytes);
+    Ok(DiffOutput {
+        text: truncated,
+        hunks,
+    })
 }
 
 pub fn diff_commit(cwd: &Path, oid: &str, max_bytes: usize) -> Result<String, GitServiceError> {
@@ -297,6 +369,192 @@ pub fn diff_commit(cwd: &Path, oid: &str, max_bytes: usize) -> Result<String, Gi
         text.push_str("\n... diff truncated ...\n");
     }
     Ok(text)
+}
+
+pub fn stage_hunk(cwd: &Path, path: &str, hunk_index: usize) -> Result<(), GitServiceError> {
+    let hunks =
+        diff_worktree_raw(cwd, &[path.to_string()]).map(|text| parse_unified_diff_hunks(&text))?;
+    let hunk = hunks
+        .iter()
+        .find(|item| item.file_path == path && item.hunk_index == hunk_index)
+        .ok_or_else(|| GitServiceError::ParseError("hunk not found".to_string()))?;
+    apply_patch(cwd, &hunk.patch, true, false)
+}
+
+pub fn unstage_hunk(cwd: &Path, path: &str, hunk_index: usize) -> Result<(), GitServiceError> {
+    let hunks =
+        diff_index_raw(cwd, &[path.to_string()]).map(|text| parse_unified_diff_hunks(&text))?;
+    let hunk = hunks
+        .iter()
+        .find(|item| item.file_path == path && item.hunk_index == hunk_index)
+        .ok_or_else(|| GitServiceError::ParseError("hunk not found".to_string()))?;
+    apply_patch(cwd, &hunk.patch, true, true)
+}
+
+fn apply_patch(
+    cwd: &Path,
+    patch: &str,
+    cached: bool,
+    reverse: bool,
+) -> Result<(), GitServiceError> {
+    let mut args = vec!["apply".to_string()];
+    if cached {
+        args.push("--cached".to_string());
+    }
+    if reverse {
+        args.push("-R".to_string());
+    }
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let _ = run_git_with_input(cwd, &refs, patch.as_bytes())?;
+    Ok(())
+}
+
+fn diff_worktree_raw(cwd: &Path, paths: &[String]) -> Result<String, GitServiceError> {
+    let mut args = vec!["diff".to_string(), "--patch".to_string()];
+    if !paths.is_empty() {
+        args.push("--".to_string());
+        args.extend(paths.iter().cloned());
+    }
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = run_git(cwd, &refs)?;
+    String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)
+}
+
+fn diff_index_raw(cwd: &Path, paths: &[String]) -> Result<String, GitServiceError> {
+    let mut args = vec![
+        "diff".to_string(),
+        "--cached".to_string(),
+        "--patch".to_string(),
+    ];
+    if !paths.is_empty() {
+        args.push("--".to_string());
+        args.extend(paths.iter().cloned());
+    }
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = run_git(cwd, &refs)?;
+    String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)
+}
+
+fn truncate_diff(mut text: String, max_bytes: usize) -> String {
+    if text.len() > max_bytes {
+        text.truncate(max_bytes);
+        text.push_str("\n... diff truncated ...\n");
+    }
+    text
+}
+
+fn parse_unified_diff_hunks(text: &str) -> Vec<DiffHunk> {
+    let mut hunks = Vec::new();
+    let mut current_file: Option<String> = None;
+    let mut header_lines: Vec<String> = Vec::new();
+    let mut hunk_lines: Vec<String> = Vec::new();
+    let mut hunk_header = String::new();
+    let mut in_hunk = false;
+    let mut hunk_index = 0;
+
+    for line in text.lines() {
+        if line.starts_with("diff --git ") {
+            if in_hunk {
+                push_hunk(
+                    &mut hunks,
+                    &current_file,
+                    &header_lines,
+                    &hunk_lines,
+                    &hunk_header,
+                    &mut hunk_index,
+                );
+            }
+            current_file = line
+                .split_whitespace()
+                .nth(3)
+                .map(|value| value.trim_start_matches("b/").to_string());
+            header_lines = vec![line.to_string()];
+            hunk_lines.clear();
+            hunk_header.clear();
+            in_hunk = false;
+            hunk_index = 0;
+            continue;
+        }
+
+        if current_file.is_none() {
+            continue;
+        }
+
+        if line.starts_with("@@") {
+            if in_hunk {
+                push_hunk(
+                    &mut hunks,
+                    &current_file,
+                    &header_lines,
+                    &hunk_lines,
+                    &hunk_header,
+                    &mut hunk_index,
+                );
+                hunk_lines.clear();
+            }
+            in_hunk = true;
+            hunk_header = line.to_string();
+            hunk_lines.push(line.to_string());
+            continue;
+        }
+
+        if in_hunk {
+            hunk_lines.push(line.to_string());
+            continue;
+        }
+
+        if line.starts_with("index ")
+            || line.starts_with("--- ")
+            || line.starts_with("+++ ")
+            || line.starts_with("new file")
+            || line.starts_with("deleted file")
+            || line.starts_with("rename ")
+            || line.starts_with("similarity ")
+        {
+            header_lines.push(line.to_string());
+        }
+    }
+
+    if in_hunk {
+        push_hunk(
+            &mut hunks,
+            &current_file,
+            &header_lines,
+            &hunk_lines,
+            &hunk_header,
+            &mut hunk_index,
+        );
+    }
+
+    hunks
+}
+
+fn push_hunk(
+    hunks: &mut Vec<DiffHunk>,
+    current_file: &Option<String>,
+    header_lines: &[String],
+    hunk_lines: &[String],
+    hunk_header: &str,
+    hunk_index: &mut usize,
+) {
+    if let Some(file_path) = current_file
+        && !header_lines.is_empty()
+        && !hunk_lines.is_empty()
+    {
+        let mut patch_lines = Vec::new();
+        patch_lines.extend(header_lines.iter().cloned());
+        patch_lines.extend(hunk_lines.iter().cloned());
+        let mut patch = patch_lines.join("\n");
+        patch.push('\n');
+        hunks.push(DiffHunk {
+            file_path: file_path.clone(),
+            hunk_index: *hunk_index,
+            header: hunk_header.to_string(),
+            lines: hunk_lines.to_vec(),
+            patch,
+        });
+        *hunk_index += 1;
+    }
 }
 
 pub fn list_local_branches(cwd: &Path) -> Result<Vec<BranchInfo>, GitServiceError> {
@@ -793,6 +1051,51 @@ mod tests {
         assert!(tags.iter().any(|tag| tag == "v0.1.0"));
 
         assert!(checkout_tag(&repo_dir, "v0.1.0").is_ok());
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn stage_and_unstage_hunk_roundtrip() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let file = repo_dir.join("hunk.txt");
+        let mut lines = Vec::new();
+        for idx in 1..=20 {
+            lines.push(format!("line{idx}\n"));
+        }
+        let base = lines.concat();
+        assert!(std::fs::write(&file, base).is_ok());
+        assert!(stage_paths(&repo_dir, &["hunk.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "base").is_ok());
+
+        lines[0] = "line1-updated\n".to_string();
+        lines[19] = "line20-updated\n".to_string();
+        let updated = lines.concat();
+        assert!(std::fs::write(&file, updated).is_ok());
+
+        let stage_result = stage_hunk(&repo_dir, "hunk.txt", 0);
+        assert!(stage_result.is_ok());
+
+        let staged = diff_index_with_hunks(&repo_dir, &["hunk.txt".to_string()], 10_000);
+        assert!(staged.is_ok());
+        if let Ok(output) = staged {
+            assert!(output.text.contains("line1-updated"));
+            assert!(!output.text.contains("line20-updated"));
+        }
+
+        let unstage_result = unstage_hunk(&repo_dir, "hunk.txt", 0);
+        assert!(unstage_result.is_ok());
+
+        let staged_after = diff_index_with_hunks(&repo_dir, &["hunk.txt".to_string()], 10_000);
+        assert!(staged_after.is_ok());
+        if let Ok(output) = staged_after {
+            assert!(output.text.trim().is_empty());
+        }
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }

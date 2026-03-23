@@ -3,61 +3,10 @@
 version = 4
 
 [[package]]
-name = "action_engine"
-version = "0.1.0"
-dependencies = [
- "plugin_api",
- "plugin_host",
- "serde_json",
- "state_store",
-]
-
-[[package]]
-name = "app_host"
-version = "0.1.0"
-dependencies = [
- "action_engine",
- "git_service",
- "job_system",
- "plugin_api",
- "plugin_host",
- "serde_json",
- "state_store",
- "ui_shell",
-]
-
-[[package]]
-name = "branches"
-version = "0.1.0"
-dependencies = [
- "plugin_api",
-]
-
-[[package]]
-name = "git_service"
-version = "0.1.0"
-
-[[package]]
-name = "history"
-version = "0.1.0"
-dependencies = [
- "plugin_api",
-]
-
-[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
-
-[[package]]
-name = "job_system"
-version = "0.1.0"
-dependencies = [
- "git_service",
- "plugin_api",
- "state_store",
-]
 
 [[package]]
 name = "memchr"
@@ -70,14 +19,6 @@ name = "plugin_api"
 version = "0.1.0"
 dependencies = [
  "serde",
- "serde_json",
-]
-
-[[package]]
-name = "plugin_host"
-version = "0.1.0"
-dependencies = [
- "plugin_api",
  "serde_json",
 ]
 
@@ -107,10 +48,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "repo_manager"
+name = "sample_external_plugin"
 version = "0.1.0"
 dependencies = [
- "plugin_api",
+ "plugin_sdk",
  "serde_json",
 ]
 
@@ -158,21 +99,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "state_store"
-version = "0.1.0"
-dependencies = [
- "plugin_api",
-]
-
-[[package]]
-name = "status"
-version = "0.1.0"
-dependencies = [
- "plugin_api",
- "serde_json",
-]
-
-[[package]]
 name = "syn"
 version = "2.0.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -181,14 +107,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
-]
-
-[[package]]
-name = "ui_shell"
-version = "0.1.0"
-dependencies = [
- "plugin_api",
- "state_store",
 ]
 
 [[package]]
