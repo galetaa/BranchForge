@@ -1,11 +1,11 @@
 # Branchforge
 
-Current state: Sprint 13 (Merge/Rebase Foundations) in progress on top of MVP foundations.
+Current state: Sprint 14 (Interactive Rebase Beta and v1.0 Planning) in progress on top of MVP foundations.
 
 ## Quick start
 
 ```bash
-./scripts/verify-sprint-13.sh
+./scripts/verify-sprint-14.sh
 ./scripts/check-deps.sh
 cargo check --workspace
 cargo test --workspace
