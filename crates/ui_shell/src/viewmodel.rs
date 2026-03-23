@@ -104,6 +104,7 @@ mod tests {
                 untracked: Vec::new(),
             },
             selection: SelectionState::default(),
+            plugins: Vec::new(),
             version: 1,
         };
 
