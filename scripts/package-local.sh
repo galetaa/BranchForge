@@ -10,12 +10,13 @@ fi
 
 # Build host + bundled plugins as release binaries for local package checks.
 cd "$repo_root"
-cargo build --release -p app_host -p repo_manager -p status
+cargo build --release -p app_host -p repo_manager -p status -p history
 
 mkdir -p "$out_dir/bin" "$out_dir/plugins"
 cp "$repo_root/target/release/app_host" "$out_dir/bin/"
 cp "$repo_root/target/release/repo_manager" "$out_dir/plugins/"
 cp "$repo_root/target/release/status" "$out_dir/plugins/"
+cp "$repo_root/target/release/history" "$out_dir/plugins/"
 
 cat > "$out_dir/README.txt" <<EOF
 Branchforge local package layout
@@ -23,6 +24,7 @@ Branchforge local package layout
 bin/app_host          host executable
 plugins/repo_manager  bundled plugin executable
 plugins/status        bundled plugin executable
+plugins/history       bundled plugin executable
 
 Run example:
   ./bin/app_host
@@ -37,4 +39,3 @@ layout=local-package-v1
 EOF
 
 echo "Local package created at: $out_dir"
-

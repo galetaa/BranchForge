@@ -34,6 +34,22 @@ pub struct RepoOpenResult {
     pub detached: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitSummary {
+    pub oid: String,
+    pub author: String,
+    pub time: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitDetails {
+    pub oid: String,
+    pub author: String,
+    pub time: String,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct StatusSummary {
     pub staged: Vec<String>,
@@ -150,6 +166,113 @@ pub fn commit_create(cwd: &Path, message: &str) -> Result<(), GitServiceError> {
 
     let _ = run_git(cwd, &["commit", "-m", trimmed])?;
     Ok(())
+}
+
+pub fn commit_log_page(
+    cwd: &Path,
+    offset: usize,
+    limit: usize,
+) -> Result<Vec<CommitSummary>, GitServiceError> {
+    let format = "--format=%H%x1f%an%x1f%ad%x1f%s";
+    let max_count = limit.to_string();
+    let skip = offset.to_string();
+    let args = [
+        "log",
+        "--date=iso-strict",
+        format,
+        "--max-count",
+        max_count.as_str(),
+        "--skip",
+        skip.as_str(),
+    ];
+    let out = run_git(cwd, &args)?;
+    let text = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+    let mut commits = Vec::new();
+
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = line.split('\x1f').collect();
+        if parts.len() != 4 {
+            return Err(GitServiceError::ParseError(
+                "invalid commit log line".to_string(),
+            ));
+        }
+        commits.push(CommitSummary {
+            oid: parts[0].to_string(),
+            author: parts[1].to_string(),
+            time: parts[2].to_string(),
+            summary: parts[3].to_string(),
+        });
+    }
+
+    Ok(commits)
+}
+
+pub fn commit_details(cwd: &Path, oid: &str) -> Result<CommitDetails, GitServiceError> {
+    let format = "--format=%H%x1f%an%x1f%ad%x1f%B";
+    let args = ["show", "--quiet", "--date=iso-strict", format, oid];
+    let out = run_git(cwd, &args)?;
+    let text = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+    let mut parts = text.splitn(4, '\x1f');
+    let oid = parts
+        .next()
+        .ok_or_else(|| GitServiceError::ParseError("missing oid".to_string()))?
+        .trim()
+        .to_string();
+    let author = parts
+        .next()
+        .ok_or_else(|| GitServiceError::ParseError("missing author".to_string()))?
+        .trim()
+        .to_string();
+    let time = parts
+        .next()
+        .ok_or_else(|| GitServiceError::ParseError("missing time".to_string()))?
+        .trim()
+        .to_string();
+    let message = parts
+        .next()
+        .ok_or_else(|| GitServiceError::ParseError("missing message".to_string()))?
+        .trim_end()
+        .to_string();
+
+    Ok(CommitDetails {
+        oid,
+        author,
+        time,
+        message,
+    })
+}
+
+pub fn diff_worktree(
+    cwd: &Path,
+    paths: &[String],
+    max_bytes: usize,
+) -> Result<String, GitServiceError> {
+    let mut args = vec!["diff".to_string(), "--patch".to_string()];
+    if !paths.is_empty() {
+        args.push("--".to_string());
+        args.extend(paths.iter().cloned());
+    }
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = run_git(cwd, &refs)?;
+    let mut text = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+    if text.len() > max_bytes {
+        text.truncate(max_bytes);
+        text.push_str("\n... diff truncated ...\n");
+    }
+    Ok(text)
+}
+
+pub fn diff_commit(cwd: &Path, oid: &str, max_bytes: usize) -> Result<String, GitServiceError> {
+    let out = run_git(cwd, &["show", "--patch", "--format=short", oid])?;
+    let mut text = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+    if text.len() > max_bytes {
+        text.truncate(max_bytes);
+        text.push_str("\n... diff truncated ...\n");
+    }
+    Ok(text)
 }
 
 pub fn parse_status_porcelain_v2_z(raw: &[u8]) -> Result<StatusSummary, GitServiceError> {
@@ -429,6 +552,63 @@ mod tests {
         assert!(status.is_ok());
         if let Ok(summary) = status {
             assert!(summary.staged.is_empty());
+        }
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn commit_log_page_returns_entries() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        assert!(std::fs::write(repo_dir.join("one.txt"), "one\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["one.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "commit one").is_ok());
+
+        assert!(std::fs::write(repo_dir.join("two.txt"), "two\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["two.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "commit two").is_ok());
+
+        let page = commit_log_page(&repo_dir, 0, 1);
+        assert!(page.is_ok());
+        if let Ok(commits) = page {
+            assert_eq!(commits.len(), 1);
+            assert!(commits[0].summary.contains("commit"));
+        }
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn diff_worktree_and_commit_render() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let file = "diff.txt".to_string();
+        assert!(std::fs::write(repo_dir.join(&file), "line 1\n").is_ok());
+        assert!(stage_paths(&repo_dir, std::slice::from_ref(&file)).is_ok());
+        assert!(commit_create(&repo_dir, "commit diff").is_ok());
+
+        assert!(std::fs::write(repo_dir.join(&file), "line 1\nline 2\n").is_ok());
+        let worktree = diff_worktree(&repo_dir, &[], 10_000);
+        assert!(worktree.is_ok());
+        if let Ok(diff) = worktree {
+            assert!(diff.contains("diff --git"));
+        }
+
+        let commits = commit_log_page(&repo_dir, 0, 1).expect("page");
+        let oid = commits[0].oid.clone();
+        let commit_diff = diff_commit(&repo_dir, &oid, 10_000);
+        assert!(commit_diff.is_ok());
+        if let Ok(diff) = commit_diff {
+            assert!(diff.contains("commit"));
         }
 
         let _ = std::fs::remove_dir_all(&repo_dir);

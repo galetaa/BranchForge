@@ -9,7 +9,10 @@ use plugin_api::{
 use plugin_host::{
     RuntimeSession, default_registration_payload, repo_manager_registration_payload,
 };
-use state_store::{SelectionState, StateEvent, StateStore, StatusSnapshot};
+use state_store::{
+    CommitDetails, CommitSummary, DiffState, HistoryCursor, SelectionState, StateEvent, StateStore,
+    StatusSnapshot,
+};
 
 pub mod errors;
 pub mod recent_repos;
@@ -58,6 +61,7 @@ pub fn run_ui_state_smoke() -> String {
     });
     store.update_selection(SelectionState {
         selected_paths: vec!["README.md".to_string()],
+        selected_commit_oid: None,
     });
 
     ui_shell::render_status_panel(&store)
@@ -206,7 +210,10 @@ pub fn run_palette_when_smoke(repo_open: bool) -> Vec<(String, bool)> {
 
 pub fn run_selection_event_smoke(selected_paths: Vec<String>) -> SelectionState {
     let mut store = StateStore::new();
-    store.update_selection(SelectionState { selected_paths });
+    store.update_selection(SelectionState {
+        selected_paths,
+        selected_commit_oid: None,
+    });
     store.snapshot().selection.clone()
 }
 
@@ -235,14 +242,14 @@ pub fn run_git_jobs_smoke(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpenRepoOutcome {
-    Opened(state_store::StoreSnapshot),
+    Opened(Box<state_store::StoreSnapshot>),
     Cancelled,
     Failed(UserFacingError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommitFlowOutcome {
-    Committed(state_store::StoreSnapshot),
+    Committed(Box<state_store::StoreSnapshot>),
     Cancelled,
     ValidationError(UserFacingError),
     Failed(UserFacingError),
@@ -295,7 +302,7 @@ where
     match result {
         Ok(_) => {
             let _ = recent_repos::persist_recent_repo(&repo_dir);
-            OpenRepoOutcome::Opened(store.snapshot().clone())
+            OpenRepoOutcome::Opened(Box::new(store.snapshot().clone()))
         }
         Err(err) => OpenRepoOutcome::Failed(translate_job_error(&err)),
     }
@@ -320,7 +327,18 @@ pub fn run_status_stage_unstage_smoke(
 
     store.update_selection(SelectionState {
         selected_paths: selected_files.clone(),
+        selected_commit_oid: None,
     });
+
+    let _ = execute_job_op(
+        repo_dir,
+        &JobRequest {
+            op: "diff.worktree".to_string(),
+            lock: JobLock::Read,
+            paths: selected_files.clone(),
+        },
+        &mut store,
+    );
 
     execute_job_op(
         repo_dir,
@@ -345,6 +363,85 @@ pub fn run_status_stage_unstage_smoke(
     .map_err(|e| format!("unstage failed: {e:?}"))?;
 
     Ok(store.snapshot().clone())
+}
+
+pub fn run_history_page_smoke(
+    repo_dir: &std::path::Path,
+    offset: usize,
+    limit: usize,
+) -> Result<(Vec<CommitSummary>, Option<HistoryCursor>), String> {
+    let mut store = StateStore::new();
+    store.set_active_view(Some("history.panel".to_string()));
+    execute_job_op(
+        repo_dir,
+        &JobRequest {
+            op: "history.page".to_string(),
+            lock: JobLock::Read,
+            paths: vec![offset.to_string(), limit.to_string()],
+        },
+        &mut store,
+    )
+    .map_err(|e| format!("history.page failed: {e:?}"))?;
+
+    Ok((
+        store.snapshot().history.commits.clone(),
+        store.snapshot().history.next_cursor.clone(),
+    ))
+}
+
+pub fn run_history_select_and_diff_smoke(
+    repo_dir: &std::path::Path,
+) -> Result<(CommitDetails, DiffState), String> {
+    let mut store = StateStore::new();
+    execute_job_op(
+        repo_dir,
+        &JobRequest {
+            op: "history.page".to_string(),
+            lock: JobLock::Read,
+            paths: vec!["0".to_string(), "5".to_string()],
+        },
+        &mut store,
+    )
+    .map_err(|e| format!("history.page failed: {e:?}"))?;
+
+    let commit = store
+        .snapshot()
+        .history
+        .commits
+        .first()
+        .cloned()
+        .ok_or_else(|| "history page empty".to_string())?;
+
+    store.update_selected_commit(Some(commit.oid.clone()));
+
+    execute_job_op(
+        repo_dir,
+        &JobRequest {
+            op: "history.details".to_string(),
+            lock: JobLock::Read,
+            paths: vec![commit.oid.clone()],
+        },
+        &mut store,
+    )
+    .map_err(|e| format!("history.details failed: {e:?}"))?;
+
+    execute_job_op(
+        repo_dir,
+        &JobRequest {
+            op: "diff.commit".to_string(),
+            lock: JobLock::Read,
+            paths: vec![commit.oid.clone()],
+        },
+        &mut store,
+    )
+    .map_err(|e| format!("diff.commit failed: {e:?}"))?;
+
+    let details = store
+        .commit_details(&commit.oid)
+        .cloned()
+        .ok_or_else(|| "commit details missing".to_string())?;
+
+    Ok((details, store.snapshot().diff.clone()))
 }
 
 pub fn run_commit_flow_with_prompt<F>(
@@ -406,7 +503,7 @@ where
     );
 
     match result {
-        Ok(_) => CommitFlowOutcome::Committed(store.snapshot().clone()),
+        Ok(_) => CommitFlowOutcome::Committed(Box::new(store.snapshot().clone())),
         Err(err) => CommitFlowOutcome::Failed(translate_job_error(&err)),
     }
 }
