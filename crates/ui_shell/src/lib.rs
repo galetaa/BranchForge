@@ -32,6 +32,32 @@ fn render_plugin_warnings(store: &StateStore) -> Option<String> {
     }
 }
 
+fn view_owner_plugin(active_view: &str) -> Option<&'static str> {
+    match active_view {
+        "status.panel" => Some("status"),
+        "history.panel" => Some("history"),
+        "branches.panel" => Some("branches"),
+        _ => None,
+    }
+}
+
+fn degraded_view_message(store: &StateStore, active_view: &str) -> Option<String> {
+    let owner = view_owner_plugin(active_view)?;
+    let unavailable = store.snapshot().plugins.iter().find(|status| {
+        status.plugin_id == owner
+            && matches!(status.health, state_store::PluginHealth::Unavailable { .. })
+    })?;
+
+    let reason = match &unavailable.health {
+        state_store::PluginHealth::Unavailable { message } => message.as_str(),
+        state_store::PluginHealth::Ready => return None,
+    };
+
+    Some(format!(
+        "[Degraded View]\nview: {active_view}\nplugin: {owner}\nreason: {reason}\naction: plugin will recover automatically after successful restart"
+    ))
+}
+
 pub fn render_status_panel(store: &StateStore) -> String {
     let panel = viewmodel::build_status_panel(store.snapshot());
     viewmodel::render(&panel, store.snapshot())
@@ -94,23 +120,8 @@ pub fn render_empty_state() -> String {
 }
 
 pub fn render_window(store: &StateStore, palette_items: &[palette::PaletteItem]) -> String {
-    let left_slot = match store.snapshot().active_view.as_deref() {
-        Some("history.panel") => render_history_panel(store),
-        Some("branches.panel") => render_branches_panel(store),
-        Some("status.panel") => render_status_panel(store),
-        _ => {
-            if store.repo().is_some() {
-                render_status_panel(store)
-            } else {
-                render_empty_state()
-            }
-        }
-    };
-    let left_slot = if let Some(warnings) = render_plugin_warnings(store) {
-        format!("{warnings}\n{left_slot}")
-    } else {
-        left_slot
-    };
+    let palette_items = palette::apply_plugin_health(palette_items, &store.snapshot().plugins);
+
     let active_view = if let Some(active) = store.snapshot().active_view.as_ref() {
         Some(active.clone())
     } else if store.repo().is_some() {
@@ -119,12 +130,39 @@ pub fn render_window(store: &StateStore, palette_items: &[palette::PaletteItem])
         Some("empty.state".to_string())
     };
 
+    let left_slot = if let Some(active) = active_view.as_deref() {
+        if let Some(degraded) = degraded_view_message(store, active) {
+            degraded
+        } else {
+            match active {
+                "history.panel" => render_history_panel(store),
+                "branches.panel" => render_branches_panel(store),
+                "status.panel" => render_status_panel(store),
+                _ => {
+                    if store.repo().is_some() {
+                        render_status_panel(store)
+                    } else {
+                        render_empty_state()
+                    }
+                }
+            }
+        }
+    } else {
+        render_empty_state()
+    };
+
+    let left_slot = if let Some(warnings) = render_plugin_warnings(store) {
+        format!("{warnings}\n{left_slot}")
+    } else {
+        left_slot
+    };
+
     let diff_panel = if store.snapshot().diff.source.is_some() {
         Some(render_diff_panel(store))
     } else {
         None
     };
-    let layout = layout::build_layout(&left_slot, palette_items, diff_panel, active_view);
+    let layout = layout::build_layout(&left_slot, &palette_items, diff_panel, active_view);
     layout::render_layout(&layout)
 }
 
@@ -285,5 +323,104 @@ mod tests {
         let rendered = render_window(&store, &palette_items);
         assert!(rendered.contains("Plugin warnings:"));
         assert!(rendered.contains("plugin status unavailable: crashed"));
+    }
+
+    #[test]
+    fn renders_degraded_container_for_unavailable_active_plugin_view() {
+        let mut store = StateStore::new();
+        store.update_repo(plugin_api::RepoSnapshot {
+            root: "/tmp/demo".to_string(),
+            head: Some("main".to_string()),
+            conflict_state: None,
+        });
+        store.set_active_view(Some("status.panel".to_string()));
+        store.update_plugin_status(
+            "status",
+            state_store::PluginHealth::Unavailable {
+                message: "restarting".to_string(),
+            },
+        );
+
+        let rendered = render_window(&store, &palette::build_palette(&[], "", true));
+        assert!(rendered.contains("[Degraded View]"));
+        assert!(rendered.contains("view: status.panel"));
+        assert!(rendered.contains("plugin: status"));
+        assert!(rendered.contains("reason: restarting"));
+    }
+
+    #[test]
+    fn falls_back_to_normal_panel_when_plugin_ready() {
+        let mut store = StateStore::new();
+        store.update_repo(plugin_api::RepoSnapshot {
+            root: "/tmp/demo".to_string(),
+            head: Some("main".to_string()),
+            conflict_state: None,
+        });
+        store.set_active_view(Some("status.panel".to_string()));
+        store.update_status(state_store::StatusSnapshot {
+            staged: vec!["src/lib.rs".to_string()],
+            unstaged: Vec::new(),
+            untracked: Vec::new(),
+        });
+        store.update_plugin_status("status", state_store::PluginHealth::Ready);
+
+        let rendered = render_window(&store, &palette::build_palette(&[], "", true));
+        assert!(rendered.contains("Status Panel"));
+        assert!(!rendered.contains("[Degraded View]"));
+    }
+
+    #[test]
+    fn disables_palette_action_with_unavailable_plugin_reason() {
+        let mut store = StateStore::new();
+        store.update_repo(plugin_api::RepoSnapshot {
+            root: "/tmp/demo".to_string(),
+            head: Some("main".to_string()),
+            conflict_state: None,
+        });
+        store.update_plugin_status(
+            "status",
+            state_store::PluginHealth::Unavailable {
+                message: "restarting".to_string(),
+            },
+        );
+
+        let palette_items = palette::build_palette(
+            &[plugin_api::ActionSpec {
+                action_id: "commit.create".to_string(),
+                title: "Commit".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+                danger: None,
+            }],
+            "",
+            true,
+        );
+        let rendered = render_window(&store, &palette_items);
+        assert!(rendered.contains("Commit (off: plugin status unavailable: restarting)"));
+    }
+
+    #[test]
+    fn keeps_palette_action_enabled_when_plugin_ready() {
+        let mut store = StateStore::new();
+        store.update_repo(plugin_api::RepoSnapshot {
+            root: "/tmp/demo".to_string(),
+            head: Some("main".to_string()),
+            conflict_state: None,
+        });
+        store.update_plugin_status("status", state_store::PluginHealth::Ready);
+
+        let palette_items = palette::build_palette(
+            &[plugin_api::ActionSpec {
+                action_id: "commit.create".to_string(),
+                title: "Commit".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+                danger: None,
+            }],
+            "",
+            true,
+        );
+        let rendered = render_window(&store, &palette_items);
+        assert!(rendered.contains("Commit (on)"));
     }
 }

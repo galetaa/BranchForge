@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use plugin_api::{
     ActionContext, ActionSpec, CodecError, DangerLevel, FrameCodec, HelloAck,
@@ -195,12 +195,62 @@ pub enum RegistryError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionError {
-    PluginIdMismatch { expected: String, actual: String },
+    PluginIdMismatch {
+        expected: String,
+        actual: String,
+    },
     HelloRequired,
+    InvalidLifecycleTransition {
+        from: PluginLifecycleState,
+        to: PluginLifecycleState,
+    },
+    PluginNotReady {
+        plugin_id: String,
+        state: PluginLifecycleState,
+    },
     Registry(RegistryError),
-    UnknownAction { action_id: String },
-    UnknownRequestId { request_id: String },
+    UnknownAction {
+        action_id: String,
+    },
+    UnknownRequestId {
+        request_id: String,
+    },
     UnexpectedMessage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginLifecycleState {
+    Discovered,
+    Starting,
+    Handshaking,
+    Registered,
+    Ready,
+    Degraded,
+    Restarting,
+    Stopped,
+}
+
+fn now_unix_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
+pub fn format_runtime_log_event(plugin_id: &str, event: &str, fields: serde_json::Value) -> String {
+    serde_json::json!({
+        "ts_ms": now_unix_ms(),
+        "level": "info",
+        "source": "plugin_host",
+        "plugin_id": plugin_id,
+        "event": event,
+        "fields": fields,
+    })
+    .to_string()
+}
+
+fn emit_runtime_log(plugin_id: &str, event: &str, fields: serde_json::Value) {
+    eprintln!("{}", format_runtime_log_event(plugin_id, event, fields));
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,20 +277,47 @@ impl PluginSupervisor {
         }
     }
 
-    pub fn poll(&mut self) -> Result<(), ProcessError> {
-        match self.process.check_health()? {
-            ProcessHealth::Running => {}
+    pub fn poll(&mut self) -> Result<ProcessHealth, ProcessError> {
+        let health = self.process.check_health()?;
+        match health.clone() {
+            ProcessHealth::Running => {
+                self.availability = PluginAvailability::Ready;
+                emit_runtime_log(
+                    &self.plugin_id,
+                    "runtime.supervisor.health",
+                    serde_json::json!({"status": "running"}),
+                );
+            }
             ProcessHealth::Restarted { exit_code } => {
                 self.last_exit_code = Some(exit_code);
+                self.availability = PluginAvailability::Unavailable {
+                    reason: format!("plugin restarting after exit code {exit_code}"),
+                };
+                emit_runtime_log(
+                    &self.plugin_id,
+                    "runtime.supervisor.health",
+                    serde_json::json!({
+                        "status": "restarted",
+                        "exit_code": exit_code,
+                    }),
+                );
             }
             ProcessHealth::Exited { exit_code } => {
                 self.last_exit_code = Some(exit_code);
                 self.availability = PluginAvailability::Unavailable {
                     reason: format!("plugin exited with code {exit_code}"),
                 };
+                emit_runtime_log(
+                    &self.plugin_id,
+                    "runtime.supervisor.health",
+                    serde_json::json!({
+                        "status": "exited",
+                        "exit_code": exit_code,
+                    }),
+                );
             }
         }
-        Ok(())
+        Ok(health)
     }
 
     pub fn availability(&self) -> &PluginAvailability {
@@ -399,7 +476,7 @@ impl PluginRegistry {
 #[derive(Debug)]
 pub struct RuntimeSession {
     plugin_id: String,
-    hello_done: bool,
+    lifecycle_state: PluginLifecycleState,
     registry: PluginRegistry,
     request_ids: RequestIdGenerator,
     pending: PendingRequestMap,
@@ -412,7 +489,7 @@ impl RuntimeSession {
     pub fn new(plugin_id: impl Into<String>) -> Self {
         Self {
             plugin_id: plugin_id.into(),
-            hello_done: false,
+            lifecycle_state: PluginLifecycleState::Discovered,
             registry: PluginRegistry::default(),
             request_ids: RequestIdGenerator::default(),
             pending: PendingRequestMap::default(),
@@ -428,7 +505,7 @@ impl RuntimeSession {
     ) -> Self {
         Self {
             plugin_id: plugin_id.into(),
-            hello_done: false,
+            lifecycle_state: PluginLifecycleState::Discovered,
             registry: PluginRegistry::default(),
             request_ids: RequestIdGenerator::default(),
             pending: PendingRequestMap::default(),
@@ -438,15 +515,108 @@ impl RuntimeSession {
         }
     }
 
+    pub fn lifecycle_state(&self) -> PluginLifecycleState {
+        self.lifecycle_state
+    }
+
+    fn can_transition(from: PluginLifecycleState, to: PluginLifecycleState) -> bool {
+        match from {
+            PluginLifecycleState::Discovered => {
+                matches!(
+                    to,
+                    PluginLifecycleState::Starting | PluginLifecycleState::Stopped
+                )
+            }
+            PluginLifecycleState::Starting => matches!(
+                to,
+                PluginLifecycleState::Handshaking
+                    | PluginLifecycleState::Degraded
+                    | PluginLifecycleState::Stopped
+            ),
+            PluginLifecycleState::Handshaking => matches!(
+                to,
+                PluginLifecycleState::Registered
+                    | PluginLifecycleState::Degraded
+                    | PluginLifecycleState::Stopped
+            ),
+            PluginLifecycleState::Registered => matches!(
+                to,
+                PluginLifecycleState::Ready
+                    | PluginLifecycleState::Degraded
+                    | PluginLifecycleState::Stopped
+            ),
+            PluginLifecycleState::Ready => matches!(
+                to,
+                PluginLifecycleState::Degraded
+                    | PluginLifecycleState::Restarting
+                    | PluginLifecycleState::Stopped
+            ),
+            PluginLifecycleState::Degraded => {
+                matches!(
+                    to,
+                    PluginLifecycleState::Restarting | PluginLifecycleState::Stopped
+                )
+            }
+            PluginLifecycleState::Restarting => matches!(
+                to,
+                PluginLifecycleState::Starting
+                    | PluginLifecycleState::Degraded
+                    | PluginLifecycleState::Stopped
+            ),
+            PluginLifecycleState::Stopped => matches!(to, PluginLifecycleState::Starting),
+        }
+    }
+
+    fn transition_to(&mut self, next: PluginLifecycleState) -> Result<(), SessionError> {
+        let current = self.lifecycle_state;
+        if Self::can_transition(current, next) {
+            self.lifecycle_state = next;
+            emit_runtime_log(
+                &self.plugin_id,
+                "runtime.lifecycle.transition",
+                serde_json::json!({
+                    "from": format!("{:?}", current),
+                    "to": format!("{:?}", next),
+                }),
+            );
+            return Ok(());
+        }
+
+        emit_runtime_log(
+            &self.plugin_id,
+            "runtime.lifecycle.transition_rejected",
+            serde_json::json!({
+                "from": format!("{:?}", current),
+                "to": format!("{:?}", next),
+            }),
+        );
+        Err(SessionError::InvalidLifecycleTransition {
+            from: current,
+            to: next,
+        })
+    }
+
+    fn ensure_ready(&self) -> Result<(), SessionError> {
+        if self.lifecycle_state == PluginLifecycleState::Ready {
+            return Ok(());
+        }
+        Err(SessionError::PluginNotReady {
+            plugin_id: self.plugin_id.clone(),
+            state: self.lifecycle_state,
+        })
+    }
+
     pub fn handle_hello(&mut self, hello: &PluginHello) -> Result<HelloAck, SessionError> {
+        self.transition_to(PluginLifecycleState::Starting)?;
         if hello.plugin_id != self.plugin_id {
+            let _ = self.transition_to(PluginLifecycleState::Degraded);
             return Err(SessionError::PluginIdMismatch {
                 expected: self.plugin_id.clone(),
                 actual: hello.plugin_id.clone(),
             });
         }
 
-        self.hello_done = true;
+        self.transition_to(PluginLifecycleState::Handshaking)?;
         Ok(handle_hello(hello))
     }
 
@@ -454,12 +624,17 @@ impl RuntimeSession {
         &mut self,
         register: &PluginRegister,
     ) -> Result<RegisterAck, SessionError> {
-        if !self.hello_done {
+        if self.lifecycle_state != PluginLifecycleState::Handshaking {
             return Err(SessionError::HelloRequired);
         }
-        self.registry
+
+        let ack = self
+            .registry
             .register(&self.plugin_id, register)
-            .map_err(SessionError::from)
+            .map_err(SessionError::from)?;
+        self.transition_to(PluginLifecycleState::Registered)?;
+        self.transition_to(PluginLifecycleState::Ready)?;
+        Ok(ack)
     }
 
     pub fn ready_notification(&self) -> RpcMessage {
@@ -475,6 +650,7 @@ impl RuntimeSession {
         context: ActionContext,
         now: Instant,
     ) -> Result<RpcRequest, SessionError> {
+        self.ensure_ready()?;
         if self.action_owner(action_id) != Some(self.plugin_id.as_str()) {
             return Err(SessionError::UnknownAction {
                 action_id: action_id.to_string(),
@@ -531,11 +707,29 @@ impl RuntimeSession {
     }
 
     pub fn action_owner(&self, action_id: &str) -> Option<&str> {
+        if self.lifecycle_state != PluginLifecycleState::Ready {
+            return None;
+        }
         self.registry.action_owner(action_id)
     }
 
     pub fn list_actions(&self) -> Vec<ActionSpec> {
+        if self.lifecycle_state != PluginLifecycleState::Ready {
+            return Vec::new();
+        }
         self.registry.actions()
+    }
+
+    pub fn mark_degraded(&mut self) -> Result<(), SessionError> {
+        self.transition_to(PluginLifecycleState::Degraded)
+    }
+
+    pub fn mark_restarting(&mut self) -> Result<(), SessionError> {
+        self.transition_to(PluginLifecycleState::Restarting)
+    }
+
+    pub fn mark_stopped(&mut self) -> Result<(), SessionError> {
+        self.transition_to(PluginLifecycleState::Stopped)
     }
 
     pub fn subscribe(&mut self, method: &str) {
@@ -953,16 +1147,19 @@ mod tests {
     #[test]
     fn runtime_session_happy_path() {
         let mut session = RuntimeSession::new("status");
+        assert_eq!(session.lifecycle_state(), PluginLifecycleState::Discovered);
         let hello = PluginHello {
             plugin_id: "status".to_string(),
             version: "0.1".to_string(),
         };
         let ack = session.handle_hello(&hello);
         assert!(ack.is_ok());
+        assert_eq!(session.lifecycle_state(), PluginLifecycleState::Handshaking);
 
         let register = default_registration_payload();
         let register_ack = session.handle_register(&register);
         assert!(register_ack.is_ok());
+        assert_eq!(session.lifecycle_state(), PluginLifecycleState::Ready);
         assert_eq!(session.action_owner("repo.open"), Some("status"));
 
         let ready = session.ready_notification();
@@ -1087,6 +1284,62 @@ mod tests {
     }
 
     #[test]
+    fn runtime_session_rejects_invoke_before_ready() {
+        let mut session = RuntimeSession::new("status");
+        let result = session.invoke_action(
+            "repo.open",
+            ActionContext {
+                selection_files: Vec::new(),
+            },
+            Instant::now(),
+        );
+
+        assert!(matches!(
+            result,
+            Err(SessionError::PluginNotReady {
+                plugin_id,
+                state: PluginLifecycleState::Discovered,
+            }) if plugin_id == "status"
+        ));
+    }
+
+    #[test]
+    fn runtime_session_rejects_invalid_lifecycle_transition() {
+        let mut session = RuntimeSession::new("status");
+        let hello = PluginHello {
+            plugin_id: "status".to_string(),
+            version: "0.1".to_string(),
+        };
+        assert!(session.handle_hello(&hello).is_ok());
+
+        // Повторный hello не допускается из состояния handshaking.
+        let second = session.handle_hello(&hello);
+        assert!(matches!(
+            second,
+            Err(SessionError::InvalidLifecycleTransition {
+                from: PluginLifecycleState::Handshaking,
+                to: PluginLifecycleState::Starting,
+            })
+        ));
+    }
+
+    #[test]
+    fn structured_runtime_log_contains_required_fields() {
+        let encoded = format_runtime_log_event(
+            "status",
+            "runtime.lifecycle.transition",
+            serde_json::json!({"from": "Discovered", "to": "Starting"}),
+        );
+        let decoded: serde_json::Value = serde_json::from_str(&encoded).expect("json");
+
+        assert_eq!(decoded["source"], "plugin_host");
+        assert_eq!(decoded["plugin_id"], "status");
+        assert_eq!(decoded["event"], "runtime.lifecycle.transition");
+        assert_eq!(decoded["fields"]["from"], "Discovered");
+        assert_eq!(decoded["fields"]["to"], "Starting");
+    }
+
+    #[test]
     fn runtime_session_delivers_only_subscribed_notifications() {
         let mut session = RuntimeSession::new("status");
         session.subscribe(METHOD_EVENT_STATE_UPDATED);
@@ -1163,13 +1416,40 @@ mod tests {
         let mut supervisor = PluginSupervisor::new(process);
 
         std::thread::sleep(std::time::Duration::from_millis(20));
-        supervisor.poll().expect("poll");
+        let health = supervisor.poll().expect("poll");
+        assert!(matches!(health, ProcessHealth::Exited { exit_code: 1 }));
         assert!(matches!(
             supervisor.availability(),
             PluginAvailability::Unavailable { .. }
         ));
         assert_eq!(supervisor.last_exit_code(), Some(1));
         assert_eq!(supervisor.plugin_id(), "status");
+    }
+
+    #[test]
+    fn supervisor_marks_temporarily_unavailable_while_restarting() {
+        let config = PluginProcessConfig {
+            plugin_id: "status".to_string(),
+            program: "sh".to_string(),
+            args: vec!["-c".to_string(), "exit 0".to_string()],
+            restart_policy: RestartPolicy::Once,
+        };
+
+        let process = PluginProcess::spawn(config).expect("spawn");
+        let mut supervisor = PluginSupervisor::new(process);
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let first = supervisor.poll().expect("poll");
+        assert!(matches!(first, ProcessHealth::Restarted { exit_code: 0 }));
+        assert!(matches!(
+            supervisor.availability(),
+            PluginAvailability::Unavailable { reason }
+                if reason.contains("restarting")
+        ));
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let second = supervisor.poll().expect("poll");
+        assert!(matches!(second, ProcessHealth::Exited { exit_code: 0 }));
     }
 
     #[test]

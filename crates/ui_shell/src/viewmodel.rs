@@ -47,6 +47,28 @@ pub fn build_status_panel(snapshot: &StoreSnapshot) -> ViewNode {
         .error
         .as_ref()
         .map(|err| format!("Commit error: {err}"));
+    let running_ops = snapshot
+        .journal
+        .entries
+        .iter()
+        .filter(|entry| matches!(entry.status, state_store::JournalStatus::Started))
+        .map(|entry| entry.op.as_str())
+        .collect::<Vec<_>>();
+    let loading_line = if running_ops.is_empty() {
+        None
+    } else {
+        Some(format!("Loading: {}", running_ops.join(", ")))
+    };
+    let operation_error = snapshot
+        .journal
+        .entries
+        .iter()
+        .rev()
+        .find(|entry| matches!(entry.status, state_store::JournalStatus::Failed))
+        .map(|entry| {
+            let detail = entry.error.as_deref().unwrap_or("unknown error");
+            format!("Operation error: {}: {}", entry.op, detail)
+        });
 
     let mut children = vec![
         ViewNode::Text {
@@ -67,6 +89,12 @@ pub fn build_status_panel(snapshot: &StoreSnapshot) -> ViewNode {
         ViewNode::Text { value: commit_line },
     ];
     if let Some(error) = commit_error {
+        children.push(ViewNode::Text { value: error });
+    }
+    if let Some(loading) = loading_line {
+        children.push(ViewNode::Text { value: loading });
+    }
+    if let Some(error) = operation_error {
         children.push(ViewNode::Text { value: error });
     }
     children.push(ViewNode::Button {
@@ -256,5 +284,55 @@ mod tests {
         let rendered = render(&panel, &snapshot);
         assert!(rendered.contains("Status Panel"));
         assert!(rendered.contains("[Commit] enabled"));
+    }
+
+    #[test]
+    fn shows_loading_and_operation_error_from_journal() {
+        let snapshot = StoreSnapshot {
+            repo: None,
+            status: StatusSnapshot {
+                staged: vec!["src/lib.rs".to_string()],
+                unstaged: Vec::new(),
+                untracked: Vec::new(),
+            },
+            selection: SelectionState::default(),
+            history: state_store::HistoryState::default(),
+            commit_cache: std::collections::HashMap::new(),
+            diff: state_store::DiffState::default(),
+            compare: state_store::CompareState::default(),
+            branches: state_store::BranchesState::default(),
+            tags: state_store::TagsState::default(),
+            commit_message: state_store::CommitMessageState::default(),
+            journal: state_store::OperationJournalState {
+                entries: vec![
+                    state_store::OperationJournalEntry {
+                        id: 1,
+                        job_id: None,
+                        op: "status.refresh".to_string(),
+                        status: state_store::JournalStatus::Started,
+                        started_at_ms: 1,
+                        finished_at_ms: None,
+                        error: None,
+                    },
+                    state_store::OperationJournalEntry {
+                        id: 2,
+                        job_id: None,
+                        op: "commit.create".to_string(),
+                        status: state_store::JournalStatus::Failed,
+                        started_at_ms: 2,
+                        finished_at_ms: Some(3),
+                        error: Some("nothing to commit".to_string()),
+                    },
+                ],
+            },
+            active_view: None,
+            plugins: Vec::new(),
+            version: 1,
+        };
+
+        let panel = build_status_panel(&snapshot);
+        let rendered = render(&panel, &snapshot);
+        assert!(rendered.contains("Loading: status.refresh"));
+        assert!(rendered.contains("Operation error: commit.create: nothing to commit"));
     }
 }
