@@ -2,12 +2,10 @@ use app_host::{
     CommitFlowOutcome, OpenRepoOutcome, run_commit_flow_with_prompt,
     run_repo_open_flow_with_picker, run_status_stage_unstage_smoke,
 };
-use plugin_api;
 use plugin_host::{
     PluginAvailability, PluginProcess, PluginProcessConfig, PluginSupervisor, RestartPolicy,
 };
 use state_store::{PluginHealth, StateStore, StatusSnapshot};
-use ui_shell;
 
 fn unique_temp_dir(label: &str) -> std::path::PathBuf {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
