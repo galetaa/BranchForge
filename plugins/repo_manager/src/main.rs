@@ -15,6 +15,7 @@ fn build_register_request() -> RpcRequest {
             title: "Open Repository".to_string(),
             when: Some("always".to_string()),
             params_schema: None,
+            danger: None,
         }],
         views: Vec::new(),
     }

@@ -40,6 +40,7 @@ pub fn run_action_roundtrip(action_id: &str) -> Result<String, InvokeError> {
         &mut session,
         &ActionRequest {
             action: action_id.to_string(),
+            confirmed: false,
         },
         ActionContext {
             selection_files: Vec::new(),
@@ -92,6 +93,7 @@ pub fn run_palette_invoke_smoke(filter: &str) -> Result<String, InvokeError> {
         &mut session,
         &ActionRequest {
             action: item.action_id,
+            confirmed: false,
         },
         ActionContext {
             selection_files: Vec::new(),
@@ -153,6 +155,7 @@ pub fn run_window_layout_smoke() -> String {
             title: "Open Repository".to_string(),
             when: Some("always".to_string()),
             params_schema: None,
+            danger: None,
         }],
         "",
         false,
@@ -179,6 +182,7 @@ pub fn run_window_after_open_smoke() -> String {
             title: "Open Repository".to_string(),
             when: Some("always".to_string()),
             params_schema: None,
+            danger: None,
         }],
         "",
         true,
@@ -194,12 +198,14 @@ pub fn run_palette_when_smoke(repo_open: bool) -> Vec<(String, bool)> {
             title: "Open Repository".to_string(),
             when: Some("always".to_string()),
             params_schema: None,
+            danger: None,
         },
         ActionSpec {
             action_id: "commit.create".to_string(),
             title: "Commit".to_string(),
             when: Some("repo.is_open".to_string()),
             params_schema: None,
+            danger: None,
         },
     ];
 
@@ -230,6 +236,7 @@ pub fn run_git_jobs_smoke(
             op: "repo.open".to_string(),
             lock: JobLock::Read,
             paths: Vec::new(),
+            job_id: None,
         },
         &mut store,
     )
@@ -297,6 +304,7 @@ where
             op: "repo.open".to_string(),
             lock: JobLock::Read,
             paths: Vec::new(),
+            job_id: None,
         },
         &mut store,
     );
@@ -322,6 +330,7 @@ pub fn run_status_stage_unstage_smoke(
             op: "repo.open".to_string(),
             lock: JobLock::Read,
             paths: Vec::new(),
+            job_id: None,
         },
         &mut store,
     )
@@ -339,6 +348,7 @@ pub fn run_status_stage_unstage_smoke(
             op: "diff.worktree".to_string(),
             lock: JobLock::Read,
             paths: selected_files.clone(),
+            job_id: None,
         },
         &mut store,
     );
@@ -349,6 +359,7 @@ pub fn run_status_stage_unstage_smoke(
             op: "index.stage_paths".to_string(),
             lock: JobLock::IndexWrite,
             paths: selected_files.clone(),
+            job_id: None,
         },
         &mut store,
     )
@@ -360,6 +371,7 @@ pub fn run_status_stage_unstage_smoke(
             op: "index.unstage_paths".to_string(),
             lock: JobLock::IndexWrite,
             paths: selected_files,
+            job_id: None,
         },
         &mut store,
     )
@@ -381,6 +393,7 @@ pub fn run_history_page_smoke(
             op: "history.page".to_string(),
             lock: JobLock::Read,
             paths: vec![offset.to_string(), limit.to_string()],
+            job_id: None,
         },
         &mut store,
     )
@@ -402,6 +415,7 @@ pub fn run_history_select_and_diff_smoke(
             op: "history.page".to_string(),
             lock: JobLock::Read,
             paths: vec!["0".to_string(), "5".to_string()],
+            job_id: None,
         },
         &mut store,
     )
@@ -423,6 +437,7 @@ pub fn run_history_select_and_diff_smoke(
             op: "history.details".to_string(),
             lock: JobLock::Read,
             paths: vec![commit.oid.clone()],
+            job_id: None,
         },
         &mut store,
     )
@@ -434,6 +449,7 @@ pub fn run_history_select_and_diff_smoke(
             op: "diff.commit".to_string(),
             lock: JobLock::Read,
             paths: vec![commit.oid.clone()],
+            job_id: None,
         },
         &mut store,
     )
@@ -458,6 +474,7 @@ pub fn run_branch_workflow_smoke(
             op: "repo.open".to_string(),
             lock: JobLock::Read,
             paths: Vec::new(),
+            job_id: None,
         },
         &mut store,
     )
@@ -476,6 +493,7 @@ pub fn run_branch_workflow_smoke(
             op: "branch.create".to_string(),
             lock: JobLock::RefsWrite,
             paths: vec![branch_name.to_string()],
+            job_id: None,
         },
         &mut store,
     )
@@ -490,6 +508,7 @@ pub fn run_branch_workflow_smoke(
             op: "branch.checkout".to_string(),
             lock: JobLock::RefsWrite,
             paths: vec![branch_name.to_string()],
+            job_id: None,
         },
         &mut store,
     )
@@ -502,6 +521,7 @@ pub fn run_branch_workflow_smoke(
             op: "branch.rename".to_string(),
             lock: JobLock::RefsWrite,
             paths: vec![branch_name.to_string(), renamed.clone()],
+            job_id: None,
         },
         &mut store,
     )
@@ -513,6 +533,7 @@ pub fn run_branch_workflow_smoke(
             op: "branch.checkout".to_string(),
             lock: JobLock::RefsWrite,
             paths: vec![base_branch.clone()],
+            job_id: None,
         },
         &mut store,
     )
@@ -524,6 +545,7 @@ pub fn run_branch_workflow_smoke(
             op: "branch.delete".to_string(),
             lock: JobLock::RefsWrite,
             paths: vec![renamed],
+            job_id: None,
         },
         &mut store,
     )
@@ -547,6 +569,7 @@ where
             op: "repo.open".to_string(),
             lock: JobLock::Read,
             paths: Vec::new(),
+            job_id: None,
         },
         &mut store,
     )
@@ -588,6 +611,7 @@ where
             op: "commit.create".to_string(),
             lock: JobLock::RefsWrite,
             paths: vec![message],
+            job_id: None,
         },
         &mut store,
     );
@@ -609,6 +633,7 @@ pub fn run_commit_amend_smoke(
             op: "commit.amend".to_string(),
             lock: JobLock::RefsWrite,
             paths: message.into_iter().collect(),
+            job_id: None,
         },
         &mut store,
     )
@@ -633,6 +658,7 @@ pub fn run_history_search_smoke(
             op: "history.page".to_string(),
             lock: JobLock::Read,
             paths,
+            job_id: None,
         },
         &mut store,
     )

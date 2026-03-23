@@ -1,11 +1,11 @@
 # Branchforge
 
-Current state: Sprint 10 (Commit Polish, Search, Tags) in progress on top of MVP foundations.
+Current state: Sprint 11 (Safety Layer and Journal) in progress on top of MVP foundations.
 
 ## Quick start
 
 ```bash
-./scripts/verify-sprint-10.sh
+./scripts/verify-sprint-11.sh
 ./scripts/check-deps.sh
 cargo check --workspace
 cargo test --workspace

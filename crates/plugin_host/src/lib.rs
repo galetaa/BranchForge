@@ -4,9 +4,9 @@ use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use plugin_api::{
-    ActionContext, ActionSpec, CodecError, FrameCodec, HelloAck, METHOD_HOST_ACTION_INVOKE,
-    METHOD_PLUGIN_READY, PluginHello, PluginRegister, RegisterAck, RpcMessage, RpcNotification,
-    RpcRequest, RpcResponse,
+    ActionContext, ActionSpec, CodecError, DangerLevel, FrameCodec, HelloAck,
+    METHOD_HOST_ACTION_INVOKE, METHOD_PLUGIN_READY, PluginHello, PluginRegister, RegisterAck,
+    RpcMessage, RpcNotification, RpcRequest, RpcResponse,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -586,6 +586,7 @@ pub fn repo_manager_registration_payload() -> PluginRegister {
             title: "Open Repository".to_string(),
             when: Some("always".to_string()),
             params_schema: None,
+            danger: None,
         }],
         views: Vec::new(),
     }
@@ -599,24 +600,28 @@ pub fn status_registration_payload() -> PluginRegister {
                 title: "Stage Selected".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: None,
             },
             ActionSpec {
                 action_id: "index.unstage_selected".to_string(),
                 title: "Unstage Selected".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: None,
             },
             ActionSpec {
                 action_id: "commit.create".to_string(),
                 title: "Commit".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: None,
             },
             ActionSpec {
                 action_id: "commit.amend".to_string(),
                 title: "Amend Commit".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: Some(DangerLevel::Medium),
             },
         ],
         views: vec![plugin_api::ViewSpec {
@@ -636,24 +641,28 @@ pub fn history_registration_payload() -> PluginRegister {
                 title: "Load More History".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: None,
             },
             ActionSpec {
                 action_id: "history.select_commit".to_string(),
                 title: "Select Commit".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: None,
             },
             ActionSpec {
                 action_id: "history.search".to_string(),
                 title: "Search History".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: None,
             },
             ActionSpec {
                 action_id: "history.clear_filter".to_string(),
                 title: "Clear History Filter".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: None,
             },
         ],
         views: vec![plugin_api::ViewSpec {
@@ -673,36 +682,42 @@ pub fn branches_registration_payload() -> PluginRegister {
                 title: "Checkout Branch".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: None,
             },
             ActionSpec {
                 action_id: "branch.create".to_string(),
                 title: "Create Branch".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: None,
             },
             ActionSpec {
                 action_id: "branch.rename".to_string(),
                 title: "Rename Branch".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: None,
             },
             ActionSpec {
                 action_id: "branch.delete".to_string(),
                 title: "Delete Branch".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: Some(DangerLevel::High),
             },
             ActionSpec {
                 action_id: "tag.checkout".to_string(),
                 title: "Checkout Tag".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: Some(DangerLevel::Medium),
             },
             ActionSpec {
                 action_id: "tag.create".to_string(),
                 title: "Create Tag".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: Some(DangerLevel::Low),
             },
         ],
         views: vec![plugin_api::ViewSpec {

@@ -91,6 +91,29 @@ pub struct CommitMessageState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JournalStatus {
+    Started,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationJournalEntry {
+    pub id: u64,
+    pub job_id: Option<u64>,
+    pub op: String,
+    pub status: JournalStatus,
+    pub started_at_ms: u64,
+    pub finished_at_ms: Option<u64>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct OperationJournalState {
+    pub entries: Vec<OperationJournalEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginHealth {
     Ready,
     Unavailable { message: String },
@@ -113,6 +136,7 @@ pub struct StoreSnapshot {
     pub branches: BranchesState,
     pub tags: TagsState,
     pub commit_message: CommitMessageState,
+    pub journal: OperationJournalState,
     pub active_view: Option<String>,
     pub plugins: Vec<PluginStatus>,
     pub version: StoreVersion,
@@ -124,11 +148,23 @@ pub enum StateEvent {
     Updated { version: StoreVersion },
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct StateStore {
     snapshot: StoreSnapshot,
     subscribers: HashMap<u64, Vec<StateEvent>>,
     next_subscriber_id: u64,
+    next_journal_id: u64,
+}
+
+impl Default for StateStore {
+    fn default() -> Self {
+        Self {
+            snapshot: StoreSnapshot::default(),
+            subscribers: HashMap::new(),
+            next_subscriber_id: 1,
+            next_journal_id: 1,
+        }
+    }
 }
 
 impl StateStore {
@@ -203,6 +239,53 @@ impl StateStore {
     pub fn clear_history(&mut self) {
         self.snapshot.history = HistoryState::default();
         self.snapshot.commit_cache.clear();
+        self.bump_version();
+    }
+
+    pub fn append_journal_entry(
+        &mut self,
+        job_id: Option<u64>,
+        op: String,
+        started_at_ms: u64,
+    ) -> u64 {
+        let entry_id = self.next_journal_id;
+        self.next_journal_id += 1;
+        self.snapshot.journal.entries.push(OperationJournalEntry {
+            id: entry_id,
+            job_id,
+            op,
+            status: JournalStatus::Started,
+            started_at_ms,
+            finished_at_ms: None,
+            error: None,
+        });
+        self.bump_version();
+        entry_id
+    }
+
+    pub fn finish_journal_entry(
+        &mut self,
+        entry_id: u64,
+        status: JournalStatus,
+        finished_at_ms: u64,
+        error: Option<String>,
+    ) {
+        if let Some(entry) = self
+            .snapshot
+            .journal
+            .entries
+            .iter_mut()
+            .find(|entry| entry.id == entry_id)
+        {
+            entry.status = status;
+            entry.finished_at_ms = Some(finished_at_ms);
+            entry.error = error;
+        }
+        self.bump_version();
+    }
+
+    pub fn clear_journal(&mut self) {
+        self.snapshot.journal = OperationJournalState::default();
         self.bump_version();
     }
 
@@ -418,6 +501,23 @@ mod tests {
             store.snapshot().commit_message.error.as_deref(),
             Some("empty")
         );
+    }
+
+    #[test]
+    fn journal_entry_lifecycle_updates_status() {
+        let mut store = StateStore::new();
+        let entry_id = store.append_journal_entry(Some(42), "commit.create".to_string(), 100);
+        assert_eq!(store.snapshot().journal.entries.len(), 1);
+        assert!(matches!(
+            store.snapshot().journal.entries[0].status,
+            JournalStatus::Started
+        ));
+
+        store.finish_journal_entry(entry_id, JournalStatus::Succeeded, 200, None);
+        let entry = &store.snapshot().journal.entries[0];
+        assert_eq!(entry.job_id, Some(42));
+        assert_eq!(entry.finished_at_ms, Some(200));
+        assert!(matches!(entry.status, JournalStatus::Succeeded));
     }
 
     #[test]

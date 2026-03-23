@@ -16,24 +16,28 @@ fn build_register_request() -> RpcRequest {
                 title: "Load More History".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: None,
             },
             ActionSpec {
                 action_id: "history.select_commit".to_string(),
                 title: "Select Commit".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: None,
             },
             ActionSpec {
                 action_id: "history.search".to_string(),
                 title: "Search History".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: None,
             },
             ActionSpec {
                 action_id: "history.clear_filter".to_string(),
                 title: "Clear History Filter".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
+                danger: None,
             },
         ],
         views: vec![ViewSpec {

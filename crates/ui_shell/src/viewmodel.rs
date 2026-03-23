@@ -235,6 +235,7 @@ mod tests {
             branches: state_store::BranchesState::default(),
             tags: state_store::TagsState::default(),
             commit_message: state_store::CommitMessageState::default(),
+            journal: state_store::OperationJournalState::default(),
             active_view: None,
             plugins: Vec::new(),
             version: 1,

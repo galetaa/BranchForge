@@ -4,8 +4,8 @@ use std::path::Path;
 use git_service::{GitCommand, GitServiceError, RepoOpenResult, StatusSummary};
 use plugin_api::RepoSnapshot;
 use state_store::{
-    BranchInfo, CommitDetails, DiffSource, DiffState, HistoryCursor, SelectionState, StateStore,
-    StatusSnapshot,
+    BranchInfo, CommitDetails, DiffSource, DiffState, HistoryCursor, JournalStatus, SelectionState,
+    StateStore, StatusSnapshot,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -21,6 +21,7 @@ pub struct JobRequest {
     pub op: String,
     pub lock: JobLock,
     pub paths: Vec<String>,
+    pub job_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +78,8 @@ impl JobQueue {
     pub fn enqueue(&mut self, request: JobRequest) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
+        let mut request = request;
+        request.job_id = Some(id);
 
         self.queued.push_back(Job {
             id,
@@ -143,10 +146,12 @@ pub fn execute_job_op(
     request: &JobRequest,
     store: &mut StateStore,
 ) -> Result<JobExecutionResult, JobExecutionError> {
-    match request.op.as_str() {
+    let journal_entry = start_journal_entry(store, request);
+    let result = (|| match request.op.as_str() {
         "repo.open" => {
             refresh_repo_and_status(cwd, store)?;
             refresh_refs(cwd, store)?;
+            store.clear_journal();
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -427,7 +432,10 @@ pub fn execute_job_op(
         _ => Err(JobExecutionError::UnsupportedOp {
             op: request.op.clone(),
         }),
-    }
+    })();
+
+    finish_journal_entry(store, journal_entry, &result);
+    result
 }
 
 fn apply_repo_open(store: &mut StateStore, repo: &RepoOpenResult, status: &StatusSummary) {
@@ -497,6 +505,54 @@ fn parse_history_request(request: &JobRequest) -> Result<(usize, usize), JobExec
     Ok((offset, limit))
 }
 
+fn start_journal_entry(store: &mut StateStore, request: &JobRequest) -> Option<u64> {
+    if !is_journaled_op(&request.op) {
+        return None;
+    }
+    Some(store.append_journal_entry(request.job_id, request.op.clone(), now_millis()))
+}
+
+fn finish_journal_entry(
+    store: &mut StateStore,
+    entry_id: Option<u64>,
+    result: &Result<JobExecutionResult, JobExecutionError>,
+) {
+    let entry_id = match entry_id {
+        Some(id) => id,
+        None => return,
+    };
+    let status = if result.is_ok() {
+        JournalStatus::Succeeded
+    } else {
+        JournalStatus::Failed
+    };
+    let error = result.as_ref().err().map(|err| format!("{err:?}"));
+    store.finish_journal_entry(entry_id, status, now_millis(), error);
+}
+
+fn is_journaled_op(op: &str) -> bool {
+    matches!(
+        op,
+        "index.stage_paths"
+            | "index.unstage_paths"
+            | "commit.create"
+            | "commit.amend"
+            | "branch.checkout"
+            | "branch.create"
+            | "branch.rename"
+            | "branch.delete"
+            | "tag.create"
+            | "tag.checkout"
+    )
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -524,16 +580,19 @@ mod tests {
             op: "status.refresh".to_string(),
             lock: JobLock::Read,
             paths: Vec::new(),
+            job_id: None,
         });
         let write_id = queue.enqueue(JobRequest {
             op: "index.stage_paths".to_string(),
             lock: JobLock::IndexWrite,
             paths: vec!["README.md".to_string()],
+            job_id: None,
         });
         let read2_id = queue.enqueue(JobRequest {
             op: "status.refresh".to_string(),
             lock: JobLock::Read,
             paths: Vec::new(),
+            job_id: None,
         });
 
         let first = queue.try_start_next();
@@ -585,6 +644,7 @@ mod tests {
             op: "repo.open".to_string(),
             lock: JobLock::Read,
             paths: Vec::new(),
+            job_id: None,
         };
         let result = execute_job_op(&repo_dir, &req, &mut store);
         assert!(result.is_ok());
@@ -616,6 +676,7 @@ mod tests {
             op: "repo.open".to_string(),
             lock: JobLock::Read,
             paths: Vec::new(),
+            job_id: None,
         };
         assert!(execute_job_op(&repo_dir, &req, &mut store).is_ok());
         assert!(store.snapshot().selection.selected_paths.is_empty());
@@ -639,6 +700,7 @@ mod tests {
             op: "status.refresh".to_string(),
             lock: JobLock::Read,
             paths: Vec::new(),
+            job_id: None,
         };
         let result = execute_job_op(&repo_dir, &req, &mut store);
         assert!(result.is_ok());
@@ -672,6 +734,7 @@ mod tests {
                     op: "index.stage_paths".to_string(),
                     lock: JobLock::IndexWrite,
                     paths: vec![file.clone()],
+                    job_id: None,
                 },
                 &mut store,
             )
@@ -686,6 +749,7 @@ mod tests {
                     op: "index.unstage_paths".to_string(),
                     lock: JobLock::IndexWrite,
                     paths: vec![file.clone()],
+                    job_id: None,
                 },
                 &mut store,
             )
@@ -713,6 +777,7 @@ mod tests {
                     op: "index.stage_paths".to_string(),
                     lock: JobLock::IndexWrite,
                     paths: vec![file.clone()],
+                    job_id: None,
                 },
                 &mut store,
             )
@@ -748,6 +813,7 @@ mod tests {
                     op: "index.stage_paths".to_string(),
                     lock: JobLock::IndexWrite,
                     paths: vec![file.clone()],
+                    job_id: None,
                 },
                 &mut store,
             )
@@ -760,6 +826,7 @@ mod tests {
                 op: "commit.create".to_string(),
                 lock: JobLock::RefsWrite,
                 paths: vec!["Initial commit".to_string()],
+                job_id: None,
             },
             &mut store,
         );
@@ -793,6 +860,7 @@ mod tests {
                     op: "index.stage_paths".to_string(),
                     lock: JobLock::IndexWrite,
                     paths: vec![file.clone()],
+                    job_id: None,
                 },
                 &mut store,
             )
@@ -805,6 +873,7 @@ mod tests {
                 op: "commit.create".to_string(),
                 lock: JobLock::RefsWrite,
                 paths: vec!["Initial commit".to_string()],
+                job_id: None,
             },
             &mut store,
         );
@@ -844,6 +913,7 @@ mod tests {
                     op: "history.page".to_string(),
                     lock: JobLock::Read,
                     paths: vec!["0".to_string(), "1".to_string()],
+                    job_id: None,
                 },
                 &mut store,
             )
@@ -858,6 +928,7 @@ mod tests {
                     op: "history.page".to_string(),
                     lock: JobLock::Read,
                     paths: vec!["1".to_string(), "1".to_string()],
+                    job_id: None,
                 },
                 &mut store,
             )
@@ -894,6 +965,7 @@ mod tests {
                     op: "diff.commit".to_string(),
                     lock: JobLock::Read,
                     paths: vec![oid.clone()],
+                    job_id: None,
                 },
                 &mut store,
             )
@@ -939,6 +1011,7 @@ mod tests {
                 op: "branch.delete".to_string(),
                 lock: JobLock::RefsWrite,
                 paths: vec![current],
+                job_id: None,
             },
             &mut store,
         );
@@ -974,6 +1047,7 @@ mod tests {
                 op: "branch.checkout".to_string(),
                 lock: JobLock::RefsWrite,
                 paths: vec!["feature".to_string()],
+                job_id: None,
             },
             &mut store,
         );
@@ -1004,6 +1078,7 @@ mod tests {
                 op: "commit.create".to_string(),
                 lock: JobLock::RefsWrite,
                 paths: vec!["Initial commit".to_string()],
+                job_id: None,
             },
             &mut store,
         );
