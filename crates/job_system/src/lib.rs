@@ -142,9 +142,7 @@ pub fn execute_job_op(
 ) -> Result<JobExecutionResult, JobExecutionError> {
     match request.op.as_str() {
         "repo.open" => {
-            let repo = git_service::repo_open(cwd)?;
-            let status = git_service::status_refresh(cwd)?;
-            apply_repo_open(store, &repo, &status);
+            refresh_repo_and_status(cwd, store)?;
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -152,8 +150,7 @@ pub fn execute_job_op(
             })
         }
         "status.refresh" => {
-            let status = git_service::status_refresh(cwd)?;
-            apply_status(store, &status);
+            refresh_status(cwd, store)?;
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -162,8 +159,7 @@ pub fn execute_job_op(
         }
         "index.stage_paths" => {
             git_service::stage_paths(cwd, &request.paths)?;
-            let status = git_service::status_refresh(cwd)?;
-            apply_status(store, &status);
+            refresh_status(cwd, store)?;
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -172,8 +168,7 @@ pub fn execute_job_op(
         }
         "index.unstage_paths" => {
             git_service::unstage_paths(cwd, &request.paths)?;
-            let status = git_service::status_refresh(cwd)?;
-            apply_status(store, &status);
+            refresh_status(cwd, store)?;
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -188,9 +183,7 @@ pub fn execute_job_op(
             })?;
 
             git_service::commit_create(cwd, message)?;
-            let repo = git_service::repo_open(cwd)?;
-            let status = git_service::status_refresh(cwd)?;
-            apply_repo_open(store, &repo, &status);
+            refresh_repo_and_status(cwd, store)?;
 
             Ok(JobExecutionResult {
                 op: request.op.clone(),
@@ -219,6 +212,19 @@ fn apply_status(store: &mut StateStore, status: &StatusSummary) {
         unstaged: status.unstaged.clone(),
         untracked: status.untracked.clone(),
     });
+}
+
+fn refresh_status(cwd: &Path, store: &mut StateStore) -> Result<(), JobExecutionError> {
+    let status = git_service::status_refresh(cwd)?;
+    apply_status(store, &status);
+    Ok(())
+}
+
+fn refresh_repo_and_status(cwd: &Path, store: &mut StateStore) -> Result<(), JobExecutionError> {
+    let repo = git_service::repo_open(cwd)?;
+    let status = git_service::status_refresh(cwd)?;
+    apply_repo_open(store, &repo, &status);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -322,6 +328,30 @@ mod tests {
     }
 
     #[test]
+    fn repo_open_clears_selection_state() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(std::fs::write(repo_dir.join("README.md"), "hello\n").is_ok());
+
+        let mut store = StateStore::new();
+        store.update_selection(SelectionState {
+            selected_paths: vec!["README.md".to_string()],
+        });
+        assert_eq!(store.snapshot().selection.selected_paths.len(), 1);
+
+        let req = JobRequest {
+            op: "repo.open".to_string(),
+            lock: JobLock::Read,
+            paths: Vec::new(),
+        };
+        assert!(execute_job_op(&repo_dir, &req, &mut store).is_ok());
+        assert!(store.snapshot().selection.selected_paths.is_empty());
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
     fn execute_status_refresh_updates_store() {
         let repo_dir = unique_temp_dir();
         let create = std::fs::create_dir_all(&repo_dir);
@@ -395,6 +425,37 @@ mod tests {
     }
 
     #[test]
+    fn stage_refresh_matches_git_status() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+
+        let file = "file.txt".to_string();
+        assert!(std::fs::write(repo_dir.join(&file), "data\n").is_ok());
+
+        let mut store = StateStore::new();
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "index.stage_paths".to_string(),
+                    lock: JobLock::IndexWrite,
+                    paths: vec![file.clone()],
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+
+        let status = git_service::status_refresh(&repo_dir).expect("status");
+        assert_eq!(store.snapshot().status.staged, status.staged);
+        assert_eq!(store.snapshot().status.unstaged, status.unstaged);
+        assert_eq!(store.snapshot().status.untracked, status.untracked);
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
     fn execute_commit_create_updates_repo_and_clears_staged() {
         let repo_dir = unique_temp_dir();
         assert!(std::fs::create_dir_all(&repo_dir).is_ok());
@@ -435,6 +496,52 @@ mod tests {
         let snapshot = store.snapshot();
         assert!(snapshot.repo.is_some());
         assert!(snapshot.status.staged.is_empty());
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn commit_refresh_matches_git_status() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let file = "commit.txt".to_string();
+        assert!(std::fs::write(repo_dir.join(&file), "data\n").is_ok());
+
+        let mut store = StateStore::new();
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "index.stage_paths".to_string(),
+                    lock: JobLock::IndexWrite,
+                    paths: vec![file.clone()],
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+
+        let commit_result = execute_job_op(
+            &repo_dir,
+            &JobRequest {
+                op: "commit.create".to_string(),
+                lock: JobLock::RefsWrite,
+                paths: vec!["Initial commit".to_string()],
+            },
+            &mut store,
+        );
+        assert!(commit_result.is_ok());
+
+        let status = git_service::status_refresh(&repo_dir).expect("status");
+        assert_eq!(store.snapshot().status.staged, status.staged);
+        assert_eq!(store.snapshot().status.unstaged, status.unstaged);
+        assert_eq!(store.snapshot().status.untracked, status.untracked);
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }

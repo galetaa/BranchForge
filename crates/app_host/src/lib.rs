@@ -11,7 +11,10 @@ use plugin_host::{
 };
 use state_store::{SelectionState, StateEvent, StateStore, StatusSnapshot};
 
+pub mod errors;
 pub mod recent_repos;
+
+use errors::{UserFacingError, translate_job_error};
 
 pub fn run_action_roundtrip(action_id: &str) -> Result<String, InvokeError> {
     let mut session = RuntimeSession::new("status");
@@ -234,15 +237,15 @@ pub fn run_git_jobs_smoke(
 pub enum OpenRepoOutcome {
     Opened(state_store::StoreSnapshot),
     Cancelled,
-    Failed(String),
+    Failed(UserFacingError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommitFlowOutcome {
     Committed(state_store::StoreSnapshot),
     Cancelled,
-    ValidationError(String),
-    Failed(String),
+    ValidationError(UserFacingError),
+    Failed(UserFacingError),
 }
 
 pub fn run_repo_open_flow_with_picker<F>(mut pick_folder: F) -> OpenRepoOutcome
@@ -255,13 +258,21 @@ where
         version: "0.1".to_string(),
     };
     if session.handle_hello(&hello).is_err() {
-        return OpenRepoOutcome::Failed("repo manager handshake failed".to_string());
+        return OpenRepoOutcome::Failed(UserFacingError::new(
+            "Plugin error",
+            "Repo manager handshake failed.",
+            None,
+        ));
     }
     if session
         .handle_register(&repo_manager_registration_payload())
         .is_err()
     {
-        return OpenRepoOutcome::Failed("repo manager registration failed".to_string());
+        return OpenRepoOutcome::Failed(UserFacingError::new(
+            "Plugin error",
+            "Repo manager registration failed.",
+            None,
+        ));
     }
 
     let selected = pick_folder();
@@ -286,7 +297,7 @@ where
             let _ = recent_repos::persist_recent_repo(&repo_dir);
             OpenRepoOutcome::Opened(store.snapshot().clone())
         }
-        Err(_) => OpenRepoOutcome::Failed("Selected folder is not a git repository.".to_string()),
+        Err(err) => OpenRepoOutcome::Failed(translate_job_error(&err)),
     }
 }
 
@@ -356,11 +367,19 @@ where
     )
     .is_err()
     {
-        return CommitFlowOutcome::Failed("Selected folder is not a git repository.".to_string());
+        return CommitFlowOutcome::Failed(UserFacingError::new(
+            "Not a Git repository",
+            "Select a folder that contains a Git repository.",
+            None,
+        ));
     }
 
     if store.snapshot().status.staged.is_empty() {
-        return CommitFlowOutcome::ValidationError("No staged changes to commit.".to_string());
+        return CommitFlowOutcome::ValidationError(UserFacingError::new(
+            "Nothing to commit",
+            "No staged changes to commit.",
+            None,
+        ));
     }
 
     let message = match prompt_message() {
@@ -369,7 +388,11 @@ where
     };
 
     if message.trim().is_empty() {
-        return CommitFlowOutcome::ValidationError("Commit message cannot be empty.".to_string());
+        return CommitFlowOutcome::ValidationError(UserFacingError::new(
+            "Invalid input",
+            "Commit message cannot be empty.",
+            None,
+        ));
     }
 
     let result = execute_job_op(
@@ -384,7 +407,7 @@ where
 
     match result {
         Ok(_) => CommitFlowOutcome::Committed(store.snapshot().clone()),
-        Err(_) => CommitFlowOutcome::Failed("Commit failed.".to_string()),
+        Err(err) => CommitFlowOutcome::Failed(translate_job_error(&err)),
     }
 }
 
@@ -511,7 +534,9 @@ mod tests {
         let outcome = run_repo_open_flow_with_picker(|| Some(dir.clone()));
         assert!(matches!(
             outcome,
-            OpenRepoOutcome::Failed(message) if message == "Selected folder is not a git repository."
+            OpenRepoOutcome::Failed(UserFacingError { title, message, detail: Some(_) })
+                if title == "Not a Git repository"
+                && message == "Select a folder that contains a Git repository."
         ));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -612,7 +637,8 @@ mod tests {
         let outcome = run_commit_flow_with_prompt(&repo_dir, || Some("   ".to_string()));
         assert!(matches!(
             outcome,
-            CommitFlowOutcome::ValidationError(message) if message == "Commit message cannot be empty."
+            CommitFlowOutcome::ValidationError(UserFacingError { title, message, .. })
+                if title == "Invalid input" && message == "Commit message cannot be empty."
         ));
 
         let _ = std::fs::remove_dir_all(&repo_dir);
@@ -637,7 +663,8 @@ mod tests {
             run_commit_flow_with_prompt(&repo_dir, || Some("feat: try commit".to_string()));
         assert!(matches!(
             outcome,
-            CommitFlowOutcome::ValidationError(message) if message == "No staged changes to commit."
+            CommitFlowOutcome::ValidationError(UserFacingError { title, message, .. })
+                if title == "Nothing to commit" && message == "No staged changes to commit."
         ));
 
         let _ = std::fs::remove_dir_all(&repo_dir);

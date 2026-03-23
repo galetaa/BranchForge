@@ -21,6 +21,13 @@ pub enum RestartPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcessHealth {
+    Running,
+    Restarted { exit_code: i32 },
+    Exited { exit_code: i32 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginProcessConfig {
     pub plugin_id: String,
     pub program: String,
@@ -81,10 +88,34 @@ impl PluginProcess {
         Ok(())
     }
 
+    pub fn plugin_id(&self) -> &str {
+        &self.config.plugin_id
+    }
+
     pub fn receive(&mut self) -> Result<RpcMessage, ProcessError> {
         self.codec
             .read_from(&mut self.stdout)
             .map_err(ProcessError::from)
+    }
+
+    pub fn check_health(&mut self) -> Result<ProcessHealth, ProcessError> {
+        let exit = self.child.try_wait()?;
+        let Some(status) = exit else {
+            return Ok(ProcessHealth::Running);
+        };
+
+        let exit_code = status.code().unwrap_or(-1);
+        if self.config.restart_policy == RestartPolicy::Never || self.restart_used {
+            return Ok(ProcessHealth::Exited { exit_code });
+        }
+
+        let (child, stdin, stdout, stderr) = spawn_child(&self.config)?;
+        self.child = child;
+        self.stdin = stdin;
+        self.stdout = stdout;
+        self.stderr = stderr;
+        self.restart_used = true;
+        Ok(ProcessHealth::Restarted { exit_code })
     }
 
     pub fn restart_if_exited(&mut self) -> Result<bool, ProcessError> {
@@ -169,6 +200,59 @@ pub enum SessionError {
     UnknownAction { action_id: String },
     UnknownRequestId { request_id: String },
     UnexpectedMessage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginAvailability {
+    Ready,
+    Unavailable { reason: String },
+}
+
+#[derive(Debug)]
+pub struct PluginSupervisor {
+    plugin_id: String,
+    process: PluginProcess,
+    availability: PluginAvailability,
+    last_exit_code: Option<i32>,
+}
+
+impl PluginSupervisor {
+    pub fn new(process: PluginProcess) -> Self {
+        Self {
+            plugin_id: process.plugin_id().to_string(),
+            process,
+            availability: PluginAvailability::Ready,
+            last_exit_code: None,
+        }
+    }
+
+    pub fn poll(&mut self) -> Result<(), ProcessError> {
+        match self.process.check_health()? {
+            ProcessHealth::Running => {}
+            ProcessHealth::Restarted { exit_code } => {
+                self.last_exit_code = Some(exit_code);
+            }
+            ProcessHealth::Exited { exit_code } => {
+                self.last_exit_code = Some(exit_code);
+                self.availability = PluginAvailability::Unavailable {
+                    reason: format!("plugin exited with code {exit_code}"),
+                };
+            }
+        }
+        Ok(())
+    }
+
+    pub fn availability(&self) -> &PluginAvailability {
+        &self.availability
+    }
+
+    pub fn last_exit_code(&self) -> Option<i32> {
+        self.last_exit_code
+    }
+
+    pub fn plugin_id(&self) -> &str {
+        &self.plugin_id
+    }
 }
 
 impl From<RegistryError> for SessionError {
@@ -878,6 +962,48 @@ mod tests {
         assert_eq!(outbox[0].method, METHOD_EVENT_STATE_UPDATED);
         assert_eq!(outbox[1].method, METHOD_EVENT_REPO_OPENED);
         assert!(session.drain_notifications().is_empty());
+    }
+
+    #[test]
+    fn process_health_restarts_once_then_reports_exit() {
+        let config = PluginProcessConfig {
+            plugin_id: "status".to_string(),
+            program: "sh".to_string(),
+            args: vec!["-c".to_string(), "exit 0".to_string()],
+            restart_policy: RestartPolicy::Once,
+        };
+
+        let mut process = PluginProcess::spawn(config).expect("spawn");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        let first = process.check_health().expect("health");
+        assert!(matches!(first, ProcessHealth::Restarted { exit_code: 0 }));
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let second = process.check_health().expect("health");
+        assert!(matches!(second, ProcessHealth::Exited { exit_code: 0 }));
+    }
+
+    #[test]
+    fn supervisor_marks_unavailable_after_exhausted_restart() {
+        let config = PluginProcessConfig {
+            plugin_id: "status".to_string(),
+            program: "sh".to_string(),
+            args: vec!["-c".to_string(), "exit 1".to_string()],
+            restart_policy: RestartPolicy::Never,
+        };
+
+        let process = PluginProcess::spawn(config).expect("spawn");
+        let mut supervisor = PluginSupervisor::new(process);
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        supervisor.poll().expect("poll");
+        assert!(matches!(
+            supervisor.availability(),
+            PluginAvailability::Unavailable { .. }
+        ));
+        assert_eq!(supervisor.last_exit_code(), Some(1));
+        assert_eq!(supervisor.plugin_id(), "status");
     }
 
     #[test]
