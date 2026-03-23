@@ -48,7 +48,7 @@ fn post_mvp_smoke_baseline() {
     let process = PluginProcess::spawn(config).expect("spawn");
     let mut supervisor = PluginSupervisor::new(process);
     std::thread::sleep(std::time::Duration::from_millis(20));
-    supervisor.poll().expect("poll");
+    let _ = supervisor.poll().expect("poll");
 
     let mut store = StateStore::new();
     store.update_repo(plugin_api::RepoSnapshot {

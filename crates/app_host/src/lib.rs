@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use action_engine::{ActionRequest, InvokeError, route_action_invoke, route_action_response};
 use job_system::{JobLock, JobRequest, execute_job_op};
@@ -7,11 +7,12 @@ use plugin_api::{
     RpcMessage, RpcNotification, RpcResponse,
 };
 use plugin_host::{
-    RuntimeSession, default_registration_payload, repo_manager_registration_payload,
+    PluginAvailability, PluginSupervisor, ProcessHealth, RuntimeSession,
+    default_registration_payload, repo_manager_registration_payload,
 };
 use state_store::{
-    CommitDetails, CommitSummary, DiffState, HistoryCursor, SelectionState, StateEvent, StateStore,
-    StatusSnapshot,
+    CommitDetails, CommitSummary, DiffState, HistoryCursor, PluginHealth, SelectionState,
+    StateEvent, StateStore, StatusSnapshot,
 };
 
 pub mod errors;
@@ -719,6 +720,57 @@ pub fn run_rebase_beta_smoke(repo_dir: &std::path::Path) -> Result<RebaseBetaPre
     Ok(RebaseBetaPreview { preflight, preview })
 }
 
+pub fn sync_plugin_runtime_health(
+    supervisor: &mut PluginSupervisor,
+    store: &mut StateStore,
+) -> Result<ProcessHealth, String> {
+    let health = supervisor
+        .poll()
+        .map_err(|err| format!("plugin supervisor poll failed: {err:?}"))?;
+
+    match supervisor.availability() {
+        PluginAvailability::Ready => {
+            store.update_plugin_status(supervisor.plugin_id(), PluginHealth::Ready);
+        }
+        PluginAvailability::Unavailable { reason } => {
+            store.update_plugin_status(
+                supervisor.plugin_id(),
+                PluginHealth::Unavailable {
+                    message: reason.clone(),
+                },
+            );
+        }
+    }
+
+    let health_label = match &health {
+        ProcessHealth::Running => "running".to_string(),
+        ProcessHealth::Restarted { exit_code } => format!("restarted:{exit_code}"),
+        ProcessHealth::Exited { exit_code } => format!("exited:{exit_code}"),
+    };
+    let active_view = store
+        .snapshot()
+        .active_view
+        .clone()
+        .unwrap_or_else(|| "<none>".to_string());
+    eprintln!(
+        "{}",
+        serde_json::json!({
+            "ts_ms": SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+            "level": "info",
+            "source": "app_host",
+            "event": "runtime.plugin_health.synced",
+            "plugin_id": supervisor.plugin_id(),
+            "health": health_label,
+            "active_view": active_view,
+        })
+    );
+
+    Ok(health)
+}
+
 static REBASE_BETA_OVERRIDE: AtomicU8 = AtomicU8::new(2);
 
 fn rebase_beta_enabled() -> bool {
@@ -750,6 +802,7 @@ fn validate_commit_message(message: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use plugin_host::{PluginProcess, PluginProcessConfig, RestartPolicy};
 
     #[test]
     fn roundtrip_returns_action_id() {
@@ -1004,5 +1057,53 @@ mod tests {
         ));
 
         let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn plugin_warning_clears_after_successful_restart() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let tmp = std::env::temp_dir().join(format!("branchforge-restart-health-{nanos}"));
+        assert!(std::fs::create_dir_all(&tmp).is_ok());
+        let marker = tmp.join("first-run.marker");
+
+        let script = format!(
+            "if [ -f '{}' ]; then sleep 0.2; exit 0; else touch '{}'; exit 1; fi",
+            marker.display(),
+            marker.display()
+        );
+
+        let config = PluginProcessConfig {
+            plugin_id: "status".to_string(),
+            program: "sh".to_string(),
+            args: vec!["-c".to_string(), script],
+            restart_policy: RestartPolicy::Once,
+        };
+
+        let process = PluginProcess::spawn(config).expect("spawn");
+        let mut supervisor = PluginSupervisor::new(process);
+        let mut store = StateStore::new();
+
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let first = sync_plugin_runtime_health(&mut supervisor, &mut store).expect("sync");
+        assert!(matches!(first, ProcessHealth::Restarted { .. }));
+
+        let palette_items = ui_shell::palette::build_palette(&[], "", false);
+        let degraded = ui_shell::render_window(&store, &palette_items);
+        assert!(degraded.contains("Plugin warnings:"));
+        assert!(degraded.contains("plugin status unavailable"));
+
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let second = sync_plugin_runtime_health(&mut supervisor, &mut store).expect("sync");
+        assert!(matches!(second, ProcessHealth::Running));
+
+        let recovered = ui_shell::render_window(&store, &palette_items);
+        assert!(!recovered.contains("Plugin warnings:"));
+
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let _ = std::fs::remove_file(marker);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

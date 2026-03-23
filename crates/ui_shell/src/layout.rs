@@ -20,11 +20,13 @@ pub fn build_layout(
         let labels = palette
             .iter()
             .map(|item| {
-                format!(
-                    "{} ({})",
-                    item.title,
-                    if item.enabled { "on" } else { "off" }
-                )
+                if item.enabled {
+                    format!("{} (on)", item.title)
+                } else if let Some(reason) = item.disabled_reason.as_deref() {
+                    format!("{} (off: {})", item.title, reason)
+                } else {
+                    format!("{} (off)", item.title)
+                }
             })
             .collect::<Vec<_>>()
             .join(", ");
@@ -67,6 +69,7 @@ mod tests {
                 action_id: "repo.open".to_string(),
                 title: "Open Repository".to_string(),
                 enabled: true,
+                disabled_reason: None,
             }],
             None,
             Some("status.panel".to_string()),
