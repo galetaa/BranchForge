@@ -7,6 +7,8 @@ pub const METHOD_PLUGIN_HELLO: &str = "plugin.hello";
 pub const METHOD_PLUGIN_REGISTER: &str = "plugin.register";
 pub const METHOD_PLUGIN_READY: &str = "plugin.ready";
 pub const METHOD_HOST_ACTION_INVOKE: &str = "host.action.invoke";
+pub const METHOD_HOST_ACTION_PREFLIGHT: &str = "host.action.preflight";
+pub const METHOD_HOST_ACTION_PREVIEW: &str = "host.action.preview";
 pub const METHOD_EVENT_REPO_OPENED: &str = "event.repo.opened";
 pub const METHOD_EVENT_STATE_UPDATED: &str = "event.state.updated";
 pub const METHOD_EVENT_JOB_FINISHED: &str = "event.job.finished";
@@ -17,6 +19,14 @@ pub enum DangerLevel {
     Low,
     Medium,
     High,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConflictState {
+    Merge,
+    Rebase,
+    CherryPick,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -209,6 +219,7 @@ impl FrameCodec {
 pub struct RepoSnapshot {
     pub root: String,
     pub head: Option<String>,
+    pub conflict_state: Option<ConflictState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -283,6 +294,27 @@ impl RegisterAck {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionContext {
     pub selection_files: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionPreflightRequest {
+    pub action_id: String,
+    pub context: ActionContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionPreflightResult {
+    pub action_id: String,
+    pub ok: bool,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionPreview {
+    pub action_id: String,
+    pub title: String,
+    pub summary: String,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -436,6 +468,7 @@ mod tests {
             repo: RepoSnapshot {
                 root: "/tmp/repo".to_string(),
                 head: Some("main".to_string()),
+                conflict_state: None,
             },
         };
         let state_updated = StateUpdatedEvent {
@@ -466,5 +499,34 @@ mod tests {
             let restored: Result<JobFinishedEvent, _> = serde_json::from_value(json);
             assert!(restored.is_ok());
         }
+    }
+
+    #[test]
+    fn preflight_and_preview_roundtrip_json() {
+        let preflight = ActionPreflightRequest {
+            action_id: "branch.delete".to_string(),
+            context: ActionContext {
+                selection_files: vec!["README.md".to_string()],
+            },
+        };
+        let preview = ActionPreview {
+            action_id: "branch.delete".to_string(),
+            title: "Delete Branch".to_string(),
+            summary: "Deletes the selected branch.".to_string(),
+            warnings: vec!["Branch is not merged.".to_string()],
+        };
+        let result = ActionPreflightResult {
+            action_id: "branch.delete".to_string(),
+            ok: false,
+            warnings: vec!["Branch is not merged.".to_string()],
+        };
+
+        let preflight_json = serde_json::to_value(&preflight);
+        let preview_json = serde_json::to_value(&preview);
+        let result_json = serde_json::to_value(&result);
+
+        assert!(preflight_json.is_ok());
+        assert!(preview_json.is_ok());
+        assert!(result_json.is_ok());
     }
 }

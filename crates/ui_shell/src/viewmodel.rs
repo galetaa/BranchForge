@@ -116,18 +116,28 @@ pub fn build_branches_panel(snapshot: &StoreSnapshot) -> ViewNode {
     } else {
         "Branches Panel (empty)".to_string()
     };
+    let compare_line = match (
+        snapshot.compare.base_ref.as_deref(),
+        snapshot.compare.head_ref.as_deref(),
+    ) {
+        (Some(base_ref), Some(head_ref)) => Some(format!("Compare: {base_ref} -> {head_ref}")),
+        _ => None,
+    };
 
-    ViewNode::Container {
-        children: vec![
-            ViewNode::Text { value: header },
-            ViewNode::BranchList {
-                title: "branches".to_string(),
-            },
-            ViewNode::TagList {
-                title: "tags".to_string(),
-            },
-        ],
+    let mut children = vec![
+        ViewNode::Text { value: header },
+        ViewNode::BranchList {
+            title: "branches".to_string(),
+        },
+        ViewNode::TagList {
+            title: "tags".to_string(),
+        },
+    ];
+    if let Some(line) = compare_line {
+        children.push(ViewNode::Text { value: line });
     }
+
+    ViewNode::Container { children }
 }
 
 pub fn render(node: &ViewNode, snapshot: &StoreSnapshot) -> String {
@@ -232,6 +242,7 @@ mod tests {
             history: state_store::HistoryState::default(),
             commit_cache: std::collections::HashMap::new(),
             diff: state_store::DiffState::default(),
+            compare: state_store::CompareState::default(),
             branches: state_store::BranchesState::default(),
             tags: state_store::TagsState::default(),
             commit_message: state_store::CommitMessageState::default(),

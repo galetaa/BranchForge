@@ -61,6 +61,10 @@ pub fn render_diff_panel(store: &StateStore) -> String {
         .map(|content| format!("Diff:\n{content}"))
         .unwrap_or_else(|| "Diff: <empty>".to_string());
 
+    if let Some(state_store::DiffSource::Compare { base, head }) = diff.source.as_ref() {
+        out.push_str(&format!("\nCompare: {base} -> {head}\n"));
+    }
+
     if !diff.hunks.is_empty() {
         out.push_str("\nHunks:\n");
         for hunk in &diff.hunks {
@@ -196,6 +200,7 @@ mod tests {
         store.update_repo(plugin_api::RepoSnapshot {
             root: "/tmp/demo".to_string(),
             head: Some("main".to_string()),
+            conflict_state: None,
         });
         store.update_status(state_store::StatusSnapshot {
             staged: vec!["src/lib.rs".to_string()],

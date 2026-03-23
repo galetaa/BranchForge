@@ -24,6 +24,7 @@ fn main() {
     store.update_repo(RepoSnapshot {
         root: ".".to_string(),
         head: None,
+        conflict_state: None,
     });
 
     println!("{}", ui_shell::render_root(&store));

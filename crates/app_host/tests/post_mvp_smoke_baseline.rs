@@ -54,6 +54,7 @@ fn post_mvp_smoke_baseline() {
     store.update_repo(plugin_api::RepoSnapshot {
         root: repo_dir.display().to_string(),
         head: Some("main".to_string()),
+        conflict_state: None,
     });
     store.update_status(StatusSnapshot {
         staged: Vec::new(),
