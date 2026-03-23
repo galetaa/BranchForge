@@ -206,6 +206,8 @@ mod tests {
             }],
             None,
             false,
+            None,
+            None,
         );
 
         let palette_items = palette::build_palette(&[], "", true);

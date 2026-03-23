@@ -23,6 +23,18 @@ fn build_register_request() -> RpcRequest {
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
             },
+            ActionSpec {
+                action_id: "history.search".to_string(),
+                title: "Search History".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+            },
+            ActionSpec {
+                action_id: "history.clear_filter".to_string(),
+                title: "Clear History Filter".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+            },
         ],
         views: vec![ViewSpec {
             view_id: "history.panel".to_string(),

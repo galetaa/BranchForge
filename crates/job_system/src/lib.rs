@@ -146,7 +146,7 @@ pub fn execute_job_op(
     match request.op.as_str() {
         "repo.open" => {
             refresh_repo_and_status(cwd, store)?;
-            refresh_branches(cwd, store)?;
+            refresh_refs(cwd, store)?;
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -188,7 +188,7 @@ pub fn execute_job_op(
 
             git_service::commit_create(cwd, message)?;
             refresh_repo_and_status(cwd, store)?;
-            refresh_branches(cwd, store)?;
+            refresh_refs(cwd, store)?;
 
             Ok(JobExecutionResult {
                 op: request.op.clone(),
@@ -198,7 +198,15 @@ pub fn execute_job_op(
         }
         "history.page" => {
             let (offset, limit) = parse_history_request(request)?;
-            let commits = git_service::commit_log_page(cwd, offset, limit)?;
+            let filter_author = request.paths.get(2).cloned().filter(|v| !v.is_empty());
+            let filter_text = request.paths.get(3).cloned().filter(|v| !v.is_empty());
+            let commits = git_service::commit_log_page_filtered(
+                cwd,
+                offset,
+                limit,
+                filter_author.as_deref(),
+                filter_text.as_deref(),
+            )?;
             let commit_len = commits.len();
             let history_commits = commits
                 .into_iter()
@@ -217,7 +225,13 @@ pub fn execute_job_op(
             } else {
                 None
             };
-            store.update_history_page(history_commits, next_cursor, offset > 0);
+            store.update_history_page(
+                history_commits,
+                next_cursor,
+                offset > 0,
+                filter_author,
+                filter_text,
+            );
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -225,7 +239,7 @@ pub fn execute_job_op(
             })
         }
         "refs.refresh" => {
-            refresh_branches(cwd, store)?;
+            refresh_refs(cwd, store)?;
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -302,7 +316,7 @@ pub fn execute_job_op(
             }
             git_service::checkout_branch(cwd, name)?;
             refresh_repo_and_status(cwd, store)?;
-            refresh_branches(cwd, store)?;
+            refresh_refs(cwd, store)?;
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -316,7 +330,7 @@ pub fn execute_job_op(
                 }
             })?;
             git_service::create_branch(cwd, name)?;
-            refresh_branches(cwd, store)?;
+            refresh_refs(cwd, store)?;
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -335,7 +349,7 @@ pub fn execute_job_op(
                 }
             })?;
             git_service::rename_branch(cwd, old, new)?;
-            refresh_branches(cwd, store)?;
+            refresh_refs(cwd, store)?;
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -358,7 +372,52 @@ pub fn execute_job_op(
                 });
             }
             git_service::delete_branch(cwd, name)?;
-            refresh_branches(cwd, store)?;
+            refresh_refs(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "tag.create" => {
+            let name = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "tag.create requires name in request.paths[0]".to_string(),
+                }
+            })?;
+            git_service::create_tag(cwd, name)?;
+            refresh_refs(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "tag.checkout" => {
+            let name = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "tag.checkout requires name in request.paths[0]".to_string(),
+                }
+            })?;
+            let clean = git_service::worktree_is_clean(cwd)?;
+            if !clean {
+                return Err(JobExecutionError::InvalidInput {
+                    message: "Working tree has uncommitted changes.".to_string(),
+                });
+            }
+            git_service::checkout_tag(cwd, name)?;
+            refresh_repo_and_status(cwd, store)?;
+            refresh_refs(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "commit.amend" => {
+            let message = request.paths.first().map(String::as_str);
+            git_service::commit_amend(cwd, message)?;
+            refresh_repo_and_status(cwd, store)?;
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -404,7 +463,7 @@ fn refresh_repo_and_status(cwd: &Path, store: &mut StateStore) -> Result<(), Job
     Ok(())
 }
 
-fn refresh_branches(cwd: &Path, store: &mut StateStore) -> Result<(), JobExecutionError> {
+fn refresh_refs(cwd: &Path, store: &mut StateStore) -> Result<(), JobExecutionError> {
     let branches = git_service::list_local_branches(cwd)?;
     let mapped = branches
         .into_iter()
@@ -415,6 +474,12 @@ fn refresh_branches(cwd: &Path, store: &mut StateStore) -> Result<(), JobExecuti
         })
         .collect();
     store.update_branches(mapped);
+    let tags = git_service::list_tags(cwd)?;
+    let mapped_tags = tags
+        .into_iter()
+        .map(|name| state_store::TagInfo { name })
+        .collect();
+    store.update_tags(mapped_tags);
     Ok(())
 }
 

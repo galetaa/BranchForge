@@ -572,10 +572,12 @@ where
         None => return CommitFlowOutcome::Cancelled,
     };
 
-    if message.trim().is_empty() {
+    store.update_commit_message(message.clone(), None);
+    if let Some(error) = validate_commit_message(&message) {
+        store.update_commit_message(message, Some(error.clone()));
         return CommitFlowOutcome::ValidationError(UserFacingError::new(
             "Invalid input",
-            "Commit message cannot be empty.",
+            &error,
             None,
         ));
     }
@@ -593,6 +595,57 @@ where
     match result {
         Ok(_) => CommitFlowOutcome::Committed(Box::new(store.snapshot().clone())),
         Err(err) => CommitFlowOutcome::Failed(translate_job_error(&err)),
+    }
+}
+
+pub fn run_commit_amend_smoke(
+    repo_dir: &std::path::Path,
+    message: Option<String>,
+) -> Result<state_store::StoreSnapshot, String> {
+    let mut store = StateStore::new();
+    execute_job_op(
+        repo_dir,
+        &JobRequest {
+            op: "commit.amend".to_string(),
+            lock: JobLock::RefsWrite,
+            paths: message.into_iter().collect(),
+        },
+        &mut store,
+    )
+    .map_err(|e| format!("commit.amend failed: {e:?}"))?;
+
+    Ok(store.snapshot().clone())
+}
+
+pub fn run_history_search_smoke(
+    repo_dir: &std::path::Path,
+    author: Option<String>,
+    text: Option<String>,
+) -> Result<Vec<CommitSummary>, String> {
+    let mut store = StateStore::new();
+    let mut paths = vec!["0".to_string(), "20".to_string()];
+    paths.push(author.clone().unwrap_or_default());
+    paths.push(text.clone().unwrap_or_default());
+
+    execute_job_op(
+        repo_dir,
+        &JobRequest {
+            op: "history.page".to_string(),
+            lock: JobLock::Read,
+            paths,
+        },
+        &mut store,
+    )
+    .map_err(|e| format!("history.search failed: {e:?}"))?;
+
+    Ok(store.snapshot().history.commits.clone())
+}
+
+fn validate_commit_message(message: &str) -> Option<String> {
+    if message.trim().is_empty() {
+        Some("Commit message cannot be empty.".to_string())
+    } else {
+        None
     }
 }
 

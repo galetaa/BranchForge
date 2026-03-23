@@ -612,6 +612,12 @@ pub fn status_registration_payload() -> PluginRegister {
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
             },
+            ActionSpec {
+                action_id: "commit.amend".to_string(),
+                title: "Amend Commit".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+            },
         ],
         views: vec![plugin_api::ViewSpec {
             view_id: "status.panel".to_string(),
@@ -634,6 +640,18 @@ pub fn history_registration_payload() -> PluginRegister {
             ActionSpec {
                 action_id: "history.select_commit".to_string(),
                 title: "Select Commit".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+            },
+            ActionSpec {
+                action_id: "history.search".to_string(),
+                title: "Search History".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+            },
+            ActionSpec {
+                action_id: "history.clear_filter".to_string(),
+                title: "Clear History Filter".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
             },
@@ -671,6 +689,18 @@ pub fn branches_registration_payload() -> PluginRegister {
             ActionSpec {
                 action_id: "branch.delete".to_string(),
                 title: "Delete Branch".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+            },
+            ActionSpec {
+                action_id: "tag.checkout".to_string(),
+                title: "Checkout Tag".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+            },
+            ActionSpec {
+                action_id: "tag.create".to_string(),
+                title: "Create Tag".to_string(),
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
             },
@@ -1089,6 +1119,12 @@ mod tests {
                 .iter()
                 .any(|a| a.action_id == "commit.create")
         );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "commit.amend")
+        );
         assert!(payload.views.iter().any(|v| v.view_id == "status.panel"));
     }
 
@@ -1106,6 +1142,18 @@ mod tests {
                 .actions
                 .iter()
                 .any(|a| a.action_id == "history.select_commit")
+        );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "history.search")
+        );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "history.clear_filter")
         );
         assert!(payload.views.iter().any(|v| v.view_id == "history.panel"));
     }
@@ -1137,6 +1185,13 @@ mod tests {
                 .iter()
                 .any(|a| a.action_id == "branch.delete")
         );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "tag.checkout")
+        );
+        assert!(payload.actions.iter().any(|a| a.action_id == "tag.create"));
         assert!(payload.views.iter().any(|v| v.view_id == "branches.panel"));
     }
 }
