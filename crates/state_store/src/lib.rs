@@ -16,11 +16,24 @@ pub struct SelectionState {
     pub selected_paths: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginHealth {
+    Ready,
+    Unavailable { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginStatus {
+    pub plugin_id: String,
+    pub health: PluginHealth,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct StoreSnapshot {
     pub repo: Option<RepoSnapshot>,
     pub status: StatusSnapshot,
     pub selection: SelectionState,
+    pub plugins: Vec<PluginStatus>,
     pub version: StoreVersion,
 }
 
@@ -63,6 +76,23 @@ impl StateStore {
 
     pub fn update_selection(&mut self, selection: SelectionState) {
         self.snapshot.selection = selection;
+        self.bump_version();
+    }
+
+    pub fn update_plugin_status(&mut self, plugin_id: &str, health: PluginHealth) {
+        if let Some(existing) = self
+            .snapshot
+            .plugins
+            .iter_mut()
+            .find(|status| status.plugin_id == plugin_id)
+        {
+            existing.health = health;
+        } else {
+            self.snapshot.plugins.push(PluginStatus {
+                plugin_id: plugin_id.to_string(),
+                health,
+            });
+        }
         self.bump_version();
     }
 
@@ -158,6 +188,30 @@ mod tests {
             events.first(),
             Some(StateEvent::Updated { version }) if *version == 1
         ));
+    }
+
+    #[test]
+    fn update_plugin_status_inserts_and_updates() {
+        let mut store = StateStore::new();
+        store.update_plugin_status("status", PluginHealth::Ready);
+        assert_eq!(store.snapshot().plugins.len(), 1);
+        assert!(matches!(
+            store.snapshot().plugins[0].health,
+            PluginHealth::Ready
+        ));
+
+        store.update_plugin_status(
+            "status",
+            PluginHealth::Unavailable {
+                message: "crashed".to_string(),
+            },
+        );
+        assert_eq!(store.snapshot().plugins.len(), 1);
+        assert!(matches!(
+            store.snapshot().plugins[0].health,
+            PluginHealth::Unavailable { ref message } if message == "crashed"
+        ));
+        assert_eq!(store.snapshot().version, 2);
     }
 
     #[test]

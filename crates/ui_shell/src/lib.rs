@@ -11,6 +11,27 @@ pub fn render_root(store: &StateStore) -> String {
     }
 }
 
+fn render_plugin_warnings(store: &StateStore) -> Option<String> {
+    let warnings = store
+        .snapshot()
+        .plugins
+        .iter()
+        .filter_map(|status| match &status.health {
+            state_store::PluginHealth::Unavailable { message } => Some(format!(
+                "plugin {} unavailable: {}",
+                status.plugin_id, message
+            )),
+            state_store::PluginHealth::Ready => None,
+        })
+        .collect::<Vec<_>>();
+
+    if warnings.is_empty() {
+        None
+    } else {
+        Some(format!("Plugin warnings:\n{}", warnings.join("\n")))
+    }
+}
+
 pub fn render_status_panel(store: &StateStore) -> String {
     let panel = viewmodel::build_status_panel(store.snapshot());
     viewmodel::render(&panel, store.snapshot())
@@ -25,6 +46,11 @@ pub fn render_window(store: &StateStore, palette_items: &[palette::PaletteItem])
         render_status_panel(store)
     } else {
         render_empty_state()
+    };
+    let left_slot = if let Some(warnings) = render_plugin_warnings(store) {
+        format!("{warnings}\n{left_slot}")
+    } else {
+        left_slot
     };
     let active_view = if store.repo().is_some() {
         Some("status.panel".to_string())
@@ -127,5 +153,21 @@ mod tests {
         let rendered = render_window(&store, &palette_items);
         assert!(rendered.contains("active_view: status.panel"));
         assert!(rendered.contains("Status Panel"));
+    }
+
+    #[test]
+    fn renders_plugin_warning_block() {
+        let mut store = StateStore::new();
+        store.update_plugin_status(
+            "status",
+            state_store::PluginHealth::Unavailable {
+                message: "crashed".to_string(),
+            },
+        );
+
+        let palette_items = palette::build_palette(&[], "", false);
+        let rendered = render_window(&store, &palette_items);
+        assert!(rendered.contains("Plugin warnings:"));
+        assert!(rendered.contains("plugin status unavailable: crashed"));
     }
 }
