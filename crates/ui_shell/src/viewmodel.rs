@@ -23,6 +23,9 @@ pub enum ViewNode {
         title: String,
     },
     CommitDetails,
+    BranchList {
+        title: String,
+    },
     Button {
         label: String,
         on_action: String,
@@ -72,6 +75,24 @@ pub fn build_history_panel(snapshot: &StoreSnapshot) -> ViewNode {
                 title: "commits".to_string(),
             },
             ViewNode::CommitDetails,
+        ],
+    }
+}
+
+pub fn build_branches_panel(snapshot: &StoreSnapshot) -> ViewNode {
+    let has_branches = !snapshot.branches.branches.is_empty();
+    let header = if has_branches {
+        "Branches Panel".to_string()
+    } else {
+        "Branches Panel (empty)".to_string()
+    };
+
+    ViewNode::Container {
+        children: vec![
+            ViewNode::Text { value: header },
+            ViewNode::BranchList {
+                title: "branches".to_string(),
+            },
         ],
     }
 }
@@ -126,6 +147,19 @@ fn render_into(node: &ViewNode, snapshot: &StoreSnapshot, level: usize, out: &mu
                 out.push_str(&format!("{indent}Commit: {selected}\n"));
             }
         }
+        ViewNode::BranchList { title } => {
+            let list = snapshot
+                .branches
+                .branches
+                .iter()
+                .map(|branch| {
+                    let marker = if branch.is_current { "*" } else { " " };
+                    format!("{marker}{}", branch.name)
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!("{indent}{title}: {list}\n"));
+        }
         ViewNode::Button {
             label,
             on_action,
@@ -155,6 +189,7 @@ mod tests {
             history: state_store::HistoryState::default(),
             commit_cache: std::collections::HashMap::new(),
             diff: state_store::DiffState::default(),
+            branches: state_store::BranchesState::default(),
             active_view: None,
             plugins: Vec::new(),
             version: 1,

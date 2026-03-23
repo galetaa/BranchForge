@@ -1,11 +1,11 @@
 # Branchforge
 
-Current state: Sprint 08 (History and Diff) in progress on top of MVP foundations.
+Current state: Sprint 09 (Branches and Checkout) in progress on top of MVP foundations.
 
 ## Quick start
 
 ```bash
-./scripts/verify-sprint-08.sh
+./scripts/verify-sprint-09.sh
 ./scripts/check-deps.sh
 cargo check --workspace
 cargo test --workspace

@@ -27,6 +27,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "branches"
+version = "0.1.0"
+dependencies = [
+ "plugin_api",
+]
+
+[[package]]
 name = "git_service"
 version = "0.1.0"
 

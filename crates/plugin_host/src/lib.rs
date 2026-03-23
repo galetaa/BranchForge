@@ -647,6 +647,43 @@ pub fn history_registration_payload() -> PluginRegister {
     }
 }
 
+pub fn branches_registration_payload() -> PluginRegister {
+    PluginRegister {
+        actions: vec![
+            ActionSpec {
+                action_id: "branch.checkout".to_string(),
+                title: "Checkout Branch".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+            },
+            ActionSpec {
+                action_id: "branch.create".to_string(),
+                title: "Create Branch".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+            },
+            ActionSpec {
+                action_id: "branch.rename".to_string(),
+                title: "Rename Branch".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+            },
+            ActionSpec {
+                action_id: "branch.delete".to_string(),
+                title: "Delete Branch".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+            },
+        ],
+        views: vec![plugin_api::ViewSpec {
+            view_id: "branches.panel".to_string(),
+            title: "Branches".to_string(),
+            slot: "left".to_string(),
+            when: Some("repo.is_open".to_string()),
+        }],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1071,5 +1108,35 @@ mod tests {
                 .any(|a| a.action_id == "history.select_commit")
         );
         assert!(payload.views.iter().any(|v| v.view_id == "history.panel"));
+    }
+
+    #[test]
+    fn branches_registration_payload_contains_view_and_actions() {
+        let payload = branches_registration_payload();
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "branch.checkout")
+        );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "branch.create")
+        );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "branch.rename")
+        );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "branch.delete")
+        );
+        assert!(payload.views.iter().any(|v| v.view_id == "branches.panel"));
     }
 }

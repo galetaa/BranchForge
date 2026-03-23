@@ -62,6 +62,7 @@ pub fn run_ui_state_smoke() -> String {
     store.update_selection(SelectionState {
         selected_paths: vec!["README.md".to_string()],
         selected_commit_oid: None,
+        selected_branch: None,
     });
 
     ui_shell::render_status_panel(&store)
@@ -213,6 +214,7 @@ pub fn run_selection_event_smoke(selected_paths: Vec<String>) -> SelectionState 
     store.update_selection(SelectionState {
         selected_paths,
         selected_commit_oid: None,
+        selected_branch: None,
     });
     store.snapshot().selection.clone()
 }
@@ -328,6 +330,7 @@ pub fn run_status_stage_unstage_smoke(
     store.update_selection(SelectionState {
         selected_paths: selected_files.clone(),
         selected_commit_oid: None,
+        selected_branch: None,
     });
 
     let _ = execute_job_op(
@@ -442,6 +445,91 @@ pub fn run_history_select_and_diff_smoke(
         .ok_or_else(|| "commit details missing".to_string())?;
 
     Ok((details, store.snapshot().diff.clone()))
+}
+
+pub fn run_branch_workflow_smoke(
+    repo_dir: &std::path::Path,
+    branch_name: &str,
+) -> Result<state_store::StoreSnapshot, String> {
+    let mut store = StateStore::new();
+    execute_job_op(
+        repo_dir,
+        &JobRequest {
+            op: "repo.open".to_string(),
+            lock: JobLock::Read,
+            paths: Vec::new(),
+        },
+        &mut store,
+    )
+    .map_err(|e| format!("repo.open failed: {e:?}"))?;
+
+    let base_branch = store
+        .snapshot()
+        .repo
+        .as_ref()
+        .and_then(|repo| repo.head.clone())
+        .unwrap_or_else(|| "main".to_string());
+
+    execute_job_op(
+        repo_dir,
+        &JobRequest {
+            op: "branch.create".to_string(),
+            lock: JobLock::RefsWrite,
+            paths: vec![branch_name.to_string()],
+        },
+        &mut store,
+    )
+    .map_err(|e| format!("branch.create failed: {e:?}"))?;
+
+    store.update_selected_branch(Some(branch_name.to_string()));
+    store.set_active_view(Some("branches.panel".to_string()));
+
+    execute_job_op(
+        repo_dir,
+        &JobRequest {
+            op: "branch.checkout".to_string(),
+            lock: JobLock::RefsWrite,
+            paths: vec![branch_name.to_string()],
+        },
+        &mut store,
+    )
+    .map_err(|e| format!("branch.checkout failed: {e:?}"))?;
+
+    let renamed = format!("{branch_name}-renamed");
+    execute_job_op(
+        repo_dir,
+        &JobRequest {
+            op: "branch.rename".to_string(),
+            lock: JobLock::RefsWrite,
+            paths: vec![branch_name.to_string(), renamed.clone()],
+        },
+        &mut store,
+    )
+    .map_err(|e| format!("branch.rename failed: {e:?}"))?;
+
+    execute_job_op(
+        repo_dir,
+        &JobRequest {
+            op: "branch.checkout".to_string(),
+            lock: JobLock::RefsWrite,
+            paths: vec![base_branch.clone()],
+        },
+        &mut store,
+    )
+    .map_err(|e| format!("branch.checkout base failed: {e:?}"))?;
+
+    execute_job_op(
+        repo_dir,
+        &JobRequest {
+            op: "branch.delete".to_string(),
+            lock: JobLock::RefsWrite,
+            paths: vec![renamed],
+        },
+        &mut store,
+    )
+    .map_err(|e| format!("branch.delete failed: {e:?}"))?;
+
+    Ok(store.snapshot().clone())
 }
 
 pub fn run_commit_flow_with_prompt<F>(

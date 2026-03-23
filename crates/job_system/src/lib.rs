@@ -4,7 +4,8 @@ use std::path::Path;
 use git_service::{GitCommand, GitServiceError, RepoOpenResult, StatusSummary};
 use plugin_api::RepoSnapshot;
 use state_store::{
-    CommitDetails, DiffSource, DiffState, HistoryCursor, SelectionState, StateStore, StatusSnapshot,
+    BranchInfo, CommitDetails, DiffSource, DiffState, HistoryCursor, SelectionState, StateStore,
+    StatusSnapshot,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -145,6 +146,7 @@ pub fn execute_job_op(
     match request.op.as_str() {
         "repo.open" => {
             refresh_repo_and_status(cwd, store)?;
+            refresh_branches(cwd, store)?;
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -186,6 +188,7 @@ pub fn execute_job_op(
 
             git_service::commit_create(cwd, message)?;
             refresh_repo_and_status(cwd, store)?;
+            refresh_branches(cwd, store)?;
 
             Ok(JobExecutionResult {
                 op: request.op.clone(),
@@ -215,6 +218,14 @@ pub fn execute_job_op(
                 None
             };
             store.update_history_page(history_commits, next_cursor, offset > 0);
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "refs.refresh" => {
+            refresh_branches(cwd, store)?;
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -277,6 +288,83 @@ pub fn execute_job_op(
                 state_version: store.snapshot().version,
             })
         }
+        "branch.checkout" => {
+            let name = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "branch.checkout requires name in request.paths[0]".to_string(),
+                }
+            })?;
+            let clean = git_service::worktree_is_clean(cwd)?;
+            if !clean {
+                return Err(JobExecutionError::InvalidInput {
+                    message: "Working tree has uncommitted changes.".to_string(),
+                });
+            }
+            git_service::checkout_branch(cwd, name)?;
+            refresh_repo_and_status(cwd, store)?;
+            refresh_branches(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "branch.create" => {
+            let name = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "branch.create requires name in request.paths[0]".to_string(),
+                }
+            })?;
+            git_service::create_branch(cwd, name)?;
+            refresh_branches(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "branch.rename" => {
+            let old = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "branch.rename requires old name in request.paths[0]".to_string(),
+                }
+            })?;
+            let new = request.paths.get(1).map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "branch.rename requires new name in request.paths[1]".to_string(),
+                }
+            })?;
+            git_service::rename_branch(cwd, old, new)?;
+            refresh_branches(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "branch.delete" => {
+            let name = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "branch.delete requires name in request.paths[0]".to_string(),
+                }
+            })?;
+            let branches = git_service::list_local_branches(cwd)?;
+            if branches
+                .iter()
+                .any(|branch| branch.name == name && branch.is_current)
+            {
+                return Err(JobExecutionError::InvalidInput {
+                    message: "Cannot delete current branch.".to_string(),
+                });
+            }
+            git_service::delete_branch(cwd, name)?;
+            refresh_branches(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
         _ => Err(JobExecutionError::UnsupportedOp {
             op: request.op.clone(),
         }),
@@ -313,6 +401,20 @@ fn refresh_repo_and_status(cwd: &Path, store: &mut StateStore) -> Result<(), Job
     let repo = git_service::repo_open(cwd)?;
     let status = git_service::status_refresh(cwd)?;
     apply_repo_open(store, &repo, &status);
+    Ok(())
+}
+
+fn refresh_branches(cwd: &Path, store: &mut StateStore) -> Result<(), JobExecutionError> {
+    let branches = git_service::list_local_branches(cwd)?;
+    let mapped = branches
+        .into_iter()
+        .map(|branch| BranchInfo {
+            name: branch.name,
+            is_current: branch.is_current,
+            upstream: branch.upstream,
+        })
+        .collect();
+    store.update_branches(mapped);
     Ok(())
 }
 
@@ -441,6 +543,7 @@ mod tests {
         store.update_selection(SelectionState {
             selected_paths: vec!["README.md".to_string()],
             selected_commit_oid: None,
+            selected_branch: None,
         });
         assert_eq!(store.snapshot().selection.selected_paths.len(), 1);
 
@@ -740,6 +843,80 @@ mod tests {
                 .unwrap_or("")
                 .contains("commit")
         );
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn delete_current_branch_is_blocked() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+        assert!(std::fs::write(repo_dir.join("README.md"), "hello\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["README.md".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "base").is_ok());
+
+        let branches = git_service::list_local_branches(&repo_dir).expect("branches");
+        let current = branches
+            .iter()
+            .find(|b| b.is_current)
+            .map(|b| b.name.clone())
+            .unwrap_or_else(|| "main".to_string());
+
+        let mut store = StateStore::new();
+        let result = execute_job_op(
+            &repo_dir,
+            &JobRequest {
+                op: "branch.delete".to_string(),
+                lock: JobLock::RefsWrite,
+                paths: vec![current],
+            },
+            &mut store,
+        );
+        assert!(matches!(
+            result,
+            Err(JobExecutionError::InvalidInput { message })
+                if message == "Cannot delete current branch."
+        ));
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn checkout_blocked_when_dirty() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+        assert!(std::fs::write(repo_dir.join("README.md"), "hello\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["README.md".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "base").is_ok());
+        assert!(git_service::create_branch(&repo_dir, "feature").is_ok());
+
+        assert!(std::fs::write(repo_dir.join("README.md"), "dirty\n").is_ok());
+
+        let mut store = StateStore::new();
+        let result = execute_job_op(
+            &repo_dir,
+            &JobRequest {
+                op: "branch.checkout".to_string(),
+                lock: JobLock::RefsWrite,
+                paths: vec!["feature".to_string()],
+            },
+            &mut store,
+        );
+        assert!(matches!(
+            result,
+            Err(JobExecutionError::InvalidInput { message })
+                if message == "Working tree has uncommitted changes."
+        ));
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }
