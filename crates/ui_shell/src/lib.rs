@@ -279,11 +279,12 @@ mod tests {
             None,
             None,
         );
+        store.update_selected_commit(Some("abc123".to_string()));
 
         let palette_items = palette::build_palette(&[], "", true);
         let rendered = render_window(&store, &palette_items);
         assert!(rendered.contains("History Panel"));
-        assert!(rendered.contains("commits: abc123 Initial commit"));
+        assert!(rendered.contains("commits: *abc123 Initial commit"));
     }
 
     #[test]

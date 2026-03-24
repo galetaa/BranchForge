@@ -3,6 +3,7 @@ external_plugins/**/target/
 SPRINT_*_REPORT.md
 mvp_dev_pack/
 git_gui_post_mvp_dev_pack/
+next_4_sprints_dev_pack/
 
 # Local IDE/macOS artifacts
 .DS_Store
@@ -11,3 +12,4 @@ git_gui_post_mvp_dev_pack/
 # Local working pack (tracked files remain tracked)
 mvp_dev_pack/
 mvp_dev_pack.zip
+next_4_sprints_dev_pack.zip

@@ -249,46 +249,80 @@ pub fn execute_job_op(
             let (offset, limit) = parse_history_request(request)?;
             let filter_author = request.paths.get(2).cloned().filter(|v| !v.is_empty());
             let filter_text = request.paths.get(3).cloned().filter(|v| !v.is_empty());
-            let commits = git_service::commit_log_page_filtered(
+            load_history_page(
                 cwd,
+                store,
+                &request.op,
                 offset,
                 limit,
-                filter_author.as_deref(),
-                filter_text.as_deref(),
-            )?;
-            let commit_len = commits.len();
-            let history_commits = commits
-                .into_iter()
-                .map(|commit| state_store::CommitSummary {
-                    oid: commit.oid,
-                    author: commit.author,
-                    time: commit.time,
-                    summary: commit.summary,
-                })
-                .collect();
-            let next_cursor = if commit_len == limit {
-                Some(HistoryCursor {
-                    offset: offset + commit_len,
-                    page_size: limit,
-                })
-            } else {
-                None
-            };
-            store.update_history_page(
-                history_commits,
-                next_cursor,
                 offset > 0,
                 filter_author,
                 filter_text,
-            );
+            )
+        }
+        "history.load_more" => {
+            let cursor = store.snapshot().history.next_cursor.clone();
+            let Some(cursor) = cursor else {
+                return Ok(JobExecutionResult {
+                    op: request.op.clone(),
+                    success: true,
+                    state_version: store.snapshot().version,
+                });
+            };
+            let filter_author = store.snapshot().history.filter_author.clone();
+            let filter_text = store.snapshot().history.filter_text.clone();
+            load_history_page(
+                cwd,
+                store,
+                &request.op,
+                cursor.offset,
+                cursor.page_size,
+                true,
+                filter_author,
+                filter_text,
+            )
+        }
+        "refs.refresh" => {
+            refresh_refs(cwd, store)?;
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
                 state_version: store.snapshot().version,
             })
         }
-        "refs.refresh" => {
-            refresh_refs(cwd, store)?;
+        "history.search" => {
+            let (offset, limit) = parse_history_request(request)?;
+            let filter_author = request.paths.get(2).cloned().filter(|v| !v.is_empty());
+            let filter_text = request.paths.get(3).cloned().filter(|v| !v.is_empty());
+            load_history_page(
+                cwd,
+                store,
+                &request.op,
+                offset,
+                limit,
+                false,
+                filter_author,
+                filter_text,
+            )
+        }
+        "history.clear_filter" => {
+            load_history_page(cwd, store, &request.op, 0, 20, false, None, None)
+        }
+        "history.select_commit" => {
+            let oid = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "history.select_commit requires commit oid in request.paths[0]"
+                        .to_string(),
+                }
+            })?;
+            store.update_selected_commit(Some(oid.to_string()));
+            let details = git_service::commit_details(cwd, oid)?;
+            store.update_commit_details(CommitDetails {
+                oid: details.oid,
+                author: details.author,
+                time: details.time,
+                message: details.message,
+            });
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -661,6 +695,60 @@ fn parse_history_request(request: &JobRequest) -> Result<(usize, usize), JobExec
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(20);
     Ok((offset, limit))
+}
+
+fn load_history_page(
+    cwd: &Path,
+    store: &mut StateStore,
+    op: &str,
+    offset: usize,
+    limit: usize,
+    append: bool,
+    filter_author: Option<String>,
+    filter_text: Option<String>,
+) -> Result<JobExecutionResult, JobExecutionError> {
+    store.set_history_loading(true);
+    let commits = git_service::commit_log_page_filtered(
+        cwd,
+        offset,
+        limit,
+        filter_author.as_deref(),
+        filter_text.as_deref(),
+    )
+    .map_err(|err| {
+        store.set_history_error(format!("{err:?}"));
+        JobExecutionError::from(err)
+    })?;
+    let commit_len = commits.len();
+    let history_commits = commits
+        .into_iter()
+        .map(|commit| state_store::CommitSummary {
+            oid: commit.oid,
+            author: commit.author,
+            time: commit.time,
+            summary: commit.summary,
+        })
+        .collect();
+    let next_cursor = if commit_len == limit {
+        Some(HistoryCursor {
+            offset: offset + commit_len,
+            page_size: limit,
+        })
+    } else {
+        None
+    };
+    store.update_history_page(
+        history_commits,
+        next_cursor,
+        append,
+        filter_author,
+        filter_text,
+    );
+    Ok(JobExecutionResult {
+        op: op.to_string(),
+        success: true,
+        state_version: store.snapshot().version,
+    })
 }
 
 fn start_journal_entry(store: &mut StateStore, request: &JobRequest) -> Option<u64> {
