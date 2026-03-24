@@ -621,13 +621,12 @@ pub fn execute_rebase_plan(
         let _ = std::fs::set_permissions(&editor_file, perms);
     }
 
-    let mut env = vec![
+    let env = vec![
         ("GIT_SEQUENCE_EDITOR", editor_file.to_string_lossy().to_string()),
         ("BF_REBASE_TODO", todo_file.to_string_lossy().to_string()),
+        // Avoid interactive editor prompts during squash/fixup message consolidation.
+        ("GIT_EDITOR", "true".to_string()),
     ];
-    if autosquash {
-        env.push(("GIT_EDITOR", "true".to_string()));
-    }
 
     let mut args = vec!["rebase", "-i"];
     if autosquash {
@@ -668,8 +667,8 @@ pub fn detect_rebase_session_hook(cwd: &Path) -> Result<Option<RebaseSessionHook
     } else {
         rebase_apply
     };
-    let current_step = read_usize_file(&base_dir.join("msgnum"));
-    let total_steps = read_usize_file(&base_dir.join("end"));
+    let current_step = read_usize_file_any(&base_dir, &["msgnum", "next"]);
+    let total_steps = read_usize_file_any(&base_dir, &["end", "last"]);
     Ok(Some(RebaseSessionHook {
         active: true,
         current_step,
@@ -783,6 +782,16 @@ fn unique_temp_file(prefix: &str, ext: &str) -> std::path::PathBuf {
 fn read_usize_file(path: &Path) -> Option<usize> {
     let text = std::fs::read_to_string(path).ok()?;
     text.trim().parse::<usize>().ok()
+}
+
+fn read_usize_file_any(base_dir: &Path, names: &[&str]) -> Option<usize> {
+    for name in names {
+        let value = read_usize_file(&base_dir.join(name));
+        if value.is_some() {
+            return value;
+        }
+    }
+    None
 }
 
 fn diff_worktree_raw(cwd: &Path, paths: &[String]) -> Result<String, GitServiceError> {
@@ -1790,6 +1799,28 @@ mod tests {
             assert!(hook.active);
             assert_eq!(hook.current_step, Some(2));
             assert_eq!(hook.total_steps, Some(5));
+        }
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn detects_rebase_restart_hook_for_rebase_apply_layout() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+
+        let rebase_apply = git_path(&repo_dir, "rebase-apply").expect("git path");
+        assert!(std::fs::create_dir_all(&rebase_apply).is_ok());
+        assert!(std::fs::write(rebase_apply.join("next"), "3\n").is_ok());
+        assert!(std::fs::write(rebase_apply.join("last"), "7\n").is_ok());
+
+        let detected = detect_rebase_session_hook(&repo_dir);
+        assert!(detected.is_ok());
+        if let Ok(Some(hook)) = detected {
+            assert!(hook.active);
+            assert_eq!(hook.current_step, Some(3));
+            assert_eq!(hook.total_steps, Some(7));
         }
 
         let _ = std::fs::remove_dir_all(&repo_dir);

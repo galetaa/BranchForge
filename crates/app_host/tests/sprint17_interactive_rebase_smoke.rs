@@ -67,6 +67,19 @@ fn rebase_plan_execute_and_history_refresh_work_end_to_end() {
         store.update_rebase_plan(current_plan);
     }
 
+    let page_before = execute_job_op(
+        &repo_dir,
+        &JobRequest {
+            op: "history.page".to_string(),
+            lock: JobLock::Read,
+            paths: vec!["0".to_string(), "20".to_string()],
+            job_id: None,
+        },
+        &mut store,
+    );
+    assert!(page_before.is_ok());
+    assert!(!store.snapshot().history.commits.is_empty());
+
     let exec = execute_job_op(
         &repo_dir,
         &JobRequest {
@@ -78,6 +91,8 @@ fn rebase_plan_execute_and_history_refresh_work_end_to_end() {
         &mut store,
     );
     assert!(exec.is_ok());
+    // Rewrites invalidate old history buffers.
+    assert!(store.snapshot().history.commits.is_empty());
 
     let summaries = git_service::commit_log_page(&repo_dir, 0, 20)
         .ok()
@@ -88,6 +103,83 @@ fn rebase_plan_execute_and_history_refresh_work_end_to_end() {
     assert!(summaries.iter().any(|s| s == "feat: one"));
     assert!(summaries.iter().any(|s| s == "feat: two"));
     assert!(!summaries.iter().any(|s| s == "feat: three"));
+
+    let _ = std::fs::remove_dir_all(&repo_dir);
+}
+
+#[test]
+fn rebase_edit_then_continue_finishes_session() {
+    let repo_dir = init_repo();
+
+    assert!(std::fs::write(repo_dir.join("one.txt"), "one\n").is_ok());
+    assert!(git_service::stage_paths(&repo_dir, &["one.txt".to_string()]).is_ok());
+    assert!(git_service::commit_create(&repo_dir, "feat: one").is_ok());
+
+    assert!(std::fs::write(repo_dir.join("two.txt"), "two\n").is_ok());
+    assert!(git_service::stage_paths(&repo_dir, &["two.txt".to_string()]).is_ok());
+    assert!(git_service::commit_create(&repo_dir, "feat: two").is_ok());
+
+    assert!(std::fs::write(repo_dir.join("three.txt"), "three\n").is_ok());
+    assert!(git_service::stage_paths(&repo_dir, &["three.txt".to_string()]).is_ok());
+    assert!(git_service::commit_create(&repo_dir, "feat: three").is_ok());
+
+    let base = git_service::run_git(&repo_dir, &["rev-list", "--max-parents=0", "HEAD"])
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    let mut store = StateStore::new();
+    let plan = execute_job_op(
+        &repo_dir,
+        &JobRequest {
+            op: "rebase.plan.create".to_string(),
+            lock: JobLock::RefsWrite,
+            paths: vec![base],
+            job_id: None,
+        },
+        &mut store,
+    );
+    assert!(plan.is_ok());
+
+    if let Some(mut current_plan) = store.snapshot().rebase.plan.clone() {
+        if let Some(first) = current_plan.entries.first_mut() {
+            first.action = RebaseEntryAction::Edit;
+        }
+        store.update_rebase_plan(current_plan);
+    }
+
+    let exec = execute_job_op(
+        &repo_dir,
+        &JobRequest {
+            op: "rebase.execute".to_string(),
+            lock: JobLock::RefsWrite,
+            paths: Vec::new(),
+            job_id: None,
+        },
+        &mut store,
+    );
+    assert!(exec.is_ok());
+    assert!(store.snapshot().rebase.session.is_some());
+
+    // Edit-step allows amending current commit before continue.
+    assert!(
+        git_service::run_git(&repo_dir, &["commit", "--amend", "--no-edit"]).is_ok()
+    );
+
+    let cont = execute_job_op(
+        &repo_dir,
+        &JobRequest {
+            op: "rebase.continue".to_string(),
+            lock: JobLock::RefsWrite,
+            paths: Vec::new(),
+            job_id: None,
+        },
+        &mut store,
+    );
+    assert!(cont.is_ok());
+    assert!(store.snapshot().rebase.session.is_none());
 
     let _ = std::fs::remove_dir_all(&repo_dir);
 }
@@ -217,6 +309,8 @@ fn rebase_abort_clears_active_session_state() {
 
     let _ = std::fs::remove_dir_all(&repo_dir);
 }
+
+
 
 
 
