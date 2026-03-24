@@ -237,10 +237,15 @@ fn now_unix_ms() -> u128 {
         .unwrap_or(0)
 }
 
-pub fn format_runtime_log_event(plugin_id: &str, event: &str, fields: serde_json::Value) -> String {
+pub fn format_runtime_log_event(
+    plugin_id: &str,
+    level: &str,
+    event: &str,
+    fields: serde_json::Value,
+) -> String {
     serde_json::json!({
         "ts_ms": now_unix_ms(),
-        "level": "info",
+        "level": level,
         "source": "plugin_host",
         "plugin_id": plugin_id,
         "event": event,
@@ -250,7 +255,17 @@ pub fn format_runtime_log_event(plugin_id: &str, event: &str, fields: serde_json
 }
 
 fn emit_runtime_log(plugin_id: &str, event: &str, fields: serde_json::Value) {
-    eprintln!("{}", format_runtime_log_event(plugin_id, event, fields));
+    eprintln!(
+        "{}",
+        format_runtime_log_event(plugin_id, "info", event, fields)
+    );
+}
+
+fn emit_runtime_log_error(plugin_id: &str, event: &str, fields: serde_json::Value) {
+    eprintln!(
+        "{}",
+        format_runtime_log_event(plugin_id, "error", event, fields)
+    );
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -582,7 +597,7 @@ impl RuntimeSession {
             return Ok(());
         }
 
-        emit_runtime_log(
+        emit_runtime_log_error(
             &self.plugin_id,
             "runtime.lifecycle.transition_rejected",
             serde_json::json!({
@@ -1327,11 +1342,13 @@ mod tests {
     fn structured_runtime_log_contains_required_fields() {
         let encoded = format_runtime_log_event(
             "status",
+            "info",
             "runtime.lifecycle.transition",
             serde_json::json!({"from": "Discovered", "to": "Starting"}),
         );
         let decoded: serde_json::Value = serde_json::from_str(&encoded).expect("json");
 
+        assert_eq!(decoded["level"], "info");
         assert_eq!(decoded["source"], "plugin_host");
         assert_eq!(decoded["plugin_id"], "status");
         assert_eq!(decoded["event"], "runtime.lifecycle.transition");
