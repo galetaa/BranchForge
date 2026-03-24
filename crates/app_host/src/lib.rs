@@ -434,19 +434,17 @@ pub fn run_history_select_and_diff_smoke(
         .cloned()
         .ok_or_else(|| "history page empty".to_string())?;
 
-    store.update_selected_commit(Some(commit.oid.clone()));
-
     execute_job_op(
         repo_dir,
         &JobRequest {
-            op: "history.details".to_string(),
+            op: "history.select_commit".to_string(),
             lock: JobLock::Read,
             paths: vec![commit.oid.clone()],
             job_id: None,
         },
         &mut store,
     )
-    .map_err(|e| format!("history.details failed: {e:?}"))?;
+    .map_err(|e| format!("history.select_commit failed: {e:?}"))?;
 
     execute_job_op(
         repo_dir,
@@ -660,7 +658,7 @@ pub fn run_history_search_smoke(
     execute_job_op(
         repo_dir,
         &JobRequest {
-            op: "history.page".to_string(),
+            op: "history.search".to_string(),
             lock: JobLock::Read,
             paths,
             job_id: None,

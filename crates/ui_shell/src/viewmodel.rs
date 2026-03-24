@@ -125,16 +125,34 @@ pub fn build_history_panel(snapshot: &StoreSnapshot) -> ViewNode {
         snapshot.history.filter_text.as_deref().unwrap_or("<any>")
     );
 
-    ViewNode::Container {
-        children: vec![
-            ViewNode::Text { value: header },
-            ViewNode::Text { value: filter_line },
-            ViewNode::HistoryList {
-                title: "commits".to_string(),
-            },
-            ViewNode::CommitDetails,
-        ],
+    let mut children = vec![ViewNode::Text { value: header }];
+    if snapshot.history.loading {
+        children.push(ViewNode::Text {
+            value: "History: loading...".to_string(),
+        });
     }
+    if let Some(error) = snapshot.history.error.as_ref() {
+        children.push(ViewNode::Text {
+            value: format!("History error: {error}"),
+        });
+    }
+    children.push(ViewNode::Text { value: filter_line });
+    children.push(ViewNode::HistoryList {
+        title: "commits".to_string(),
+    });
+    children.push(ViewNode::CommitDetails);
+    children.push(ViewNode::Button {
+        label: "Load more".to_string(),
+        on_action: "history.load_more".to_string(),
+        enabled_when: snapshot.history.next_cursor.is_some(),
+    });
+    children.push(ViewNode::Button {
+        label: "Show commit".to_string(),
+        on_action: "history.select_commit".to_string(),
+        enabled_when: snapshot.selection.selected_commit_oid.is_some(),
+    });
+
+    ViewNode::Container { children }
 }
 
 pub fn build_branches_panel(snapshot: &StoreSnapshot) -> ViewNode {
@@ -194,13 +212,19 @@ fn render_into(node: &ViewNode, snapshot: &StoreSnapshot, level: usize, out: &mu
             out.push_str(&format!("{indent}{title}: {}\n", items.join(", ")));
         }
         ViewNode::HistoryList { title } => {
+            let selected = snapshot.selection.selected_commit_oid.as_deref();
             let list = snapshot
                 .history
                 .commits
                 .iter()
                 .map(|commit| {
                     let short = commit.oid.chars().take(7).collect::<String>();
-                    format!("{short} {}", commit.summary)
+                    let marker = if Some(commit.oid.as_str()) == selected {
+                        "*"
+                    } else {
+                        " "
+                    };
+                    format!("{marker}{short} {}", commit.summary)
                 })
                 .collect::<Vec<_>>()
                 .join(", ");

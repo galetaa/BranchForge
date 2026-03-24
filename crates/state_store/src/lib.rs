@@ -46,6 +46,8 @@ pub struct HistoryState {
     pub next_cursor: Option<HistoryCursor>,
     pub filter_author: Option<String>,
     pub filter_text: Option<String>,
+    pub loading: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,12 +253,28 @@ impl StateStore {
         self.snapshot.history.next_cursor = next_cursor;
         self.snapshot.history.filter_author = filter_author;
         self.snapshot.history.filter_text = filter_text;
+        self.snapshot.history.loading = false;
+        self.snapshot.history.error = None;
         self.bump_version();
     }
 
     pub fn clear_history(&mut self) {
         self.snapshot.history = HistoryState::default();
         self.snapshot.commit_cache.clear();
+        self.bump_version();
+    }
+
+    pub fn set_history_loading(&mut self, loading: bool) {
+        self.snapshot.history.loading = loading;
+        if loading {
+            self.snapshot.history.error = None;
+        }
+        self.bump_version();
+    }
+
+    pub fn set_history_error(&mut self, message: String) {
+        self.snapshot.history.loading = false;
+        self.snapshot.history.error = Some(message);
         self.bump_version();
     }
 
