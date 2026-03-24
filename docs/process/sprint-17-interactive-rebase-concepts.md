@@ -24,9 +24,27 @@ This note defines baseline behavior for interactive rebase in Sprint 17.
   - `total_steps`
   - `blocking_conflict`
 
+## UI entry points
+
+- Branches panel:
+  - `rebase.plan.create`
+  - `rebase.execute`
+  - `rebase.continue`
+  - `rebase.skip`
+  - `rebase.abort`
+- History panel:
+  - `cherry_pick.commit`
+  - `revert.commit`
+
+## Diagnostics integration
+
+- Diagnostics panel shows current RebasePlan summary (`base`, `commit count`, `autosquash`).
+- Diagnostics panel shows active RebaseSession progress (`current_step/total_steps`).
+
 ## Current limitations (Sprint 17 baseline)
 
 - Rebase plan uses direct todo script injection; no full visual editor persistence yet.
 - Merge-commit parent-selection for advanced rewrite variants is out of scope.
 - Autosquash baseline is awareness + execution flag, not full auto-plan transformation.
+
 
