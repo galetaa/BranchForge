@@ -58,11 +58,23 @@ fn rebase_plan_execute_and_history_refresh_work_end_to_end() {
     assert!(store.snapshot().rebase.plan.is_some());
 
     if let Some(mut current_plan) = store.snapshot().rebase.plan.clone() {
-        if current_plan.entries.len() >= 2 {
-            current_plan.entries.swap(0, 1);
+        let idx_two = current_plan
+            .entries
+            .iter()
+            .position(|entry| entry.summary == "feat: two");
+        let idx_three = current_plan
+            .entries
+            .iter()
+            .position(|entry| entry.summary == "feat: three");
+        if let (Some(a), Some(b)) = (idx_two, idx_three) {
+            current_plan.entries.swap(a, b);
         }
-        if let Some(last) = current_plan.entries.last_mut() {
-            last.action = RebaseEntryAction::Drop;
+        if let Some(drop_target) = current_plan
+            .entries
+            .iter_mut()
+            .find(|entry| entry.summary == "feat: three")
+        {
+            drop_target.action = RebaseEntryAction::Drop;
         }
         store.update_rebase_plan(current_plan);
     }
@@ -306,6 +318,159 @@ fn rebase_abort_clears_active_session_state() {
             .and_then(|repo| repo.conflict_state.clone())
             .is_none()
     );
+
+    let _ = std::fs::remove_dir_all(&repo_dir);
+}
+
+#[test]
+fn rebase_execute_with_autosquash_rewrites_fixup_chain() {
+    let repo_dir = init_repo();
+
+    assert!(std::fs::write(repo_dir.join("base.txt"), "base\n").is_ok());
+    assert!(git_service::stage_paths(&repo_dir, &["base.txt".to_string()]).is_ok());
+    assert!(git_service::commit_create(&repo_dir, "chore: base").is_ok());
+
+    assert!(std::fs::write(repo_dir.join("one.txt"), "one\n").is_ok());
+    assert!(git_service::stage_paths(&repo_dir, &["one.txt".to_string()]).is_ok());
+    assert!(git_service::commit_create(&repo_dir, "feat: one").is_ok());
+
+    assert!(std::fs::write(repo_dir.join("one.txt"), "one+fix\n").is_ok());
+    assert!(git_service::stage_paths(&repo_dir, &["one.txt".to_string()]).is_ok());
+    assert!(git_service::commit_create(&repo_dir, "fixup! feat: one").is_ok());
+
+    let base = git_service::run_git(&repo_dir, &["rev-list", "--max-parents=0", "HEAD"])
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    let mut store = StateStore::new();
+    assert!(execute_job_op(
+        &repo_dir,
+        &JobRequest {
+            op: "rebase.plan.create".to_string(),
+            lock: JobLock::RefsWrite,
+            paths: vec![base],
+            job_id: None,
+        },
+        &mut store,
+    )
+    .is_ok());
+
+    let exec = execute_job_op(
+        &repo_dir,
+        &JobRequest {
+            op: "rebase.execute".to_string(),
+            lock: JobLock::RefsWrite,
+            paths: vec!["autosquash".to_string()],
+            job_id: None,
+        },
+        &mut store,
+    );
+    assert!(exec.is_ok(), "autosquash execute failed: {exec:?}");
+    assert!(store.snapshot().rebase.session.is_none());
+
+    let count = git_service::run_git(&repo_dir, &["rev-list", "--count", "HEAD"])
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .unwrap_or_default()
+        .trim()
+        .parse::<usize>()
+        .unwrap_or(0);
+    assert_eq!(count, 3);
+
+    let summaries = git_service::commit_log_page(&repo_dir, 0, 10)
+        .ok()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| c.summary)
+        .collect::<Vec<_>>();
+    assert!(summaries.iter().any(|s| s == "chore: base"));
+    assert!(summaries.iter().any(|s| s == "feat: one"));
+    assert!(summaries.iter().any(|s| s.starts_with("fixup!")));
+
+    let _ = std::fs::remove_dir_all(&repo_dir);
+}
+
+#[test]
+fn rebase_skip_from_edit_pause_completes_session() {
+    let repo_dir = init_repo();
+
+    assert!(std::fs::write(repo_dir.join("one.txt"), "one\n").is_ok());
+    assert!(git_service::stage_paths(&repo_dir, &["one.txt".to_string()]).is_ok());
+    assert!(git_service::commit_create(&repo_dir, "feat: one").is_ok());
+
+    assert!(std::fs::write(repo_dir.join("two.txt"), "two\n").is_ok());
+    assert!(git_service::stage_paths(&repo_dir, &["two.txt".to_string()]).is_ok());
+    assert!(git_service::commit_create(&repo_dir, "feat: two").is_ok());
+
+    assert!(std::fs::write(repo_dir.join("three.txt"), "three\n").is_ok());
+    assert!(git_service::stage_paths(&repo_dir, &["three.txt".to_string()]).is_ok());
+    assert!(git_service::commit_create(&repo_dir, "feat: three").is_ok());
+
+    let base = git_service::run_git(&repo_dir, &["rev-list", "--max-parents=0", "HEAD"])
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    let mut store = StateStore::new();
+    assert!(execute_job_op(
+        &repo_dir,
+        &JobRequest {
+            op: "rebase.plan.create".to_string(),
+            lock: JobLock::RefsWrite,
+            paths: vec![base],
+            job_id: None,
+        },
+        &mut store,
+    )
+    .is_ok());
+
+    if let Some(mut current_plan) = store.snapshot().rebase.plan.clone() {
+        if let Some(first) = current_plan.entries.first_mut() {
+            first.action = RebaseEntryAction::Edit;
+        }
+        store.update_rebase_plan(current_plan);
+    }
+
+    assert!(execute_job_op(
+        &repo_dir,
+        &JobRequest {
+            op: "rebase.execute".to_string(),
+            lock: JobLock::RefsWrite,
+            paths: Vec::new(),
+            job_id: None,
+        },
+        &mut store,
+    )
+    .is_ok());
+    assert!(store.snapshot().rebase.session.is_some());
+
+    let skip = execute_job_op(
+        &repo_dir,
+        &JobRequest {
+            op: "rebase.skip".to_string(),
+            lock: JobLock::RefsWrite,
+            paths: Vec::new(),
+            job_id: None,
+        },
+        &mut store,
+    );
+    assert!(skip.is_ok());
+    assert!(store.snapshot().rebase.session.is_none());
+
+    let summaries = git_service::commit_log_page(&repo_dir, 0, 20)
+        .ok()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| c.summary)
+        .collect::<Vec<_>>();
+    assert!(summaries.iter().any(|s| s == "feat: one"));
+    assert!(summaries.iter().any(|s| s == "feat: two"));
+    assert!(summaries.iter().any(|s| s == "feat: three"));
 
     let _ = std::fs::remove_dir_all(&repo_dir);
 }

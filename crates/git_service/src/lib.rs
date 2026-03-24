@@ -566,6 +566,7 @@ pub fn create_rebase_plan(cwd: &Path, base_ref: &str) -> Result<RebasePlan, GitS
         .any(|item| item.summary.starts_with("fixup!") || item.summary.starts_with("squash!"));
     let entries = commits
         .into_iter()
+        .rev()
         .map(|item| RebasePlanEntry {
             oid: item.oid,
             warnings: if item.summary.starts_with("fixup!") || item.summary.starts_with("squash!") {
@@ -621,12 +622,13 @@ pub fn execute_rebase_plan(
         let _ = std::fs::set_permissions(&editor_file, perms);
     }
 
-    let env = vec![
+    let mut env = vec![
         ("GIT_SEQUENCE_EDITOR", editor_file.to_string_lossy().to_string()),
         ("BF_REBASE_TODO", todo_file.to_string_lossy().to_string()),
-        // Avoid interactive editor prompts during squash/fixup message consolidation.
-        ("GIT_EDITOR", "true".to_string()),
     ];
+    if autosquash {
+        env.push(("GIT_EDITOR", "true".to_string()));
+    }
 
     let mut args = vec!["rebase", "-i"];
     if autosquash {
@@ -1766,9 +1768,23 @@ mod tests {
         let mut plan = create_rebase_plan(&repo_dir, &base).expect("plan");
         assert_eq!(plan.entries.len(), 2);
 
-        plan.entries.swap(0, 1);
-        if let Some(last) = plan.entries.last_mut() {
-            last.action = RebaseAction::Drop;
+        let idx_two = plan
+            .entries
+            .iter()
+            .position(|entry| entry.summary == "feat: two")
+            .expect("feat: two index");
+        let idx_three = plan
+            .entries
+            .iter()
+            .position(|entry| entry.summary == "feat: three")
+            .expect("feat: three index");
+        plan.entries.swap(idx_two, idx_three);
+        if let Some(drop_target) = plan
+            .entries
+            .iter_mut()
+            .find(|entry| entry.summary == "feat: three")
+        {
+            drop_target.action = RebaseAction::Drop;
         }
 
         let executed = execute_rebase_plan(&repo_dir, &plan, false);
