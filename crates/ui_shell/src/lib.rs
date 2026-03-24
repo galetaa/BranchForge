@@ -165,6 +165,27 @@ pub fn render_diagnostics_panel(store: &StateStore) -> String {
     )
 }
 
+pub fn render_merge_dialog_preview(source_ref: &str, target_ref: &str, mode: &str) -> String {
+    format!(
+        "Merge dialog\nsource: {source_ref}\ntarget: {target_ref}\nmode: {mode}\nsafety: review ahead/behind and conflict route before execute\n"
+    )
+}
+
+pub fn render_reset_dialog_preview(mode: &str, target: &str) -> String {
+    let impact = match mode {
+        "soft" => "moves HEAD only; index and worktree stay intact",
+        "mixed" => "moves HEAD and resets index; worktree changes remain",
+        "hard" => "moves HEAD, resets index and drops worktree changes",
+        _ => "unknown mode",
+    };
+    let danger = if mode == "hard" {
+        "danger: destructive operation, explicit confirm required"
+    } else {
+        "danger: moderate operation"
+    };
+    format!("Reset dialog\nmode: {mode}\ntarget: {target}\nimpact: {impact}\n{danger}\n")
+}
+
 pub fn render_empty_state() -> String {
     "No repository opened. Use `Open Repository` from command palette.".to_string()
 }
@@ -486,5 +507,25 @@ mod tests {
         );
         let rendered = render_window(&store, &palette_items);
         assert!(rendered.contains("Commit (on)"));
+    }
+
+    #[test]
+    fn renders_merge_dialog_preview_with_safety_copy() {
+        let text = render_merge_dialog_preview("feature", "main", "no-ff");
+        assert!(text.contains("Merge dialog"));
+        assert!(text.contains("source: feature"));
+        assert!(text.contains("target: main"));
+        assert!(text.contains("mode: no-ff"));
+        assert!(text.contains("safety:"));
+    }
+
+    #[test]
+    fn renders_reset_dialog_preview_with_explicit_hard_danger() {
+        let text = render_reset_dialog_preview("hard", "HEAD~1");
+        assert!(text.contains("Reset dialog"));
+        assert!(text.contains("mode: hard"));
+        assert!(text.contains("target: HEAD~1"));
+        assert!(text.contains("drops worktree changes"));
+        assert!(text.contains("explicit confirm required"));
     }
 }
