@@ -214,6 +214,40 @@ pub fn build_branches_panel(snapshot: &StoreSnapshot) -> ViewNode {
         (Some(base_ref), Some(head_ref)) => Some(format!("Compare: {base_ref} -> {head_ref}")),
         _ => None,
     };
+    let operation_banner = snapshot.repo.as_ref().and_then(|repo| {
+        repo.conflict_state.as_ref().map(|state| {
+            let label = match state {
+                plugin_api::ConflictState::Merge => "merge",
+                plugin_api::ConflictState::Rebase => "rebase",
+                plugin_api::ConflictState::CherryPick => "cherry-pick",
+            };
+            format!("Operation in progress: {label}")
+        })
+    });
+    let conflict_route = snapshot.repo.as_ref().and_then(|repo| match repo.conflict_state {
+        Some(plugin_api::ConflictState::Merge) => {
+            Some("Conflict route: resolve conflicts or run merge.abort".to_string())
+        }
+        Some(plugin_api::ConflictState::CherryPick) => {
+            Some("Conflict route: resolve conflicts or run cherry_pick.abort".to_string())
+        }
+        _ => None,
+    });
+    let session_badge = snapshot
+        .journal
+        .entries
+        .iter()
+        .rev()
+        .find_map(|entry| {
+            let session_id = entry.session_id?;
+            let state = match entry.session_state.as_ref() {
+                Some(state_store::OperationSessionState::Running) => "running",
+                Some(state_store::OperationSessionState::Succeeded) => "succeeded",
+                Some(state_store::OperationSessionState::Failed) => "failed",
+                None => "unknown",
+            };
+            Some(format!("Session #{session_id}: {} ({state})", entry.op))
+        });
 
     let current_branch = snapshot
         .branches
@@ -261,6 +295,28 @@ pub fn build_branches_panel(snapshot: &StoreSnapshot) -> ViewNode {
             });
         }
     }
+    if let Some(banner) = operation_banner {
+        children.push(ViewNode::Text { value: banner });
+    }
+    if let Some(route) = conflict_route {
+        children.push(ViewNode::Text { value: route });
+    }
+    if let Some(session) = session_badge {
+        children.push(ViewNode::Text { value: session });
+    }
+    children.push(ViewNode::Text {
+        value: "Merge safety: choose ff/no-ff/squash and review conflict route before execute"
+            .to_string(),
+    });
+    children.push(ViewNode::Text {
+        value:
+            "Reset safety: soft keeps index/worktree, mixed resets index, hard drops worktree changes"
+                .to_string(),
+    });
+    children.push(ViewNode::Text {
+        value: "Danger copy: reset --hard is destructive and requires explicit confirm"
+            .to_string(),
+    });
 
     if !has_branches {
         children.push(ViewNode::Text {
@@ -487,5 +543,53 @@ mod tests {
         assert!(rendered.contains("Loading: status.refresh"));
         assert!(rendered.contains("Session #10: status.refresh (running)"));
         assert!(rendered.contains("Operation error: commit.create: nothing to commit"));
+    }
+
+    #[test]
+    fn branches_panel_shows_safety_copy_and_conflict_route() {
+        let snapshot = StoreSnapshot {
+            repo: Some(plugin_api::RepoSnapshot {
+                root: "./demo".to_string(),
+                head: Some("main".to_string()),
+                conflict_state: Some(plugin_api::ConflictState::Merge),
+            }),
+            status: StatusSnapshot::default(),
+            selection: SelectionState::default(),
+            history: state_store::HistoryState::default(),
+            commit_cache: std::collections::HashMap::new(),
+            diff: state_store::DiffState::default(),
+            compare: state_store::CompareState::default(),
+            branches: state_store::BranchesState::default(),
+            tags: state_store::TagsState::default(),
+            commit_message: state_store::CommitMessageState::default(),
+            journal: state_store::OperationJournalState {
+                entries: vec![state_store::OperationJournalEntry {
+                    id: 1,
+                    job_id: None,
+                    op: "merge.execute".to_string(),
+                    status: state_store::JournalStatus::Started,
+                    started_at_ms: 1,
+                    finished_at_ms: None,
+                    error: None,
+                    session_id: Some(77),
+                    session_kind: Some(state_store::OperationSessionKind::AdvancedBranchOperation),
+                    session_state: Some(state_store::OperationSessionState::Running),
+                    pre_refs: None,
+                    post_refs: None,
+                }],
+            },
+            active_view: None,
+            plugins: Vec::new(),
+            version: 1,
+        };
+
+        let panel = build_branches_panel(&snapshot);
+        let rendered = render(&panel, &snapshot);
+        assert!(rendered.contains("Operation in progress: merge"));
+        assert!(rendered.contains("Conflict route: resolve conflicts or run merge.abort"));
+        assert!(rendered.contains("Session #77: merge.execute (running)"));
+        assert!(rendered.contains("Merge safety:"));
+        assert!(rendered.contains("Reset safety:"));
+        assert!(rendered.contains("reset --hard is destructive"));
     }
 }
