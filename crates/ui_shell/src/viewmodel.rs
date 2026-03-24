@@ -174,11 +174,8 @@ pub fn build_history_panel(snapshot: &StoreSnapshot) -> ViewNode {
 
 pub fn build_branches_panel(snapshot: &StoreSnapshot) -> ViewNode {
     let has_branches = !snapshot.branches.branches.is_empty();
-    let header = if has_branches {
-        "Branches Panel".to_string()
-    } else {
-        "Branches Panel (empty)".to_string()
-    };
+    let has_tags = !snapshot.tags.tags.is_empty();
+    let header = "Branches Panel".to_string();
     let compare_line = match (
         snapshot.compare.base_ref.as_deref(),
         snapshot.compare.head_ref.as_deref(),
@@ -210,6 +207,39 @@ pub fn build_branches_panel(snapshot: &StoreSnapshot) -> ViewNode {
     ];
     if let Some(line) = compare_line {
         children.push(ViewNode::Text { value: line });
+        children.push(ViewNode::Text {
+            value: format!(
+                "Ahead/behind: +{} / -{}",
+                snapshot.compare.ahead, snapshot.compare.behind
+            ),
+        });
+        if !snapshot.compare.commits.is_empty() {
+            let preview = snapshot
+                .compare
+                .commits
+                .iter()
+                .take(5)
+                .map(|commit| {
+                    let short = commit.oid.chars().take(7).collect::<String>();
+                    format!("{short} {}", commit.summary)
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            children.push(ViewNode::Text {
+                value: format!("Compare commits: {preview}"),
+            });
+        }
+    }
+
+    if !has_branches {
+        children.push(ViewNode::Text {
+            value: "Branches: empty".to_string(),
+        });
+    }
+    if !has_tags {
+        children.push(ViewNode::Text {
+            value: "Tags: empty".to_string(),
+        });
     }
 
     ViewNode::Container { children }

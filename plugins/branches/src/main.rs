@@ -1,4 +1,25 @@
-use plugin_api::{ActionSpec, DangerLevel, PluginHello, PluginRegister, RpcRequest, ViewSpec};
+use plugin_api::{
+    ActionEffects, ActionSpec, ConfirmPolicy, DangerLevel, PluginHello, PluginRegister,
+    RpcRequest, ViewSpec,
+};
+
+fn spec(
+    action_id: &str,
+    title: &str,
+    danger: Option<DangerLevel>,
+    effects: ActionEffects,
+    confirm_policy: ConfirmPolicy,
+) -> ActionSpec {
+    ActionSpec {
+        action_id: action_id.to_string(),
+        title: title.to_string(),
+        when: Some("repo.is_open".to_string()),
+        params_schema: None,
+        danger,
+        effects,
+        confirm_policy,
+    }
+}
 
 fn build_hello_request() -> RpcRequest {
     PluginHello {
@@ -12,62 +33,60 @@ fn build_register_request() -> RpcRequest {
     let rebase_beta = rebase_beta_enabled();
     PluginRegister {
         actions: vec![
-            ActionSpec {
-                action_id: "branch.checkout".to_string(),
-                title: "Checkout Branch".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: None,
-            },
-            ActionSpec {
-                action_id: "branch.create".to_string(),
-                title: "Create Branch".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: None,
-            },
-            ActionSpec {
-                action_id: "branch.rename".to_string(),
-                title: "Rename Branch".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: None,
-            },
-            ActionSpec {
-                action_id: "branch.delete".to_string(),
-                title: "Delete Branch".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: Some(DangerLevel::High),
-            },
-            ActionSpec {
-                action_id: "compare.refs".to_string(),
-                title: "Compare Branches".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: None,
-            },
-            ActionSpec {
-                action_id: "rebase.interactive".to_string(),
-                title: "Interactive Rebase (beta)".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: Some(DangerLevel::High),
-            },
-            ActionSpec {
-                action_id: "tag.checkout".to_string(),
-                title: "Checkout Tag".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: Some(DangerLevel::Medium),
-            },
-            ActionSpec {
-                action_id: "tag.create".to_string(),
-                title: "Create Tag".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: Some(DangerLevel::Low),
-            },
+            spec(
+                "branch.checkout",
+                "Checkout Branch",
+                None,
+                ActionEffects {
+                    writes_refs: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "branch.create",
+                "Create Branch",
+                None,
+                ActionEffects {
+                    writes_refs: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "branch.rename",
+                "Rename Branch",
+                None,
+                ActionEffects {
+                    writes_refs: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "branch.delete",
+                "Delete Branch",
+                Some(DangerLevel::High),
+                ActionEffects::mutating_refs(),
+                ConfirmPolicy::Always,
+            ),
+            spec(
+                "rebase.interactive",
+                "Interactive Rebase (beta)",
+                Some(DangerLevel::High),
+                ActionEffects {
+                    writes_refs: true,
+                    writes_index: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::High,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::Always,
+            ),
         ]
         .into_iter()
         .filter(|spec| {

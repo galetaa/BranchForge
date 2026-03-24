@@ -1,6 +1,8 @@
 use std::collections::HashMap;
+use std::path::Path;
 
 use plugin_api::RepoSnapshot;
+use serde::{Deserialize, Serialize};
 
 pub type StoreVersion = u64;
 
@@ -95,6 +97,9 @@ pub struct DiffState {
 pub struct CompareState {
     pub base_ref: Option<String>,
     pub head_ref: Option<String>,
+    pub ahead: usize,
+    pub behind: usize,
+    pub commits: Vec<CommitSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,14 +138,14 @@ pub struct CommitMessageState {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JournalStatus {
     Started,
     Succeeded,
     Failed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OperationJournalEntry {
     pub id: u64,
     pub job_id: Option<u64>,
@@ -209,6 +214,8 @@ pub struct StateStore {
     next_subscriber_id: u64,
     next_journal_id: u64,
 }
+
+const JOURNAL_RETENTION_LIMIT: usize = 200;
 
 impl Default for StateStore {
     fn default() -> Self {
@@ -329,6 +336,7 @@ impl StateStore {
             finished_at_ms: None,
             error: None,
         });
+        self.enforce_journal_retention();
         self.bump_version();
         entry_id
     }
@@ -379,6 +387,27 @@ impl StateStore {
         self.snapshot.compare = CompareState {
             base_ref: Some(base_ref),
             head_ref: Some(head_ref),
+            ahead: 0,
+            behind: 0,
+            commits: Vec::new(),
+        };
+        self.bump_version();
+    }
+
+    pub fn update_compare_summary(
+        &mut self,
+        base_ref: String,
+        head_ref: String,
+        ahead: usize,
+        behind: usize,
+        commits: Vec<CommitSummary>,
+    ) {
+        self.snapshot.compare = CompareState {
+            base_ref: Some(base_ref),
+            head_ref: Some(head_ref),
+            ahead,
+            behind,
+            commits,
         };
         self.bump_version();
     }
@@ -454,6 +483,40 @@ impl StateStore {
         for queue in self.subscribers.values_mut() {
             queue.push(event.clone());
         }
+    }
+
+    fn enforce_journal_retention(&mut self) {
+        let len = self.snapshot.journal.entries.len();
+        if len > JOURNAL_RETENTION_LIMIT {
+            let to_drop = len - JOURNAL_RETENTION_LIMIT;
+            self.snapshot.journal.entries.drain(0..to_drop);
+        }
+    }
+
+    pub fn persist_journal(&self, path: &Path) -> Result<(), String> {
+        let payload = serde_json::to_string_pretty(&self.snapshot.journal.entries)
+            .map_err(|err| err.to_string())?;
+        std::fs::write(path, payload).map_err(|err| err.to_string())
+    }
+
+    pub fn restore_journal(&mut self, path: &Path) -> Result<(), String> {
+        if !path.exists() {
+            return Ok(());
+        }
+        let payload = std::fs::read_to_string(path).map_err(|err| err.to_string())?;
+        let entries: Vec<OperationJournalEntry> =
+            serde_json::from_str(&payload).map_err(|err| err.to_string())?;
+        self.snapshot.journal.entries = entries;
+        self.enforce_journal_retention();
+        self.next_journal_id = self
+            .snapshot
+            .journal
+            .entries
+            .last()
+            .map(|entry| entry.id + 1)
+            .unwrap_or(1);
+        self.bump_version();
+        Ok(())
     }
 }
 
@@ -602,6 +665,41 @@ mod tests {
         assert_eq!(entry.job_id, Some(42));
         assert_eq!(entry.finished_at_ms, Some(200));
         assert!(matches!(entry.status, JournalStatus::Succeeded));
+    }
+
+    #[test]
+    fn journal_retention_keeps_recent_entries() {
+        let mut store = StateStore::new();
+        for idx in 0..(JOURNAL_RETENTION_LIMIT + 10) {
+            let _ = store.append_journal_entry(None, format!("op.{idx}"), idx as u64);
+        }
+        assert_eq!(store.snapshot().journal.entries.len(), JOURNAL_RETENTION_LIMIT);
+        let first = store
+            .snapshot()
+            .journal
+            .entries
+            .first()
+            .map(|entry| entry.op.clone())
+            .unwrap_or_default();
+        assert_eq!(first, "op.10");
+    }
+
+    #[test]
+    fn journal_persists_and_restores_from_file() {
+        let mut store = StateStore::new();
+        let entry_id = store.append_journal_entry(Some(7), "tag.delete".to_string(), 100);
+        store.finish_journal_entry(entry_id, JournalStatus::Failed, 200, Some("boom".to_string()));
+
+        let path = std::env::temp_dir().join("branchforge-journal-state-store-test.json");
+        let write = store.persist_journal(&path);
+        assert!(write.is_ok());
+
+        let mut restored = StateStore::new();
+        let read = restored.restore_journal(&path);
+        assert!(read.is_ok());
+        assert_eq!(restored.snapshot().journal.entries.len(), 1);
+        assert_eq!(restored.snapshot().journal.entries[0].op, "tag.delete");
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

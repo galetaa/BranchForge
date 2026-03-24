@@ -435,8 +435,25 @@ pub fn execute_job_op(
                     message: "compare.refs requires head ref in request.paths[1]".to_string(),
                 }
             })?;
+            let compare = git_service::compare_refs(cwd, base_ref, head_ref, 100)?;
+            let compare_commits = compare
+                .commits
+                .iter()
+                .map(|commit| state_store::CommitSummary {
+                    oid: commit.oid.clone(),
+                    author: commit.author.clone(),
+                    time: commit.time.clone(),
+                    summary: commit.summary.clone(),
+                })
+                .collect();
+            store.update_compare_summary(
+                compare.base_ref.clone(),
+                compare.head_ref.clone(),
+                compare.ahead,
+                compare.behind,
+                compare_commits,
+            );
             let diff = git_service::diff_compare_with_hunks(cwd, base_ref, head_ref, 256 * 1024)?;
-            store.update_compare(base_ref.to_string(), head_ref.to_string());
             let source = DiffSource::Compare {
                 base: base_ref.to_string(),
                 head: head_ref.to_string(),
@@ -554,6 +571,22 @@ pub fn execute_job_op(
                 state_version: store.snapshot().version,
             })
         }
+        "tag.delete" => {
+            ensure_no_conflicts(cwd, "tag.delete")?;
+            let name = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "tag.delete requires name in request.paths[0]".to_string(),
+                }
+            })?;
+            let _target = git_service::inspect_tag_target(cwd, name)?;
+            git_service::delete_tag(cwd, name)?;
+            refresh_refs(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
         "tag.checkout" => {
             ensure_no_conflicts(cwd, "tag.checkout")?;
             let name = request.paths.first().map(String::as_str).ok_or_else(|| {
@@ -570,6 +603,21 @@ pub fn execute_job_op(
             git_service::checkout_tag(cwd, name)?;
             refresh_repo_and_status(cwd, store)?;
             refresh_refs(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "file.discard" => {
+            ensure_no_conflicts(cwd, "file.discard")?;
+            if request.paths.is_empty() {
+                return Err(JobExecutionError::InvalidInput {
+                    message: "file.discard requires at least one file path".to_string(),
+                });
+            }
+            git_service::discard_paths(cwd, &request.paths)?;
+            refresh_status(cwd, store)?;
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -845,7 +893,9 @@ fn is_journaled_op(op: &str) -> bool {
             | "branch.rename"
             | "branch.delete"
             | "tag.create"
+            | "tag.delete"
             | "tag.checkout"
+            | "file.discard"
     )
 }
 

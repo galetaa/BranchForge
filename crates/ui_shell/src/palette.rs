@@ -33,7 +33,10 @@ fn action_owner_plugin(action_id: &str) -> Option<&'static str> {
     if action_id == "repo.open" {
         return Some("repo_manager");
     }
-    if action_id.starts_with("index.") || action_id.starts_with("commit.") {
+    if action_id.starts_with("index.")
+        || action_id.starts_with("commit.")
+        || action_id.starts_with("file.")
+    {
         return Some("status");
     }
     if action_id.starts_with("history.") {
@@ -41,6 +44,15 @@ fn action_owner_plugin(action_id: &str) -> Option<&'static str> {
     }
     if action_id.starts_with("branch.") || action_id.starts_with("rebase.") {
         return Some("branches");
+    }
+    if action_id.starts_with("tag.") {
+        return Some("tags");
+    }
+    if action_id.starts_with("compare.") {
+        return Some("compare");
+    }
+    if action_id.starts_with("diagnostics.") {
+        return Some("diagnostics");
     }
     None
 }
@@ -95,6 +107,8 @@ mod tests {
             when: when.map(ToString::to_string),
             params_schema: None,
             danger: None,
+            effects: plugin_api::ActionEffects::read_only(),
+            confirm_policy: plugin_api::ConfirmPolicy::Never,
         }
     }
 

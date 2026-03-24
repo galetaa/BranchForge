@@ -45,6 +45,22 @@ pub struct CommitSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompareSummary {
+    pub base_ref: String,
+    pub head_ref: String,
+    pub ahead: usize,
+    pub behind: usize,
+    pub commits: Vec<CommitSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagTarget {
+    pub name: String,
+    pub oid: String,
+    pub object_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConflictState {
     Merge,
     Rebase,
@@ -427,6 +443,24 @@ pub fn diff_compare_with_hunks(
     })
 }
 
+pub fn compare_refs(
+    cwd: &Path,
+    base_ref: &str,
+    head_ref: &str,
+    max_commits: usize,
+) -> Result<CompareSummary, GitServiceError> {
+    let ahead = count_revisions(cwd, &format!("{base_ref}..{head_ref}"))?;
+    let behind = count_revisions(cwd, &format!("{head_ref}..{base_ref}"))?;
+    let commits = commit_log_range(cwd, base_ref, head_ref, max_commits)?;
+    Ok(CompareSummary {
+        base_ref: base_ref.to_string(),
+        head_ref: head_ref.to_string(),
+        ahead,
+        behind,
+        commits,
+    })
+}
+
 pub fn stage_hunk(cwd: &Path, path: &str, hunk_index: usize) -> Result<(), GitServiceError> {
     let hunks =
         diff_worktree_raw(cwd, &[path.to_string()]).map(|text| parse_unified_diff_hunks(&text))?;
@@ -707,9 +741,100 @@ pub fn create_tag(cwd: &Path, name: &str) -> Result<(), GitServiceError> {
     Ok(())
 }
 
+pub fn delete_tag(cwd: &Path, name: &str) -> Result<(), GitServiceError> {
+    let _ = run_git(cwd, &["tag", "-d", name])?;
+    Ok(())
+}
+
+pub fn inspect_tag_target(cwd: &Path, name: &str) -> Result<TagTarget, GitServiceError> {
+    let rev = run_git(cwd, &["rev-list", "-n", "1", name])?;
+    let oid = String::from_utf8(rev.stdout)
+        .map_err(|_| GitServiceError::Utf8Decode)?
+        .trim()
+        .to_string();
+    if oid.is_empty() {
+        return Err(GitServiceError::ParseError(
+            "tag target oid is empty".to_string(),
+        ));
+    }
+
+    let kind = run_git(cwd, &["cat-file", "-t", &oid])?;
+    let object_type = String::from_utf8(kind.stdout)
+        .map_err(|_| GitServiceError::Utf8Decode)?
+        .trim()
+        .to_string();
+
+    Ok(TagTarget {
+        name: name.to_string(),
+        oid,
+        object_type,
+    })
+}
+
 pub fn checkout_tag(cwd: &Path, name: &str) -> Result<(), GitServiceError> {
     let _ = run_git(cwd, &["checkout", name])?;
     Ok(())
+}
+
+pub fn discard_paths(cwd: &Path, paths: &[String]) -> Result<(), GitServiceError> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let mut args = vec!["restore".to_string(), "--worktree".to_string(), "--".to_string()];
+    args.extend(paths.iter().cloned());
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let _ = run_git(cwd, &refs)?;
+    Ok(())
+}
+
+fn count_revisions(cwd: &Path, range: &str) -> Result<usize, GitServiceError> {
+    let out = run_git(cwd, &["rev-list", "--count", range])?;
+    let text = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+    text.trim()
+        .parse::<usize>()
+        .map_err(|_| GitServiceError::ParseError("invalid revision count".to_string()))
+}
+
+fn commit_log_range(
+    cwd: &Path,
+    base_ref: &str,
+    head_ref: &str,
+    max_commits: usize,
+) -> Result<Vec<CommitSummary>, GitServiceError> {
+    let format = "--format=%H%x1f%an%x1f%ad%x1f%s";
+    let max_count = max_commits.to_string();
+    let range = format!("{base_ref}..{head_ref}");
+    let out = run_git(
+        cwd,
+        &[
+            "log",
+            "--date=iso-strict",
+            format,
+            "--max-count",
+            &max_count,
+            &range,
+        ],
+    )?;
+    let text = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+    let mut commits = Vec::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = line.split('\x1f').collect();
+        if parts.len() != 4 {
+            return Err(GitServiceError::ParseError(
+                "invalid compare commit line".to_string(),
+            ));
+        }
+        commits.push(CommitSummary {
+            oid: parts[0].to_string(),
+            author: parts[1].to_string(),
+            time: parts[2].to_string(),
+            summary: parts[3].to_string(),
+        });
+    }
+    Ok(commits)
 }
 
 pub fn commit_amend(cwd: &Path, message: Option<&str>) -> Result<(), GitServiceError> {

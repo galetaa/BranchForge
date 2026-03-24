@@ -160,6 +160,8 @@ pub fn run_window_layout_smoke() -> String {
             when: Some("always".to_string()),
             params_schema: None,
             danger: None,
+            effects: plugin_api::ActionEffects::read_only(),
+            confirm_policy: plugin_api::ConfirmPolicy::Never,
         }],
         "",
         false,
@@ -188,6 +190,8 @@ pub fn run_window_after_open_smoke() -> String {
             when: Some("always".to_string()),
             params_schema: None,
             danger: None,
+            effects: plugin_api::ActionEffects::read_only(),
+            confirm_policy: plugin_api::ConfirmPolicy::Never,
         }],
         "",
         true,
@@ -204,6 +208,8 @@ pub fn run_palette_when_smoke(repo_open: bool) -> Vec<(String, bool)> {
             when: Some("always".to_string()),
             params_schema: None,
             danger: None,
+            effects: plugin_api::ActionEffects::read_only(),
+            confirm_policy: plugin_api::ConfirmPolicy::Never,
         },
         ActionSpec {
             action_id: "commit.create".to_string(),
@@ -211,6 +217,13 @@ pub fn run_palette_when_smoke(repo_open: bool) -> Vec<(String, bool)> {
             when: Some("repo.is_open".to_string()),
             params_schema: None,
             danger: None,
+            effects: plugin_api::ActionEffects {
+                writes_refs: true,
+                writes_index: true,
+                danger_level: plugin_api::DangerLevel::Medium,
+                ..plugin_api::ActionEffects::default()
+            },
+            confirm_policy: plugin_api::ConfirmPolicy::OnDanger,
         },
     ];
 
@@ -921,7 +934,7 @@ mod tests {
         let outcome = run_repo_open_flow_with_picker(|| Some(dir.clone()));
         assert!(matches!(
             outcome,
-            OpenRepoOutcome::Failed(UserFacingError { title, message, detail: Some(_) })
+            OpenRepoOutcome::Failed(UserFacingError { title, message, detail: Some(_), .. })
                 if title == "Not a Git repository"
                 && message == "Select a folder that contains a Git repository."
         ));

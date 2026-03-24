@@ -63,6 +63,9 @@ fn compare_refs_updates_diff_and_compare_state() {
         store.snapshot().compare.head_ref.as_deref(),
         Some("feature")
     );
+    assert_eq!(store.snapshot().compare.ahead, 1);
+    assert_eq!(store.snapshot().compare.behind, 0);
+    assert_eq!(store.snapshot().compare.commits.len(), 1);
     assert!(
         store
             .snapshot()
@@ -71,6 +74,80 @@ fn compare_refs_updates_diff_and_compare_state() {
             .as_deref()
             .unwrap_or("")
             .contains("feature")
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_dir);
+}
+
+#[test]
+fn file_discard_restores_worktree_file() {
+    let repo_dir = init_repo();
+    let file = repo_dir.join("discard.txt");
+    assert!(std::fs::write(&file, "base\n").is_ok());
+    assert!(git_service::stage_paths(&repo_dir, &["discard.txt".to_string()]).is_ok());
+    assert!(git_service::commit_create(&repo_dir, "base commit").is_ok());
+    assert!(std::fs::write(&file, "mutated\n").is_ok());
+
+    let mut store = StateStore::new();
+    let result = execute_job_op(
+        &repo_dir,
+        &JobRequest {
+            op: "file.discard".to_string(),
+            lock: JobLock::IndexWrite,
+            paths: vec!["discard.txt".to_string()],
+            job_id: None,
+        },
+        &mut store,
+    );
+
+    assert!(result.is_ok());
+    let content = std::fs::read_to_string(&file).unwrap_or_default();
+    assert_eq!(content, "base\n");
+
+    let _ = std::fs::remove_dir_all(&repo_dir);
+}
+
+#[test]
+fn tag_delete_removes_existing_tag() {
+    let repo_dir = init_repo();
+    let file = repo_dir.join("tag-delete.txt");
+    assert!(std::fs::write(&file, "base\n").is_ok());
+    assert!(git_service::stage_paths(&repo_dir, &["tag-delete.txt".to_string()]).is_ok());
+    assert!(git_service::commit_create(&repo_dir, "base commit").is_ok());
+    assert!(git_service::create_tag(&repo_dir, "v0.3.0").is_ok());
+
+    let mut store = StateStore::new();
+    let open = execute_job_op(
+        &repo_dir,
+        &JobRequest {
+            op: "repo.open".to_string(),
+            lock: JobLock::Read,
+            paths: Vec::new(),
+            job_id: None,
+        },
+        &mut store,
+    );
+    assert!(open.is_ok());
+
+    let result = execute_job_op(
+        &repo_dir,
+        &JobRequest {
+            op: "tag.delete".to_string(),
+            lock: JobLock::RefsWrite,
+            paths: vec!["v0.3.0".to_string()],
+            job_id: None,
+        },
+        &mut store,
+    );
+
+    assert!(result.is_ok());
+    assert!(
+        !store
+            .snapshot()
+            .tags
+            .tags
+            .iter()
+            .any(|tag| tag.name == "v0.3.0")
     );
 
     let _ = std::fs::remove_dir_all(&repo_dir);

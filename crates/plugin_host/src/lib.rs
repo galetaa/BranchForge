@@ -5,9 +5,9 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use plugin_api::{
-    ActionContext, ActionSpec, CodecError, DangerLevel, FrameCodec, HelloAck,
-    METHOD_HOST_ACTION_INVOKE, METHOD_PLUGIN_READY, PluginHello, PluginRegister, RegisterAck,
-    RpcMessage, RpcNotification, RpcRequest, RpcResponse,
+    ActionContext, ActionEffects, ActionSpec, CodecError, ConfirmPolicy, DangerLevel, FrameCodec,
+    HelloAck, METHOD_HOST_ACTION_INVOKE, METHOD_PLUGIN_READY, PluginHello, PluginRegister,
+    RegisterAck, RpcMessage, RpcNotification, RpcRequest, RpcResponse,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -191,6 +191,7 @@ fn spawn_child(
 pub enum RegistryError {
     DuplicateAction { action_id: String },
     DuplicateView { view_id: String },
+    InvalidActionSpec { action_id: String, reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -447,6 +448,7 @@ impl PluginRegistry {
                     action_id: action.action_id.clone(),
                 });
             }
+            validate_action_spec(action)?;
         }
 
         for view in &request.views {
@@ -486,6 +488,18 @@ impl PluginRegistry {
     pub fn actions(&self) -> Vec<ActionSpec> {
         self.actions.values().cloned().collect()
     }
+}
+
+fn validate_action_spec(spec: &ActionSpec) -> Result<(), RegistryError> {
+    if matches!(spec.confirm_policy, ConfirmPolicy::Never)
+        && matches!(spec.effective_danger(), DangerLevel::High)
+    {
+        return Err(RegistryError::InvalidActionSpec {
+            action_id: spec.action_id.clone(),
+            reason: "high danger actions cannot disable confirmations".to_string(),
+        });
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -789,15 +803,35 @@ pub fn default_registration_payload() -> PluginRegister {
     repo_manager_registration_payload()
 }
 
+fn spec(
+    action_id: &str,
+    title: &str,
+    when: Option<&str>,
+    danger: Option<DangerLevel>,
+    effects: ActionEffects,
+    confirm_policy: ConfirmPolicy,
+) -> ActionSpec {
+    ActionSpec {
+        action_id: action_id.to_string(),
+        title: title.to_string(),
+        when: when.map(str::to_string),
+        params_schema: None,
+        danger,
+        effects,
+        confirm_policy,
+    }
+}
+
 pub fn repo_manager_registration_payload() -> PluginRegister {
     PluginRegister {
-        actions: vec![ActionSpec {
-            action_id: "repo.open".to_string(),
-            title: "Open Repository".to_string(),
-            when: Some("always".to_string()),
-            params_schema: None,
-            danger: None,
-        }],
+        actions: vec![spec(
+            "repo.open",
+            "Open Repository",
+            Some("always"),
+            None,
+            ActionEffects::read_only(),
+            ConfirmPolicy::Never,
+        )],
         views: Vec::new(),
     }
 }
@@ -805,48 +839,92 @@ pub fn repo_manager_registration_payload() -> PluginRegister {
 pub fn status_registration_payload() -> PluginRegister {
     PluginRegister {
         actions: vec![
-            ActionSpec {
-                action_id: "index.stage_selected".to_string(),
-                title: "Stage Selected".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: None,
-            },
-            ActionSpec {
-                action_id: "index.unstage_selected".to_string(),
-                title: "Unstage Selected".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: None,
-            },
-            ActionSpec {
-                action_id: "index.stage_hunk".to_string(),
-                title: "Stage Hunk".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: None,
-            },
-            ActionSpec {
-                action_id: "index.unstage_hunk".to_string(),
-                title: "Unstage Hunk".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: None,
-            },
-            ActionSpec {
-                action_id: "commit.create".to_string(),
-                title: "Commit".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: None,
-            },
-            ActionSpec {
-                action_id: "commit.amend".to_string(),
-                title: "Amend Commit".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: Some(DangerLevel::Medium),
-            },
+            spec(
+                "index.stage_selected",
+                "Stage Selected",
+                Some("repo.is_open"),
+                None,
+                ActionEffects {
+                    writes_index: true,
+                    danger_level: DangerLevel::Low,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "index.unstage_selected",
+                "Unstage Selected",
+                Some("repo.is_open"),
+                None,
+                ActionEffects {
+                    writes_index: true,
+                    danger_level: DangerLevel::Low,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "index.stage_hunk",
+                "Stage Hunk",
+                Some("repo.is_open"),
+                None,
+                ActionEffects {
+                    writes_index: true,
+                    danger_level: DangerLevel::Low,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "index.unstage_hunk",
+                "Unstage Hunk",
+                Some("repo.is_open"),
+                None,
+                ActionEffects {
+                    writes_index: true,
+                    danger_level: DangerLevel::Low,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "commit.create",
+                "Commit",
+                Some("repo.is_open"),
+                None,
+                ActionEffects {
+                    writes_refs: true,
+                    writes_index: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "commit.amend",
+                "Amend Commit",
+                Some("repo.is_open"),
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_refs: true,
+                    writes_index: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "file.discard",
+                "Discard File Changes",
+                Some("repo.is_open"),
+                Some(DangerLevel::High),
+                ActionEffects {
+                    writes_worktree: true,
+                    danger_level: DangerLevel::High,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::Always,
+            ),
         ],
         views: vec![plugin_api::ViewSpec {
             view_id: "status.panel".to_string(),
@@ -860,34 +938,38 @@ pub fn status_registration_payload() -> PluginRegister {
 pub fn history_registration_payload() -> PluginRegister {
     PluginRegister {
         actions: vec![
-            ActionSpec {
-                action_id: "history.load_more".to_string(),
-                title: "Load More History".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: None,
-            },
-            ActionSpec {
-                action_id: "history.select_commit".to_string(),
-                title: "Select Commit".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: None,
-            },
-            ActionSpec {
-                action_id: "history.search".to_string(),
-                title: "Search History".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: None,
-            },
-            ActionSpec {
-                action_id: "history.clear_filter".to_string(),
-                title: "Clear History Filter".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: None,
-            },
+            spec(
+                "history.load_more",
+                "Load More History",
+                Some("repo.is_open"),
+                None,
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "history.select_commit",
+                "Select Commit",
+                Some("repo.is_open"),
+                None,
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "history.search",
+                "Search History",
+                Some("repo.is_open"),
+                None,
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "history.clear_filter",
+                "Clear History Filter",
+                Some("repo.is_open"),
+                None,
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
         ],
         views: vec![plugin_api::ViewSpec {
             view_id: "history.panel".to_string(),
@@ -902,62 +984,65 @@ pub fn branches_registration_payload() -> PluginRegister {
     let rebase_beta = rebase_beta_enabled();
     PluginRegister {
         actions: vec![
-            ActionSpec {
-                action_id: "branch.checkout".to_string(),
-                title: "Checkout Branch".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: None,
-            },
-            ActionSpec {
-                action_id: "branch.create".to_string(),
-                title: "Create Branch".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: None,
-            },
-            ActionSpec {
-                action_id: "branch.rename".to_string(),
-                title: "Rename Branch".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: None,
-            },
-            ActionSpec {
-                action_id: "branch.delete".to_string(),
-                title: "Delete Branch".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: Some(DangerLevel::High),
-            },
-            ActionSpec {
-                action_id: "compare.refs".to_string(),
-                title: "Compare Branches".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: None,
-            },
-            ActionSpec {
-                action_id: "rebase.interactive".to_string(),
-                title: "Interactive Rebase (beta)".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: Some(DangerLevel::High),
-            },
-            ActionSpec {
-                action_id: "tag.checkout".to_string(),
-                title: "Checkout Tag".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: Some(DangerLevel::Medium),
-            },
-            ActionSpec {
-                action_id: "tag.create".to_string(),
-                title: "Create Tag".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: Some(DangerLevel::Low),
-            },
+            spec(
+                "branch.checkout",
+                "Checkout Branch",
+                Some("repo.is_open"),
+                None,
+                ActionEffects {
+                    writes_refs: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "branch.create",
+                "Create Branch",
+                Some("repo.is_open"),
+                None,
+                ActionEffects {
+                    writes_refs: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "branch.rename",
+                "Rename Branch",
+                Some("repo.is_open"),
+                None,
+                ActionEffects {
+                    writes_refs: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "branch.delete",
+                "Delete Branch",
+                Some("repo.is_open"),
+                Some(DangerLevel::High),
+                ActionEffects::mutating_refs(),
+                ConfirmPolicy::Always,
+            ),
+            spec(
+                "rebase.interactive",
+                "Interactive Rebase (beta)",
+                Some("repo.is_open"),
+                Some(DangerLevel::High),
+                ActionEffects {
+                    writes_refs: true,
+                    writes_index: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::High,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::Always,
+            ),
         ]
         .into_iter()
         .filter(|spec| {
@@ -972,6 +1057,94 @@ pub fn branches_registration_payload() -> PluginRegister {
             view_id: "branches.panel".to_string(),
             title: "Branches".to_string(),
             slot: "left".to_string(),
+            when: Some("repo.is_open".to_string()),
+        }],
+    }
+}
+
+pub fn tags_registration_payload() -> PluginRegister {
+    PluginRegister {
+        actions: vec![
+            spec(
+                "tag.create",
+                "Create Tag",
+                Some("repo.is_open"),
+                Some(DangerLevel::Low),
+                ActionEffects {
+                    writes_refs: true,
+                    danger_level: DangerLevel::Low,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "tag.delete",
+                "Delete Tag",
+                Some("repo.is_open"),
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_refs: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "tag.checkout",
+                "Checkout Tag",
+                Some("repo.is_open"),
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_refs: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+        ],
+        views: vec![plugin_api::ViewSpec {
+            view_id: "tags.panel".to_string(),
+            title: "Tags".to_string(),
+            slot: "left".to_string(),
+            when: Some("repo.is_open".to_string()),
+        }],
+    }
+}
+
+pub fn compare_registration_payload() -> PluginRegister {
+    PluginRegister {
+        actions: vec![spec(
+            "compare.refs",
+            "Compare Branches",
+            Some("repo.is_open"),
+            None,
+            ActionEffects::read_only(),
+            ConfirmPolicy::Never,
+        )],
+        views: vec![plugin_api::ViewSpec {
+            view_id: "compare.panel".to_string(),
+            title: "Compare".to_string(),
+            slot: "left".to_string(),
+            when: Some("repo.is_open".to_string()),
+        }],
+    }
+}
+
+pub fn diagnostics_registration_payload() -> PluginRegister {
+    PluginRegister {
+        actions: vec![spec(
+            "diagnostics.journal_summary",
+            "Show Journal Summary",
+            Some("repo.is_open"),
+            None,
+            ActionEffects::read_only(),
+            ConfirmPolicy::Never,
+        )],
+        views: vec![plugin_api::ViewSpec {
+            view_id: "diagnostics.panel".to_string(),
+            title: "Diagnostics".to_string(),
+            slot: "right".to_string(),
             when: Some("repo.is_open".to_string()),
         }],
     }
@@ -1536,12 +1709,6 @@ mod tests {
             payload
                 .actions
                 .iter()
-                .any(|a| a.action_id == "compare.refs")
-        );
-        assert!(
-            payload
-                .actions
-                .iter()
                 .any(|a| a.action_id == "branch.checkout")
         );
         assert!(
@@ -1562,20 +1729,35 @@ mod tests {
                 .iter()
                 .any(|a| a.action_id == "branch.delete")
         );
-        assert!(
-            payload
-                .actions
-                .iter()
-                .any(|a| a.action_id == "compare.refs")
-        );
-        assert!(
-            payload
-                .actions
-                .iter()
-                .any(|a| a.action_id == "tag.checkout")
-        );
-        assert!(payload.actions.iter().any(|a| a.action_id == "tag.create"));
         assert!(payload.views.iter().any(|v| v.view_id == "branches.panel"));
+    }
+
+    #[test]
+    fn tags_registration_payload_contains_view_and_actions() {
+        let payload = tags_registration_payload();
+        assert!(payload.actions.iter().any(|a| a.action_id == "tag.create"));
+        assert!(payload.actions.iter().any(|a| a.action_id == "tag.delete"));
+        assert!(payload.actions.iter().any(|a| a.action_id == "tag.checkout"));
+        assert!(payload.views.iter().any(|v| v.view_id == "tags.panel"));
+    }
+
+    #[test]
+    fn compare_registration_payload_contains_view_and_actions() {
+        let payload = compare_registration_payload();
+        assert!(payload.actions.iter().any(|a| a.action_id == "compare.refs"));
+        assert!(payload.views.iter().any(|v| v.view_id == "compare.panel"));
+    }
+
+    #[test]
+    fn diagnostics_registration_payload_contains_view_and_actions() {
+        let payload = diagnostics_registration_payload();
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "diagnostics.journal_summary")
+        );
+        assert!(payload.views.iter().any(|v| v.view_id == "diagnostics.panel"));
     }
 
     #[test]

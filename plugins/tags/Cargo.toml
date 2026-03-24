@@ -1,0 +1,10 @@
+[package]
+name = "tags"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+plugin_api = { path = "../../crates/plugin_api" }
+
