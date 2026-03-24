@@ -138,6 +138,51 @@ pub struct CommitMessageState {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RebaseEntryAction {
+    Pick,
+    Reword,
+    Edit,
+    Squash,
+    Fixup,
+    Drop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RebasePlanEntry {
+    pub oid: String,
+    pub summary: String,
+    pub action: RebaseEntryAction,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RebasePlan {
+    pub base_ref: String,
+    pub base_oid: Option<String>,
+    pub entries: Vec<RebasePlanEntry>,
+    pub affected_commit_count: usize,
+    pub rewrite_types: Vec<String>,
+    pub published_history_warning: Option<String>,
+    pub autosquash_aware: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RebaseSessionSnapshot {
+    pub active: bool,
+    pub repo_root: Option<String>,
+    pub base_ref: Option<String>,
+    pub current_step: Option<usize>,
+    pub total_steps: Option<usize>,
+    pub blocking_conflict: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RebaseState {
+    pub plan: Option<RebasePlan>,
+    pub session: Option<RebaseSessionSnapshot>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JournalStatus {
     Started,
@@ -215,6 +260,7 @@ pub struct StoreSnapshot {
     pub branches: BranchesState,
     pub tags: TagsState,
     pub commit_message: CommitMessageState,
+    pub rebase: RebaseState,
     pub journal: OperationJournalState,
     pub active_view: Option<String>,
     pub plugins: Vec<PluginStatus>,
@@ -533,6 +579,26 @@ impl StateStore {
     pub fn update_commit_message(&mut self, draft: String, error: Option<String>) {
         self.snapshot.commit_message.draft = draft;
         self.snapshot.commit_message.error = error;
+        self.bump_version();
+    }
+
+    pub fn update_rebase_plan(&mut self, plan: RebasePlan) {
+        self.snapshot.rebase.plan = Some(plan);
+        self.bump_version();
+    }
+
+    pub fn clear_rebase_plan(&mut self) {
+        self.snapshot.rebase.plan = None;
+        self.bump_version();
+    }
+
+    pub fn update_rebase_session(&mut self, session: RebaseSessionSnapshot) {
+        self.snapshot.rebase.session = Some(session);
+        self.bump_version();
+    }
+
+    pub fn clear_rebase_session(&mut self) {
+        self.snapshot.rebase.session = None;
         self.bump_version();
     }
 
@@ -866,6 +932,41 @@ mod tests {
         assert_eq!(restored.snapshot().journal.entries.len(), 1);
         assert_eq!(restored.snapshot().journal.entries[0].op, "tag.delete");
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn updates_rebase_plan_and_session_state() {
+        let mut store = StateStore::new();
+        store.update_rebase_plan(RebasePlan {
+            base_ref: "main".to_string(),
+            base_oid: Some("abc".to_string()),
+            entries: vec![RebasePlanEntry {
+                oid: "def".to_string(),
+                summary: "feat: commit".to_string(),
+                action: RebaseEntryAction::Pick,
+                warnings: Vec::new(),
+            }],
+            affected_commit_count: 1,
+            rewrite_types: vec!["pick".to_string()],
+            published_history_warning: None,
+            autosquash_aware: false,
+        });
+        store.update_rebase_session(RebaseSessionSnapshot {
+            active: true,
+            repo_root: Some("/tmp/repo".to_string()),
+            base_ref: Some("main".to_string()),
+            current_step: Some(1),
+            total_steps: Some(1),
+            blocking_conflict: false,
+        });
+
+        assert!(store.snapshot().rebase.plan.is_some());
+        assert!(store.snapshot().rebase.session.is_some());
+
+        store.clear_rebase_plan();
+        store.clear_rebase_session();
+        assert!(store.snapshot().rebase.plan.is_none());
+        assert!(store.snapshot().rebase.session.is_none());
     }
 
     #[test]

@@ -68,6 +68,40 @@ pub enum ResetMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RebaseAction {
+    Pick,
+    Reword,
+    Edit,
+    Squash,
+    Fixup,
+    Drop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RebasePlanEntry {
+    pub oid: String,
+    pub summary: String,
+    pub action: RebaseAction,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RebasePlan {
+    pub base_ref: String,
+    pub base_oid: Option<String>,
+    pub entries: Vec<RebasePlanEntry>,
+    pub autosquash_aware: bool,
+    pub published_history_warning: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RebaseSessionHook {
+    pub active: bool,
+    pub current_step: Option<usize>,
+    pub total_steps: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TagTarget {
     pub name: String,
     pub oid: String,
@@ -523,6 +557,126 @@ pub fn reset_ref(cwd: &Path, mode: ResetMode, target: &str) -> Result<(), GitSer
     Ok(())
 }
 
+pub fn create_rebase_plan(cwd: &Path, base_ref: &str) -> Result<RebasePlan, GitServiceError> {
+    let base_oid = resolve_ref_oid(cwd, base_ref).ok();
+    let head_name = repo_open(cwd)?.head;
+    let commits = commit_log_range(cwd, base_ref, "HEAD", 200)?;
+    let autosquash_aware = commits
+        .iter()
+        .any(|item| item.summary.starts_with("fixup!") || item.summary.starts_with("squash!"));
+    let entries = commits
+        .into_iter()
+        .map(|item| RebasePlanEntry {
+            oid: item.oid,
+            warnings: if item.summary.starts_with("fixup!") || item.summary.starts_with("squash!") {
+                vec!["autosquash marker detected".to_string()]
+            } else {
+                Vec::new()
+            },
+            summary: item.summary,
+            action: RebaseAction::Pick,
+        })
+        .collect::<Vec<_>>();
+
+    let published_history_warning = head_name
+        .filter(|name| !name.is_empty())
+        .and_then(|head| {
+            let upstream = format!("{head}@{{upstream}}");
+            if run_git(cwd, &["rev-parse", "--verify", &upstream]).is_ok() {
+                Some("Published history rewrite warning: branch has upstream tracking".to_string())
+            } else {
+                None
+            }
+        });
+
+    Ok(RebasePlan {
+        base_ref: base_ref.to_string(),
+        base_oid,
+        entries,
+        autosquash_aware,
+        published_history_warning,
+    })
+}
+
+pub fn execute_rebase_plan(
+    cwd: &Path,
+    plan: &RebasePlan,
+    autosquash: bool,
+) -> Result<(), GitServiceError> {
+    let todo = render_rebase_todo(plan);
+    let todo_file = unique_temp_file("branchforge-rebase-todo", "txt");
+    let editor_file = unique_temp_file("branchforge-sequence-editor", "sh");
+
+    std::fs::write(&todo_file, todo).map_err(|err| GitServiceError::ProcessLaunch(err.to_string()))?;
+    std::fs::write(
+        &editor_file,
+        "#!/usr/bin/env sh\ncat \"$BF_REBASE_TODO\" > \"$1\"\n",
+    )
+    .map_err(|err| GitServiceError::ProcessLaunch(err.to_string()))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o755);
+        let _ = std::fs::set_permissions(&editor_file, perms);
+    }
+
+    let mut env = vec![
+        ("GIT_SEQUENCE_EDITOR", editor_file.to_string_lossy().to_string()),
+        ("BF_REBASE_TODO", todo_file.to_string_lossy().to_string()),
+    ];
+    if autosquash {
+        env.push(("GIT_EDITOR", "true".to_string()));
+    }
+
+    let mut args = vec!["rebase", "-i"];
+    if autosquash {
+        args.push("--autosquash");
+    }
+    args.push(plan.base_ref.as_str());
+
+    let result = run_git_with_env(cwd, &args, &env);
+    let _ = std::fs::remove_file(todo_file);
+    let _ = std::fs::remove_file(editor_file);
+    result.map(|_| ())
+}
+
+pub fn rebase_continue(cwd: &Path) -> Result<(), GitServiceError> {
+    let _ = run_git(cwd, &["rebase", "--continue"])?;
+    Ok(())
+}
+
+pub fn rebase_skip(cwd: &Path) -> Result<(), GitServiceError> {
+    let _ = run_git(cwd, &["rebase", "--skip"])?;
+    Ok(())
+}
+
+pub fn rebase_abort(cwd: &Path) -> Result<(), GitServiceError> {
+    let _ = run_git(cwd, &["rebase", "--abort"])?;
+    Ok(())
+}
+
+pub fn detect_rebase_session_hook(cwd: &Path) -> Result<Option<RebaseSessionHook>, GitServiceError> {
+    let rebase_merge = git_path(cwd, "rebase-merge")?;
+    let rebase_apply = git_path(cwd, "rebase-apply")?;
+    if !rebase_merge.exists() && !rebase_apply.exists() {
+        return Ok(None);
+    }
+
+    let base_dir = if rebase_merge.exists() {
+        rebase_merge
+    } else {
+        rebase_apply
+    };
+    let current_step = read_usize_file(&base_dir.join("msgnum"));
+    let total_steps = read_usize_file(&base_dir.join("end"));
+    Ok(Some(RebaseSessionHook {
+        active: true,
+        current_step,
+        total_steps,
+    }))
+}
+
 pub fn stage_hunk(cwd: &Path, path: &str, hunk_index: usize) -> Result<(), GitServiceError> {
     let hunks =
         diff_worktree_raw(cwd, &[path.to_string()]).map(|text| parse_unified_diff_hunks(&text))?;
@@ -559,6 +713,76 @@ fn apply_patch(
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let _ = run_git_with_input(cwd, &refs, patch.as_bytes())?;
     Ok(())
+}
+
+fn run_git_with_env(
+    cwd: &Path,
+    args: &[&str],
+    env: &[(&str, String)],
+) -> Result<GitRunResult, GitServiceError> {
+    let mut command = Command::new("git");
+    command.args(args).current_dir(cwd);
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let output = command
+        .output()
+        .map_err(|err| GitServiceError::ProcessLaunch(err.to_string()))?;
+
+    let exit_code = output.status.code().unwrap_or(-1);
+    let result = GitRunResult {
+        stdout: output.stdout,
+        stderr: output.stderr,
+        exit_code,
+    };
+    if exit_code != 0 {
+        let stderr = String::from_utf8(result.stderr.clone())
+            .unwrap_or_else(|_| "<non-utf8 stderr>".to_string());
+        return Err(GitServiceError::GitError { exit_code, stderr });
+    }
+    Ok(result)
+}
+
+fn resolve_ref_oid(cwd: &Path, reference: &str) -> Result<String, GitServiceError> {
+    let out = run_git(cwd, &["rev-parse", "--verify", reference])?;
+    String::from_utf8(out.stdout)
+        .map(|text| text.trim().to_string())
+        .map_err(|_| GitServiceError::Utf8Decode)
+}
+
+fn render_rebase_todo(plan: &RebasePlan) -> String {
+    let mut lines = Vec::new();
+    for entry in &plan.entries {
+        let action = match entry.action {
+            RebaseAction::Pick => "pick",
+            RebaseAction::Reword => "reword",
+            RebaseAction::Edit => "edit",
+            RebaseAction::Squash => "squash",
+            RebaseAction::Fixup => "fixup",
+            RebaseAction::Drop => "drop",
+        };
+        lines.push(format!("{action} {} {}", entry.oid, entry.summary));
+    }
+    if lines.is_empty() {
+        "\n".to_string()
+    } else {
+        format!("{}\n", lines.join("\n"))
+    }
+}
+
+fn unique_temp_file(prefix: &str, ext: &str) -> std::path::PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!("{prefix}-{nanos}-{seq}.{ext}"))
+}
+
+fn read_usize_file(path: &Path) -> Option<usize> {
+    let text = std::fs::read_to_string(path).ok()?;
+    text.trim().parse::<usize>().ok()
 }
 
 fn diff_worktree_raw(cwd: &Path, paths: &[String]) -> Result<String, GitServiceError> {
@@ -1470,6 +1694,103 @@ mod tests {
 
         assert!(merge_abort(&repo_dir).is_ok());
         assert!(matches!(detect_conflict_state(&repo_dir), Ok(None)));
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn creates_rebase_plan_with_autosquash_awareness() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        assert!(std::fs::write(repo_dir.join("one.txt"), "one\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["one.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "feat: one").is_ok());
+        assert!(std::fs::write(repo_dir.join("two.txt"), "two\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["two.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "fixup! feat: one").is_ok());
+
+        let base = run_git(&repo_dir, &["rev-list", "--max-parents=0", "HEAD"])
+            .ok()
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let plan = create_rebase_plan(&repo_dir, &base);
+        assert!(plan.is_ok());
+        if let Ok(plan) = plan {
+            assert_eq!(plan.base_ref, base);
+            assert_eq!(plan.entries.len(), 1);
+            assert!(plan.autosquash_aware);
+        }
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn executes_rebase_plan_reorder_and_drop() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        assert!(std::fs::write(repo_dir.join("one.txt"), "one\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["one.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "feat: one").is_ok());
+        assert!(std::fs::write(repo_dir.join("two.txt"), "two\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["two.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "feat: two").is_ok());
+        assert!(std::fs::write(repo_dir.join("three.txt"), "three\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["three.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "feat: three").is_ok());
+
+        let base = run_git(&repo_dir, &["rev-list", "--max-parents=0", "HEAD"])
+            .ok()
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let mut plan = create_rebase_plan(&repo_dir, &base).expect("plan");
+        assert_eq!(plan.entries.len(), 2);
+
+        plan.entries.swap(0, 1);
+        if let Some(last) = plan.entries.last_mut() {
+            last.action = RebaseAction::Drop;
+        }
+
+        let executed = execute_rebase_plan(&repo_dir, &plan, false);
+        assert!(executed.is_ok());
+        let log = commit_log_page(&repo_dir, 0, 10).expect("log");
+        let summaries = log.into_iter().map(|c| c.summary).collect::<Vec<_>>();
+        assert!(summaries.iter().any(|s| s == "feat: one"));
+        assert!(summaries.iter().any(|s| s == "feat: two"));
+        assert!(!summaries.iter().any(|s| s == "feat: three"));
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn detects_rebase_restart_hook() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+
+        let rebase_merge = git_path(&repo_dir, "rebase-merge").expect("git path");
+        assert!(std::fs::create_dir_all(&rebase_merge).is_ok());
+        assert!(std::fs::write(rebase_merge.join("msgnum"), "2\n").is_ok());
+        assert!(std::fs::write(rebase_merge.join("end"), "5\n").is_ok());
+
+        let detected = detect_rebase_session_hook(&repo_dir);
+        assert!(detected.is_ok());
+        if let Ok(Some(hook)) = detected {
+            assert!(hook.active);
+            assert_eq!(hook.current_step, Some(2));
+            assert_eq!(hook.total_steps, Some(5));
+        }
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }
