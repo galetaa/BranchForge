@@ -1072,6 +1072,70 @@ pub fn branches_registration_payload() -> PluginRegister {
                 ConfirmPolicy::Always,
             ),
             spec(
+                "rebase.plan.create",
+                "Create Rebase Plan",
+                Some("repo.is_open"),
+                Some(DangerLevel::Medium),
+                ActionEffects::read_only(),
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "rebase.execute",
+                "Execute Rebase Plan",
+                Some("repo.is_open"),
+                Some(DangerLevel::High),
+                ActionEffects {
+                    writes_refs: true,
+                    writes_index: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::High,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::Always,
+            ),
+            spec(
+                "rebase.continue",
+                "Continue Rebase",
+                Some("repo.is_open"),
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_refs: true,
+                    writes_index: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "rebase.skip",
+                "Skip Rebase Commit",
+                Some("repo.is_open"),
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_refs: true,
+                    writes_index: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "rebase.abort",
+                "Abort Rebase",
+                Some("repo.is_open"),
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_refs: true,
+                    writes_index: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
                 "merge.execute",
                 "Merge Branch",
                 Some("repo.is_open"),
@@ -1842,6 +1906,21 @@ mod tests {
                 .iter()
                 .any(|a| a.action_id == "merge.execute")
         );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "rebase.plan.create")
+        );
+        assert!(payload.actions.iter().any(|a| a.action_id == "rebase.execute"));
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "rebase.continue")
+        );
+        assert!(payload.actions.iter().any(|a| a.action_id == "rebase.skip"));
+        assert!(payload.actions.iter().any(|a| a.action_id == "rebase.abort"));
         assert!(
             payload
                 .actions

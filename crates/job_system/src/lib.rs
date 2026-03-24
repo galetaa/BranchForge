@@ -5,8 +5,9 @@ use git_service::{GitCommand, GitServiceError, RepoOpenResult, StatusSummary};
 use plugin_api::{ConflictState, RepoSnapshot};
 use state_store::{
     BranchInfo, CommitDetails, DiffChunk, DiffDescriptor, DiffLoadRequest, DiffSource, DiffState,
-    HistoryCursor, JournalStatus, OperationSessionKind, OperationSessionState, RefSnapshotSummary,
-    SelectionState, StateStore, StatusSnapshot,
+    HistoryCursor, JournalStatus, OperationSessionKind, OperationSessionState, RebaseEntryAction,
+    RebasePlan, RebasePlanEntry, RebaseSessionSnapshot, RefSnapshotSummary, SelectionState,
+    StateStore, StatusSnapshot,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -162,6 +163,7 @@ pub fn execute_job_op(
         "repo.open" => {
             refresh_repo_and_status(cwd, store)?;
             refresh_refs(cwd, store)?;
+            sync_rebase_session_state(cwd, store)?;
             store.clear_journal();
             Ok(JobExecutionResult {
                 op: request.op.clone(),
@@ -579,6 +581,94 @@ pub fn execute_job_op(
                 state_version: store.snapshot().version,
             })
         }
+        "rebase.plan.create" => {
+            ensure_no_conflicts(cwd, "rebase.plan.create")?;
+            let base_ref = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "rebase.plan.create requires base ref in request.paths[0]"
+                        .to_string(),
+                }
+            })?;
+            let plan = git_service::create_rebase_plan(cwd, base_ref)?;
+            store.update_rebase_plan(map_rebase_plan(plan));
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "rebase.execute" => {
+            ensure_no_conflicts(cwd, "rebase.execute")?;
+            let plan = match store.snapshot().rebase.plan.as_ref() {
+                Some(plan) => plan.clone(),
+                None => {
+                    return Err(JobExecutionError::InvalidInput {
+                        message: "rebase.execute requires existing RebasePlan".to_string(),
+                    });
+                }
+            };
+            let autosquash = request
+                .paths
+                .first()
+                .map(|v| v == "autosquash")
+                .unwrap_or(false);
+            match git_service::execute_rebase_plan(cwd, &map_rebase_plan_to_git(&plan), autosquash) {
+                Ok(()) => {
+                    sync_rebase_session_state(cwd, store)?;
+                    if store.snapshot().rebase.session.is_none() {
+                        refresh_after_advanced_op(cwd, store)?;
+                        store.clear_rebase_plan();
+                    }
+                    Ok(JobExecutionResult {
+                        op: request.op.clone(),
+                        success: true,
+                        state_version: store.snapshot().version,
+                    })
+                }
+                Err(err) => {
+                    let _ = sync_rebase_session_state(cwd, store);
+                    let _ = refresh_repo_and_status(cwd, store);
+                    Err(JobExecutionError::from(err))
+                }
+            }
+        }
+        "rebase.continue" => {
+            git_service::rebase_continue(cwd)?;
+            sync_rebase_session_state(cwd, store)?;
+            if store.snapshot().rebase.session.is_none() {
+                refresh_after_advanced_op(cwd, store)?;
+                store.clear_rebase_plan();
+            }
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "rebase.skip" => {
+            git_service::rebase_skip(cwd)?;
+            sync_rebase_session_state(cwd, store)?;
+            if store.snapshot().rebase.session.is_none() {
+                refresh_after_advanced_op(cwd, store)?;
+                store.clear_rebase_plan();
+            }
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "rebase.abort" => {
+            git_service::rebase_abort(cwd)?;
+            sync_rebase_session_state(cwd, store)?;
+            store.clear_rebase_plan();
+            refresh_after_advanced_op(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
         "branch.checkout" => {
             ensure_no_conflicts(cwd, "branch.checkout")?;
             let name = request.paths.first().map(String::as_str).ok_or_else(|| {
@@ -865,6 +955,96 @@ fn parse_reset_mode(raw: &str) -> Result<git_service::ResetMode, JobExecutionErr
     }
 }
 
+fn map_rebase_plan(plan: git_service::RebasePlan) -> RebasePlan {
+    let rewrite_types = plan
+        .entries
+        .iter()
+        .map(|entry| match entry.action {
+            git_service::RebaseAction::Pick => "pick",
+            git_service::RebaseAction::Reword => "reword",
+            git_service::RebaseAction::Edit => "edit",
+            git_service::RebaseAction::Squash => "squash",
+            git_service::RebaseAction::Fixup => "fixup",
+            git_service::RebaseAction::Drop => "drop",
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+    RebasePlan {
+        base_ref: plan.base_ref,
+        base_oid: plan.base_oid,
+        affected_commit_count: plan.entries.len(),
+        rewrite_types,
+        published_history_warning: plan.published_history_warning,
+        autosquash_aware: plan.autosquash_aware,
+        entries: plan
+            .entries
+            .into_iter()
+            .map(|entry| RebasePlanEntry {
+                oid: entry.oid,
+                summary: entry.summary,
+                warnings: entry.warnings,
+                action: match entry.action {
+                    git_service::RebaseAction::Pick => RebaseEntryAction::Pick,
+                    git_service::RebaseAction::Reword => RebaseEntryAction::Reword,
+                    git_service::RebaseAction::Edit => RebaseEntryAction::Edit,
+                    git_service::RebaseAction::Squash => RebaseEntryAction::Squash,
+                    git_service::RebaseAction::Fixup => RebaseEntryAction::Fixup,
+                    git_service::RebaseAction::Drop => RebaseEntryAction::Drop,
+                },
+            })
+            .collect(),
+    }
+}
+
+fn map_rebase_plan_to_git(plan: &RebasePlan) -> git_service::RebasePlan {
+    git_service::RebasePlan {
+        base_ref: plan.base_ref.clone(),
+        base_oid: plan.base_oid.clone(),
+        autosquash_aware: plan.autosquash_aware,
+        published_history_warning: plan.published_history_warning.clone(),
+        entries: plan
+            .entries
+            .iter()
+            .cloned()
+            .map(|entry| git_service::RebasePlanEntry {
+                oid: entry.oid,
+                summary: entry.summary,
+                warnings: entry.warnings,
+                action: match entry.action {
+                    RebaseEntryAction::Pick => git_service::RebaseAction::Pick,
+                    RebaseEntryAction::Reword => git_service::RebaseAction::Reword,
+                    RebaseEntryAction::Edit => git_service::RebaseAction::Edit,
+                    RebaseEntryAction::Squash => git_service::RebaseAction::Squash,
+                    RebaseEntryAction::Fixup => git_service::RebaseAction::Fixup,
+                    RebaseEntryAction::Drop => git_service::RebaseAction::Drop,
+                },
+            })
+            .collect(),
+    }
+}
+
+fn sync_rebase_session_state(cwd: &Path, store: &mut StateStore) -> Result<(), JobExecutionError> {
+    let hook = git_service::detect_rebase_session_hook(cwd)?;
+    match hook {
+        Some(hook) => {
+            let repo_root = git_service::repo_open(cwd).ok().map(|repo| repo.root);
+            store.update_rebase_session(RebaseSessionSnapshot {
+                active: hook.active,
+                repo_root,
+                base_ref: store.snapshot().rebase.plan.as_ref().map(|plan| plan.base_ref.clone()),
+                current_step: hook.current_step,
+                total_steps: hook.total_steps,
+                blocking_conflict: matches!(git_service::detect_conflict_state(cwd), Ok(Some(_))),
+            });
+        }
+        None => store.clear_rebase_session(),
+    }
+    Ok(())
+}
+
 fn parse_history_request(request: &JobRequest) -> Result<(usize, usize), JobExecutionError> {
     let offset = request
         .paths
@@ -1068,6 +1248,10 @@ fn is_session_op(op: &str) -> bool {
             | "cherry_pick.abort"
             | "revert.commit"
             | "reset.refs"
+            | "rebase.execute"
+            | "rebase.continue"
+            | "rebase.skip"
+            | "rebase.abort"
     )
 }
 
@@ -1094,6 +1278,11 @@ fn is_journaled_op(op: &str) -> bool {
             | "cherry_pick.abort"
             | "revert.commit"
             | "reset.refs"
+            | "rebase.plan.create"
+            | "rebase.execute"
+            | "rebase.continue"
+            | "rebase.skip"
+            | "rebase.abort"
             | "tag.create"
             | "tag.delete"
             | "tag.checkout"

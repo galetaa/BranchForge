@@ -304,6 +304,36 @@ pub fn build_branches_panel(snapshot: &StoreSnapshot) -> ViewNode {
     if let Some(session) = session_badge {
         children.push(ViewNode::Text { value: session });
     }
+    if let Some(plan) = snapshot.rebase.plan.as_ref() {
+        children.push(ViewNode::Text {
+            value: format!(
+                "Rebase plan: base={} commits={} autosquash={}",
+                plan.base_ref, plan.affected_commit_count, plan.autosquash_aware
+            ),
+        });
+        if !plan.rewrite_types.is_empty() {
+            children.push(ViewNode::Text {
+                value: format!("Rebase rewrite types: {}", plan.rewrite_types.join(", ")),
+            });
+        }
+        if let Some(warning) = plan.published_history_warning.as_ref() {
+            children.push(ViewNode::Text {
+                value: format!("Rebase warning: {warning}"),
+            });
+        }
+    }
+    if let Some(rebase_session) = snapshot.rebase.session.as_ref() {
+        let step = match (rebase_session.current_step, rebase_session.total_steps) {
+            (Some(current), Some(total)) => format!("{current}/{total}"),
+            _ => "<unknown>".to_string(),
+        };
+        children.push(ViewNode::Text {
+            value: format!("Rebase session: active={} step={step}", rebase_session.active),
+        });
+        children.push(ViewNode::Text {
+            value: "Rebase controls: continue / skip / abort".to_string(),
+        });
+    }
     children.push(ViewNode::Text {
         value: "Merge safety: choose ff/no-ff/squash and review conflict route before execute"
             .to_string(),
@@ -444,6 +474,7 @@ mod tests {
             branches: state_store::BranchesState::default(),
             tags: state_store::TagsState::default(),
             commit_message: state_store::CommitMessageState::default(),
+            rebase: state_store::RebaseState::default(),
             journal: state_store::OperationJournalState::default(),
             active_view: None,
             plugins: Vec::new(),
@@ -473,6 +504,7 @@ mod tests {
             branches: state_store::BranchesState::default(),
             tags: state_store::TagsState::default(),
             commit_message: state_store::CommitMessageState::default(),
+            rebase: state_store::RebaseState::default(),
             journal: state_store::OperationJournalState::default(),
             active_view: None,
             plugins: Vec::new(),
@@ -501,6 +533,7 @@ mod tests {
             branches: state_store::BranchesState::default(),
             tags: state_store::TagsState::default(),
             commit_message: state_store::CommitMessageState::default(),
+            rebase: state_store::RebaseState::default(),
             journal: state_store::OperationJournalState {
                 entries: vec![
                     state_store::OperationJournalEntry {
@@ -562,6 +595,7 @@ mod tests {
             branches: state_store::BranchesState::default(),
             tags: state_store::TagsState::default(),
             commit_message: state_store::CommitMessageState::default(),
+            rebase: state_store::RebaseState::default(),
             journal: state_store::OperationJournalState {
                 entries: vec![state_store::OperationJournalEntry {
                     id: 1,
@@ -591,5 +625,56 @@ mod tests {
         assert!(rendered.contains("Merge safety:"));
         assert!(rendered.contains("Reset safety:"));
         assert!(rendered.contains("reset --hard is destructive"));
+    }
+
+    #[test]
+    fn branches_panel_shows_rebase_plan_and_session() {
+        let snapshot = StoreSnapshot {
+            repo: Some(plugin_api::RepoSnapshot {
+                root: "./demo".to_string(),
+                head: Some("feature".to_string()),
+                conflict_state: Some(plugin_api::ConflictState::Rebase),
+            }),
+            status: StatusSnapshot::default(),
+            selection: SelectionState::default(),
+            history: state_store::HistoryState::default(),
+            commit_cache: std::collections::HashMap::new(),
+            diff: state_store::DiffState::default(),
+            compare: state_store::CompareState::default(),
+            branches: state_store::BranchesState::default(),
+            tags: state_store::TagsState::default(),
+            commit_message: state_store::CommitMessageState::default(),
+            rebase: state_store::RebaseState {
+                plan: Some(state_store::RebasePlan {
+                    base_ref: "main".to_string(),
+                    base_oid: Some("abc".to_string()),
+                    entries: Vec::new(),
+                    affected_commit_count: 3,
+                    rewrite_types: vec!["pick".to_string(), "squash".to_string()],
+                    published_history_warning: Some("published branch".to_string()),
+                    autosquash_aware: true,
+                }),
+                session: Some(state_store::RebaseSessionSnapshot {
+                    active: true,
+                    repo_root: Some("./demo".to_string()),
+                    base_ref: Some("main".to_string()),
+                    current_step: Some(1),
+                    total_steps: Some(3),
+                    blocking_conflict: true,
+                }),
+            },
+            journal: state_store::OperationJournalState::default(),
+            active_view: None,
+            plugins: Vec::new(),
+            version: 1,
+        };
+
+        let panel = build_branches_panel(&snapshot);
+        let rendered = render(&panel, &snapshot);
+        assert!(rendered.contains("Rebase plan: base=main commits=3 autosquash=true"));
+        assert!(rendered.contains("Rebase rewrite types: pick, squash"));
+        assert!(rendered.contains("Rebase warning: published branch"));
+        assert!(rendered.contains("Rebase session: active=true step=1/3"));
+        assert!(rendered.contains("Rebase controls: continue / skip / abort"));
     }
 }

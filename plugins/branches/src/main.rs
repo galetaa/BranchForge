@@ -88,6 +88,65 @@ fn build_register_request() -> RpcRequest {
                 ConfirmPolicy::Always,
             ),
             spec(
+                "rebase.plan.create",
+                "Create Rebase Plan",
+                Some(DangerLevel::Medium),
+                ActionEffects::read_only(),
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "rebase.execute",
+                "Execute Rebase Plan",
+                Some(DangerLevel::High),
+                ActionEffects {
+                    writes_refs: true,
+                    writes_index: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::High,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::Always,
+            ),
+            spec(
+                "rebase.continue",
+                "Continue Rebase",
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_refs: true,
+                    writes_index: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "rebase.skip",
+                "Skip Rebase Commit",
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_refs: true,
+                    writes_index: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "rebase.abort",
+                "Abort Rebase",
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_refs: true,
+                    writes_index: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
                 "merge.execute",
                 "Merge Branch",
                 Some(DangerLevel::High),
