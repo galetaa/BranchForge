@@ -39,6 +39,12 @@ fn history_and_diff_e2e_flow() {
     let (details, diff) = run_history_select_and_diff_smoke(&repo_dir).expect("history select");
     assert!(details.message.contains("history commit"));
     assert!(diff.content.as_deref().unwrap_or("").contains("commit"));
+    assert!(diff.descriptor.is_some());
+    assert!(!diff.chunks.is_empty());
+    assert!(matches!(
+        diff.load_request.as_ref().map(|request| &request.source),
+        Some(state_store::DiffSource::Commit { .. })
+    ));
 
     assert!(std::fs::write(repo_dir.join(&file), "payload\nmore\n").is_ok());
     let status_flow = run_status_stage_unstage_smoke(&repo_dir, vec![file.clone()]);
@@ -52,6 +58,16 @@ fn history_and_diff_e2e_flow() {
                 .unwrap_or("")
                 .contains("diff --git")
         );
+        assert!(snapshot.diff.descriptor.is_some());
+        assert!(!snapshot.diff.chunks.is_empty());
+        assert!(matches!(
+            snapshot
+                .diff
+                .load_request
+                .as_ref()
+                .map(|request| &request.source),
+            Some(state_store::DiffSource::Worktree { .. })
+        ));
     }
 
     assert!(git_service::stage_paths(&repo_dir, std::slice::from_ref(&file)).is_ok());

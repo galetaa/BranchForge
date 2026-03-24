@@ -1335,6 +1335,104 @@ mod tests {
     }
 
     #[test]
+    fn branch_checkout_resets_history_and_diff_context() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let file = "ctx.txt".to_string();
+        assert!(std::fs::write(repo_dir.join(&file), "one\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, std::slice::from_ref(&file)).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "base").is_ok());
+
+        let mut store = StateStore::new();
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "repo.open".to_string(),
+                    lock: JobLock::Read,
+                    paths: Vec::new(),
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "history.page".to_string(),
+                    lock: JobLock::Read,
+                    paths: vec!["0".to_string(), "20".to_string()],
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        let commits = store.snapshot().history.commits.clone();
+        assert!(!commits.is_empty());
+        let commit_oid = commits[0].oid.clone();
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "diff.commit".to_string(),
+                    lock: JobLock::Read,
+                    paths: vec![commit_oid],
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert!(store.snapshot().diff.source.is_some());
+
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "branch.create".to_string(),
+                    lock: JobLock::RefsWrite,
+                    paths: vec!["feature/context".to_string()],
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "branch.checkout".to_string(),
+                    lock: JobLock::RefsWrite,
+                    paths: vec!["feature/context".to_string()],
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+
+        assert!(store.snapshot().history.commits.is_empty());
+        assert!(store.snapshot().diff.source.is_none());
+        assert!(store.snapshot().diff.content.is_none());
+        assert_eq!(
+            store.snapshot().active_view.as_deref(),
+            Some("status.panel")
+        );
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
     fn delete_current_branch_is_blocked() {
         let repo_dir = unique_temp_dir();
         assert!(std::fs::create_dir_all(&repo_dir).is_ok());
