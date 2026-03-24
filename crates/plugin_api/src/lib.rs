@@ -13,12 +13,58 @@ pub const METHOD_EVENT_REPO_OPENED: &str = "event.repo.opened";
 pub const METHOD_EVENT_STATE_UPDATED: &str = "event.state.updated";
 pub const METHOD_EVENT_JOB_FINISHED: &str = "event.job.finished";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum DangerLevel {
+    #[default]
     Low,
     Medium,
     High,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ActionEffects {
+    #[serde(default)]
+    pub writes_refs: bool,
+    #[serde(default)]
+    pub writes_index: bool,
+    #[serde(default)]
+    pub writes_worktree: bool,
+    #[serde(default)]
+    pub network: bool,
+    #[serde(default)]
+    pub danger_level: DangerLevel,
+}
+
+impl ActionEffects {
+    pub fn read_only() -> Self {
+        Self::default()
+    }
+
+    pub fn mutating_worktree() -> Self {
+        Self {
+            writes_worktree: true,
+            danger_level: DangerLevel::Medium,
+            ..Self::default()
+        }
+    }
+
+    pub fn mutating_refs() -> Self {
+        Self {
+            writes_refs: true,
+            danger_level: DangerLevel::High,
+            ..Self::default()
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfirmPolicy {
+    Never,
+    #[default]
+    OnDanger,
+    Always,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -255,6 +301,26 @@ pub struct ActionSpec {
     pub when: Option<String>,
     pub params_schema: Option<serde_json::Value>,
     pub danger: Option<DangerLevel>,
+    #[serde(default)]
+    pub effects: ActionEffects,
+    #[serde(default)]
+    pub confirm_policy: ConfirmPolicy,
+}
+
+impl ActionSpec {
+    pub fn effective_danger(&self) -> DangerLevel {
+        self.danger
+            .clone()
+            .unwrap_or_else(|| self.effects.danger_level.clone())
+    }
+
+    pub fn requires_confirmation(&self) -> bool {
+        match self.confirm_policy {
+            ConfirmPolicy::Never => false,
+            ConfirmPolicy::Always => true,
+            ConfirmPolicy::OnDanger => matches!(self.effective_danger(), DangerLevel::High),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -444,6 +510,8 @@ mod tests {
                 when: Some("always".to_string()),
                 params_schema: None,
                 danger: None,
+                effects: ActionEffects::read_only(),
+                confirm_policy: ConfirmPolicy::Never,
             }],
             views: vec![ViewSpec {
                 view_id: "status.panel".to_string(),
@@ -528,5 +596,24 @@ mod tests {
         assert!(preflight_json.is_ok());
         assert!(preview_json.is_ok());
         assert!(result_json.is_ok());
+    }
+
+    #[test]
+    fn action_spec_defaults_are_backward_compatible() {
+        let raw = serde_json::json!({
+            "action_id": "repo.open",
+            "title": "Open Repository",
+            "when": "always",
+            "params_schema": null,
+            "danger": null
+        });
+
+        let parsed: Result<ActionSpec, _> = serde_json::from_value(raw);
+        assert!(parsed.is_ok());
+
+        if let Ok(spec) = parsed {
+            assert_eq!(spec.effects, ActionEffects::default());
+            assert_eq!(spec.confirm_policy, ConfirmPolicy::OnDanger);
+        }
     }
 }

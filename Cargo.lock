@@ -34,6 +34,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "compare"
+version = "0.1.0"
+dependencies = [
+ "plugin_api",
+]
+
+[[package]]
+name = "diagnostics"
+version = "0.1.0"
+dependencies = [
+ "plugin_api",
+]
+
+[[package]]
 name = "git_service"
 version = "0.1.0"
 
@@ -162,6 +176,8 @@ name = "state_store"
 version = "0.1.0"
 dependencies = [
  "plugin_api",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -181,6 +197,13 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "tags"
+version = "0.1.0"
+dependencies = [
+ "plugin_api",
 ]
 
 [[package]]

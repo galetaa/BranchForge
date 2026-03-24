@@ -77,6 +77,8 @@ fn post_mvp_smoke_baseline() {
             when: Some("always".to_string()),
             params_schema: None,
             danger: None,
+            effects: plugin_api::ActionEffects::read_only(),
+            confirm_policy: plugin_api::ConfirmPolicy::Never,
         }],
         "",
         true,

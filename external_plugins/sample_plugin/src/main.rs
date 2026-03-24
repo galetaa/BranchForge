@@ -1,4 +1,6 @@
-use plugin_sdk::{ActionSpec, PluginHello, PluginRegister, RpcRequest, ViewSpec};
+use plugin_sdk::{
+    ActionEffects, ActionSpec, ConfirmPolicy, PluginHello, PluginRegister, RpcRequest, ViewSpec,
+};
 
 fn build_hello_request() -> RpcRequest {
     PluginHello {
@@ -16,6 +18,8 @@ fn build_register_request() -> RpcRequest {
             when: Some("always".to_string()),
             params_schema: None,
             danger: None,
+            effects: ActionEffects::read_only(),
+            confirm_policy: ConfirmPolicy::Never,
         }],
         views: vec![ViewSpec {
             view_id: "sample.panel".to_string(),

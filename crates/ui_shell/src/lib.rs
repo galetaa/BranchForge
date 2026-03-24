@@ -37,6 +37,9 @@ fn view_owner_plugin(active_view: &str) -> Option<&'static str> {
         "status.panel" => Some("status"),
         "history.panel" => Some("history"),
         "branches.panel" => Some("branches"),
+        "tags.panel" => Some("tags"),
+        "compare.panel" => Some("compare"),
+        "diagnostics.panel" => Some("diagnostics"),
         _ => None,
     }
 }
@@ -135,6 +138,33 @@ pub fn render_diff_panel(store: &StateStore) -> String {
     out
 }
 
+pub fn render_diagnostics_panel(store: &StateStore) -> String {
+    let entries = &store.snapshot().journal.entries;
+    let started = entries
+        .iter()
+        .filter(|entry| matches!(entry.status, state_store::JournalStatus::Started))
+        .count();
+    let succeeded = entries
+        .iter()
+        .filter(|entry| matches!(entry.status, state_store::JournalStatus::Succeeded))
+        .count();
+    let failed = entries
+        .iter()
+        .filter(|entry| matches!(entry.status, state_store::JournalStatus::Failed))
+        .count();
+    let last_error = entries
+        .iter()
+        .rev()
+        .find(|entry| matches!(entry.status, state_store::JournalStatus::Failed))
+        .and_then(|entry| entry.error.clone())
+        .unwrap_or_else(|| "<none>".to_string());
+
+    format!(
+        "Diagnostics Panel\nJournal entries: {}\nRunning: {}\nSucceeded: {}\nFailed: {}\nLast error: {}\n",
+        entries.len(), started, succeeded, failed, last_error
+    )
+}
+
 pub fn render_empty_state() -> String {
     "No repository opened. Use `Open Repository` from command palette.".to_string()
 }
@@ -157,6 +187,9 @@ pub fn render_window(store: &StateStore, palette_items: &[palette::PaletteItem])
             match active {
                 "history.panel" => render_history_panel(store),
                 "branches.panel" => render_branches_panel(store),
+                "tags.panel" => render_branches_panel(store),
+                "compare.panel" => render_branches_panel(store),
+                "diagnostics.panel" => render_diagnostics_panel(store),
                 "status.panel" => render_status_panel(store),
                 _ => {
                     if store.repo().is_some() {
@@ -220,6 +253,8 @@ mod tests {
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
                 danger: None,
+                effects: plugin_api::ActionEffects::read_only(),
+                confirm_policy: plugin_api::ConfirmPolicy::Never,
             }],
             "",
             false,
@@ -240,6 +275,8 @@ mod tests {
                 when: Some("always".to_string()),
                 params_schema: None,
                 danger: None,
+                effects: plugin_api::ActionEffects::read_only(),
+                confirm_policy: plugin_api::ConfirmPolicy::Never,
             }],
             "",
             false,
@@ -273,6 +310,8 @@ mod tests {
                 when: Some("always".to_string()),
                 params_schema: None,
                 danger: None,
+                effects: plugin_api::ActionEffects::read_only(),
+                confirm_policy: plugin_api::ConfirmPolicy::Never,
             }],
             "",
             true,
@@ -412,6 +451,8 @@ mod tests {
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
                 danger: None,
+                effects: plugin_api::ActionEffects::read_only(),
+                confirm_policy: plugin_api::ConfirmPolicy::Never,
             }],
             "",
             true,
@@ -437,6 +478,8 @@ mod tests {
                 when: Some("repo.is_open".to_string()),
                 params_schema: None,
                 danger: None,
+                effects: plugin_api::ActionEffects::read_only(),
+                confirm_policy: plugin_api::ConfirmPolicy::Never,
             }],
             "",
             true,

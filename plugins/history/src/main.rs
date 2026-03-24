@@ -1,4 +1,18 @@
-use plugin_api::{ActionSpec, PluginHello, PluginRegister, RpcRequest, ViewSpec};
+use plugin_api::{
+    ActionEffects, ActionSpec, ConfirmPolicy, PluginHello, PluginRegister, RpcRequest, ViewSpec,
+};
+
+fn spec(action_id: &str, title: &str) -> ActionSpec {
+    ActionSpec {
+        action_id: action_id.to_string(),
+        title: title.to_string(),
+        when: Some("repo.is_open".to_string()),
+        params_schema: None,
+        danger: None,
+        effects: ActionEffects::read_only(),
+        confirm_policy: ConfirmPolicy::Never,
+    }
+}
 
 fn build_hello_request() -> RpcRequest {
     PluginHello {
@@ -11,34 +25,10 @@ fn build_hello_request() -> RpcRequest {
 fn build_register_request() -> RpcRequest {
     PluginRegister {
         actions: vec![
-            ActionSpec {
-                action_id: "history.load_more".to_string(),
-                title: "Load More History".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: None,
-            },
-            ActionSpec {
-                action_id: "history.select_commit".to_string(),
-                title: "Select Commit".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: None,
-            },
-            ActionSpec {
-                action_id: "history.search".to_string(),
-                title: "Search History".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: None,
-            },
-            ActionSpec {
-                action_id: "history.clear_filter".to_string(),
-                title: "Clear History Filter".to_string(),
-                when: Some("repo.is_open".to_string()),
-                params_schema: None,
-                danger: None,
-            },
+            spec("history.load_more", "Load More History"),
+            spec("history.select_commit", "Select Commit"),
+            spec("history.search", "Search History"),
+            spec("history.clear_filter", "Clear History Filter"),
         ],
         views: vec![ViewSpec {
             view_id: "history.panel".to_string(),

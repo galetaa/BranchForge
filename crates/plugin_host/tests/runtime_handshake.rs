@@ -1,4 +1,7 @@
-use plugin_api::{ActionSpec, METHOD_PLUGIN_READY, PluginHello, PluginRegister, ViewSpec};
+use plugin_api::{
+    ActionEffects, ActionSpec, ConfirmPolicy, METHOD_PLUGIN_READY, PluginHello, PluginRegister,
+    ViewSpec,
+};
 use plugin_host::{RuntimeSession, SessionError};
 
 fn register_payload(action_id: &str, view_id: &str) -> PluginRegister {
@@ -9,6 +12,8 @@ fn register_payload(action_id: &str, view_id: &str) -> PluginRegister {
             when: Some("always".to_string()),
             params_schema: None,
             danger: None,
+            effects: ActionEffects::read_only(),
+            confirm_policy: ConfirmPolicy::Never,
         }],
         views: vec![ViewSpec {
             view_id: view_id.to_string(),

@@ -52,7 +52,7 @@ pub fn route_action_invoke(
     }
 
     if !action.confirmed {
-        session
+        let spec = session
             .list_actions()
             .into_iter()
             .find(|spec| spec.action_id == action.action)
@@ -60,14 +60,14 @@ pub fn route_action_invoke(
                 InvokeError::Session(SessionError::UnknownAction {
                     action_id: action.action.clone(),
                 })
-            })?
-            .danger
-            .filter(|level| matches!(level, DangerLevel::High))
-            .map(|level| InvokeError::ConfirmationRequired {
+            })?;
+
+        if spec.requires_confirmation() {
+            return Err(InvokeError::ConfirmationRequired {
                 action_id: action.action.clone(),
-                danger: level.clone(),
-            })
-            .map_or(Ok(()), Err)?;
+                danger: spec.effective_danger(),
+            });
+        }
     }
 
     session

@@ -13,6 +13,9 @@ members = [
   "plugins/status",
   "plugins/history",
   "plugins/branches",
+  "plugins/tags",
+  "plugins/compare",
+  "plugins/diagnostics",
 ]
 resolver = "3"
 

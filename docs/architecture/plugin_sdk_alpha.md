@@ -25,10 +25,23 @@ The alpha SDK re-exports a stable subset from `plugin_api`:
 - handshake types: `PluginHello`, `HelloAck`, `PluginRegister`
 - messaging: `RpcRequest`, `RpcResponse`, `RpcNotification`, `RpcMessage`
 - helpers: `FrameCodec`
-- view/action specs: `ActionSpec`, `ViewSpec`, `DangerLevel`
+- view/action specs: `ActionSpec`, `ActionEffects`, `ConfirmPolicy`, `ViewSpec`, `DangerLevel`
 - events: `RepoOpenedEvent`, `StateUpdatedEvent`, `JobFinishedEvent`
 
 See `crates/plugin_sdk/src/lib.rs` for the exact export list.
+
+## Action metadata (Sprint 15 baseline)
+
+`ActionSpec` now includes baseline safety metadata used by host-side confirmation flow:
+
+- `effects` (`ActionEffects`): `writes_refs`, `writes_index`, `writes_worktree`, `network`, `danger_level`
+- `confirm_policy` (`ConfirmPolicy`): `never`, `on_danger`, `always`
+
+Recommendations for plugin authors:
+
+1. Mark all mutating actions with accurate `effects` values.
+2. Use `confirm_policy = always` for destructive operations (for example delete/discard).
+3. Keep `danger` aligned with `effects.danger_level` during alpha to simplify operator review.
 
 ## Version compatibility
 
