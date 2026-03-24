@@ -37,6 +37,11 @@ pub enum ViewNode {
 }
 
 pub fn build_status_panel(snapshot: &StoreSnapshot) -> ViewNode {
+    let current_branch = snapshot
+        .repo
+        .as_ref()
+        .and_then(|repo| repo.head.as_deref())
+        .unwrap_or("<unknown>");
     let commit_line = if snapshot.commit_message.draft.is_empty() {
         "Commit message: <empty>".to_string()
     } else {
@@ -73,6 +78,9 @@ pub fn build_status_panel(snapshot: &StoreSnapshot) -> ViewNode {
     let mut children = vec![
         ViewNode::Text {
             value: "Status Panel".to_string(),
+        },
+        ViewNode::Text {
+            value: format!("Current branch: {current_branch}"),
         },
         ViewNode::List {
             title: "staged".to_string(),
@@ -125,7 +133,16 @@ pub fn build_history_panel(snapshot: &StoreSnapshot) -> ViewNode {
         snapshot.history.filter_text.as_deref().unwrap_or("<any>")
     );
 
+    let current_branch = snapshot
+        .repo
+        .as_ref()
+        .and_then(|repo| repo.head.as_deref())
+        .unwrap_or("<unknown>");
+
     let mut children = vec![ViewNode::Text { value: header }];
+    children.push(ViewNode::Text {
+        value: format!("Current branch: {current_branch}"),
+    });
     if snapshot.history.loading {
         children.push(ViewNode::Text {
             value: "History: loading...".to_string(),
@@ -170,8 +187,20 @@ pub fn build_branches_panel(snapshot: &StoreSnapshot) -> ViewNode {
         _ => None,
     };
 
+    let current_branch = snapshot
+        .branches
+        .branches
+        .iter()
+        .find(|branch| branch.is_current)
+        .map(|branch| branch.name.as_str())
+        .or_else(|| snapshot.repo.as_ref().and_then(|repo| repo.head.as_deref()))
+        .unwrap_or("<unknown>");
+
     let mut children = vec![
         ViewNode::Text { value: header },
+        ViewNode::Text {
+            value: format!("Current branch: {current_branch}"),
+        },
         ViewNode::BranchList {
             title: "branches".to_string(),
         },
@@ -308,6 +337,34 @@ mod tests {
         let rendered = render(&panel, &snapshot);
         assert!(rendered.contains("Status Panel"));
         assert!(rendered.contains("[Commit] enabled"));
+    }
+
+    #[test]
+    fn status_panel_shows_current_branch() {
+        let snapshot = StoreSnapshot {
+            repo: Some(plugin_api::RepoSnapshot {
+                root: "./demo".to_string(),
+                head: Some("feature/demo".to_string()),
+                conflict_state: None,
+            }),
+            status: StatusSnapshot::default(),
+            selection: SelectionState::default(),
+            history: state_store::HistoryState::default(),
+            commit_cache: std::collections::HashMap::new(),
+            diff: state_store::DiffState::default(),
+            compare: state_store::CompareState::default(),
+            branches: state_store::BranchesState::default(),
+            tags: state_store::TagsState::default(),
+            commit_message: state_store::CommitMessageState::default(),
+            journal: state_store::OperationJournalState::default(),
+            active_view: None,
+            plugins: Vec::new(),
+            version: 1,
+        };
+
+        let panel = build_status_panel(&snapshot);
+        let rendered = render(&panel, &snapshot);
+        assert!(rendered.contains("Current branch: feature/demo"));
     }
 
     #[test]
