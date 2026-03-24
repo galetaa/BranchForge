@@ -136,4 +136,87 @@ fn repo_open_restores_rebase_session_from_restart_hook() {
     let _ = std::fs::remove_dir_all(&repo_dir);
 }
 
+#[test]
+fn rebase_abort_clears_active_session_state() {
+    let repo_dir = init_repo();
+
+    assert!(std::fs::write(repo_dir.join("one.txt"), "one\n").is_ok());
+    assert!(git_service::stage_paths(&repo_dir, &["one.txt".to_string()]).is_ok());
+    assert!(git_service::commit_create(&repo_dir, "feat: one").is_ok());
+
+    assert!(std::fs::write(repo_dir.join("two.txt"), "two\n").is_ok());
+    assert!(git_service::stage_paths(&repo_dir, &["two.txt".to_string()]).is_ok());
+    assert!(git_service::commit_create(&repo_dir, "feat: two").is_ok());
+
+    assert!(std::fs::write(repo_dir.join("three.txt"), "three\n").is_ok());
+    assert!(git_service::stage_paths(&repo_dir, &["three.txt".to_string()]).is_ok());
+    assert!(git_service::commit_create(&repo_dir, "feat: three").is_ok());
+
+    let base = git_service::run_git(&repo_dir, &["rev-list", "--max-parents=0", "HEAD"])
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    let mut store = StateStore::new();
+    let plan = execute_job_op(
+        &repo_dir,
+        &JobRequest {
+            op: "rebase.plan.create".to_string(),
+            lock: JobLock::RefsWrite,
+            paths: vec![base],
+            job_id: None,
+        },
+        &mut store,
+    );
+    assert!(plan.is_ok());
+
+    if let Some(mut current_plan) = store.snapshot().rebase.plan.clone() {
+        if let Some(first) = current_plan.entries.first_mut() {
+            // `edit` forces rebase to pause in-session so abort path can be exercised.
+            first.action = RebaseEntryAction::Edit;
+        }
+        store.update_rebase_plan(current_plan);
+    }
+
+    let exec = execute_job_op(
+        &repo_dir,
+        &JobRequest {
+            op: "rebase.execute".to_string(),
+            lock: JobLock::RefsWrite,
+            paths: Vec::new(),
+            job_id: None,
+        },
+        &mut store,
+    );
+    assert!(exec.is_ok());
+    assert!(store.snapshot().rebase.session.is_some());
+
+    let abort = execute_job_op(
+        &repo_dir,
+        &JobRequest {
+            op: "rebase.abort".to_string(),
+            lock: JobLock::RefsWrite,
+            paths: Vec::new(),
+            job_id: None,
+        },
+        &mut store,
+    );
+    assert!(abort.is_ok());
+    assert!(store.snapshot().rebase.session.is_none());
+    assert!(store.snapshot().rebase.plan.is_none());
+    assert!(
+        store
+            .snapshot()
+            .repo
+            .as_ref()
+            .and_then(|repo| repo.conflict_state.clone())
+            .is_none()
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_dir);
+}
+
+
 
