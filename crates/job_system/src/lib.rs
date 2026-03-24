@@ -4,8 +4,8 @@ use std::path::Path;
 use git_service::{GitCommand, GitServiceError, RepoOpenResult, StatusSummary};
 use plugin_api::{ConflictState, RepoSnapshot};
 use state_store::{
-    BranchInfo, CommitDetails, DiffSource, DiffState, HistoryCursor, JournalStatus, SelectionState,
-    StateStore, StatusSnapshot,
+    BranchInfo, CommitDetails, DiffChunk, DiffDescriptor, DiffLoadRequest, DiffSource, DiffState,
+    HistoryCursor, JournalStatus, SelectionState, StateStore, StatusSnapshot,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -365,24 +365,20 @@ pub fn execute_job_op(
         }
         "diff.worktree" => {
             let diff = git_service::diff_worktree_with_hunks(cwd, &request.paths, 256 * 1024)?;
-            store.update_diff(DiffState {
-                source: Some(DiffSource::Worktree {
-                    paths: request.paths.clone(),
-                }),
-                content: Some(diff.text),
-                hunks: diff
-                    .hunks
-                    .into_iter()
-                    .map(|hunk| state_store::DiffHunk {
-                        file_path: hunk.file_path,
-                        hunk_index: hunk.hunk_index,
-                        header: hunk.header,
-                        lines: hunk.lines,
-                    })
-                    .collect(),
-                loading: false,
-                error: None,
-            });
+            let source = DiffSource::Worktree {
+                paths: request.paths.clone(),
+            };
+            let mapped_hunks = diff
+                .hunks
+                .into_iter()
+                .map(|hunk| state_store::DiffHunk {
+                    file_path: hunk.file_path,
+                    hunk_index: hunk.hunk_index,
+                    header: hunk.header,
+                    lines: hunk.lines,
+                })
+                .collect();
+            store.update_diff(build_diff_state(source, diff.text, mapped_hunks));
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -396,15 +392,10 @@ pub fn execute_job_op(
                 }
             })?;
             let diff = git_service::diff_commit(cwd, oid, 64 * 1024)?;
-            store.update_diff(DiffState {
-                source: Some(DiffSource::Commit {
-                    oid: oid.to_string(),
-                }),
-                content: Some(diff),
-                hunks: Vec::new(),
-                loading: false,
-                error: None,
-            });
+            let source = DiffSource::Commit {
+                oid: oid.to_string(),
+            };
+            store.update_diff(build_diff_state(source, diff, Vec::new()));
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -413,24 +404,20 @@ pub fn execute_job_op(
         }
         "diff.index" => {
             let diff = git_service::diff_index_with_hunks(cwd, &request.paths, 256 * 1024)?;
-            store.update_diff(DiffState {
-                source: Some(DiffSource::Index {
-                    paths: request.paths.clone(),
-                }),
-                content: Some(diff.text),
-                hunks: diff
-                    .hunks
-                    .into_iter()
-                    .map(|hunk| state_store::DiffHunk {
-                        file_path: hunk.file_path,
-                        hunk_index: hunk.hunk_index,
-                        header: hunk.header,
-                        lines: hunk.lines,
-                    })
-                    .collect(),
-                loading: false,
-                error: None,
-            });
+            let source = DiffSource::Index {
+                paths: request.paths.clone(),
+            };
+            let mapped_hunks = diff
+                .hunks
+                .into_iter()
+                .map(|hunk| state_store::DiffHunk {
+                    file_path: hunk.file_path,
+                    hunk_index: hunk.hunk_index,
+                    header: hunk.header,
+                    lines: hunk.lines,
+                })
+                .collect();
+            store.update_diff(build_diff_state(source, diff.text, mapped_hunks));
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -450,25 +437,21 @@ pub fn execute_job_op(
             })?;
             let diff = git_service::diff_compare_with_hunks(cwd, base_ref, head_ref, 256 * 1024)?;
             store.update_compare(base_ref.to_string(), head_ref.to_string());
-            store.update_diff(DiffState {
-                source: Some(DiffSource::Compare {
-                    base: base_ref.to_string(),
-                    head: head_ref.to_string(),
-                }),
-                content: Some(diff.text),
-                hunks: diff
-                    .hunks
-                    .into_iter()
-                    .map(|hunk| state_store::DiffHunk {
-                        file_path: hunk.file_path,
-                        hunk_index: hunk.hunk_index,
-                        header: hunk.header,
-                        lines: hunk.lines,
-                    })
-                    .collect(),
-                loading: false,
-                error: None,
-            });
+            let source = DiffSource::Compare {
+                base: base_ref.to_string(),
+                head: head_ref.to_string(),
+            };
+            let mapped_hunks = diff
+                .hunks
+                .into_iter()
+                .map(|hunk| state_store::DiffHunk {
+                    file_path: hunk.file_path,
+                    hunk_index: hunk.hunk_index,
+                    header: hunk.header,
+                    lines: hunk.lines,
+                })
+                .collect();
+            store.update_diff(build_diff_state(source, diff.text, mapped_hunks));
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -776,6 +759,51 @@ fn load_history_page(
         success: true,
         state_version: store.snapshot().version,
     })
+}
+
+fn build_diff_state(
+    source: DiffSource,
+    text: String,
+    hunks: Vec<state_store::DiffHunk>,
+) -> DiffState {
+    const CHUNK_SIZE: usize = 32 * 1024;
+    let chunks = split_diff_chunks(&text, CHUNK_SIZE);
+    let descriptor = DiffDescriptor {
+        total_bytes: text.len(),
+        chunk_size: CHUNK_SIZE,
+        loaded_chunks: chunks.len(),
+        truncated: text.contains("... diff truncated ..."),
+    };
+
+    DiffState {
+        source: Some(source.clone()),
+        descriptor: Some(descriptor),
+        load_request: Some(DiffLoadRequest {
+            source,
+            chunk_size: CHUNK_SIZE,
+            cursor: None,
+        }),
+        chunks,
+        content: Some(text),
+        hunks,
+        loading: false,
+        error: None,
+    }
+}
+
+fn split_diff_chunks(text: &str, chunk_size: usize) -> Vec<DiffChunk> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+
+    text.as_bytes()
+        .chunks(chunk_size)
+        .enumerate()
+        .map(|(index, chunk)| DiffChunk {
+            index,
+            content: String::from_utf8_lossy(chunk).to_string(),
+        })
+        .collect()
 }
 
 fn start_journal_entry(store: &mut StateStore, request: &JobRequest) -> Option<u64> {
@@ -1291,6 +1319,17 @@ mod tests {
                 .unwrap_or("")
                 .contains("commit")
         );
+        assert!(store.snapshot().diff.descriptor.is_some());
+        assert!(!store.snapshot().diff.chunks.is_empty());
+        assert!(matches!(
+            store
+                .snapshot()
+                .diff
+                .load_request
+                .as_ref()
+                .map(|r| &r.source),
+            Some(DiffSource::Commit { .. })
+        ));
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }
