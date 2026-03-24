@@ -58,9 +58,33 @@ pub enum DiffSource {
     Compare { base: String, head: String },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffLoadRequest {
+    pub source: DiffSource,
+    pub chunk_size: usize,
+    pub cursor: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DiffDescriptor {
+    pub total_bytes: usize,
+    pub chunk_size: usize,
+    pub loaded_chunks: usize,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DiffChunk {
+    pub index: usize,
+    pub content: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DiffState {
     pub source: Option<DiffSource>,
+    pub descriptor: Option<DiffDescriptor>,
+    pub load_request: Option<DiffLoadRequest>,
+    pub chunks: Vec<DiffChunk>,
     pub content: Option<String>,
     pub hunks: Vec<DiffHunk>,
     pub loading: bool,

@@ -87,6 +87,26 @@ pub fn render_diff_panel(store: &StateStore) -> String {
         .map(|content| format!("Diff:\n{content}"))
         .unwrap_or_else(|| "Diff: <empty>".to_string());
 
+    if let Some(descriptor) = diff.descriptor.as_ref() {
+        out.push_str(&format!(
+            "\nDescriptor: bytes={}, chunk_size={}, loaded_chunks={}, truncated={}\n",
+            descriptor.total_bytes,
+            descriptor.chunk_size,
+            descriptor.loaded_chunks,
+            descriptor.truncated
+        ));
+    }
+
+    if !diff.chunks.is_empty() {
+        let preview = diff
+            .chunks
+            .iter()
+            .map(|chunk| format!("#{}({}b)", chunk.index, chunk.content.len()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&format!("Chunks: {preview}\n"));
+    }
+
     if let Some(state_store::DiffSource::Compare { base, head }) = diff.source.as_ref() {
         out.push_str(&format!("\nCompare: {base} -> {head}\n"));
     }
