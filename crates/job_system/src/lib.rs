@@ -252,12 +252,14 @@ pub fn execute_job_op(
             load_history_page(
                 cwd,
                 store,
-                &request.op,
-                offset,
-                limit,
-                offset > 0,
-                filter_author,
-                filter_text,
+                HistoryLoadRequest {
+                    op: &request.op,
+                    offset,
+                    limit,
+                    append: offset > 0,
+                    filter_author,
+                    filter_text,
+                },
             )
         }
         "history.load_more" => {
@@ -274,12 +276,14 @@ pub fn execute_job_op(
             load_history_page(
                 cwd,
                 store,
-                &request.op,
-                cursor.offset,
-                cursor.page_size,
-                true,
-                filter_author,
-                filter_text,
+                HistoryLoadRequest {
+                    op: &request.op,
+                    offset: cursor.offset,
+                    limit: cursor.page_size,
+                    append: true,
+                    filter_author,
+                    filter_text,
+                },
             )
         }
         "refs.refresh" => {
@@ -297,17 +301,28 @@ pub fn execute_job_op(
             load_history_page(
                 cwd,
                 store,
-                &request.op,
-                offset,
-                limit,
-                false,
-                filter_author,
-                filter_text,
+                HistoryLoadRequest {
+                    op: &request.op,
+                    offset,
+                    limit,
+                    append: false,
+                    filter_author,
+                    filter_text,
+                },
             )
         }
-        "history.clear_filter" => {
-            load_history_page(cwd, store, &request.op, 0, 20, false, None, None)
-        }
+        "history.clear_filter" => load_history_page(
+            cwd,
+            store,
+            HistoryLoadRequest {
+                op: &request.op,
+                offset: 0,
+                limit: 20,
+                append: false,
+                filter_author: None,
+                filter_text: None,
+            },
+        ),
         "history.select_commit" => {
             let oid = request.paths.first().map(String::as_str).ok_or_else(|| {
                 JobExecutionError::InvalidInput {
@@ -697,16 +712,28 @@ fn parse_history_request(request: &JobRequest) -> Result<(usize, usize), JobExec
     Ok((offset, limit))
 }
 
-fn load_history_page(
-    cwd: &Path,
-    store: &mut StateStore,
-    op: &str,
+struct HistoryLoadRequest<'a> {
+    op: &'a str,
     offset: usize,
     limit: usize,
     append: bool,
     filter_author: Option<String>,
     filter_text: Option<String>,
+}
+
+fn load_history_page(
+    cwd: &Path,
+    store: &mut StateStore,
+    request: HistoryLoadRequest<'_>,
 ) -> Result<JobExecutionResult, JobExecutionError> {
+    let HistoryLoadRequest {
+        op,
+        offset,
+        limit,
+        append,
+        filter_author,
+        filter_text,
+    } = request;
     store.set_history_loading(true);
     let commits = git_service::commit_log_page_filtered(
         cwd,
