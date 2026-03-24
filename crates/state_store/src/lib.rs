@@ -162,6 +162,16 @@ pub struct StoreSnapshot {
     pub version: StoreVersion,
 }
 
+impl StoreSnapshot {
+    pub fn history_can_load_more(&self) -> bool {
+        self.history.next_cursor.is_some()
+    }
+
+    pub fn history_has_selection(&self) -> bool {
+        self.selection.selected_commit_oid.is_some()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateEvent {
     RepoOpened,

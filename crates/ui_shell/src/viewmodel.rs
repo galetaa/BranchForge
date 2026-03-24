@@ -144,12 +144,12 @@ pub fn build_history_panel(snapshot: &StoreSnapshot) -> ViewNode {
     children.push(ViewNode::Button {
         label: "Load more".to_string(),
         on_action: "history.load_more".to_string(),
-        enabled_when: snapshot.history.next_cursor.is_some(),
+        enabled_when: snapshot.history_can_load_more(),
     });
     children.push(ViewNode::Button {
         label: "Show commit".to_string(),
         on_action: "history.select_commit".to_string(),
-        enabled_when: snapshot.selection.selected_commit_oid.is_some(),
+        enabled_when: snapshot.history_has_selection(),
     });
 
     ViewNode::Container { children }
