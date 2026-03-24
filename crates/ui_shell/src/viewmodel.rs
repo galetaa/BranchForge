@@ -52,6 +52,16 @@ pub fn build_status_panel(snapshot: &StoreSnapshot) -> ViewNode {
         .error
         .as_ref()
         .map(|err| format!("Commit error: {err}"));
+    let operation_banner = snapshot.repo.as_ref().and_then(|repo| {
+        repo.conflict_state.as_ref().map(|state| {
+            let label = match state {
+                plugin_api::ConflictState::Merge => "merge",
+                plugin_api::ConflictState::Rebase => "rebase",
+                plugin_api::ConflictState::CherryPick => "cherry-pick",
+            };
+            format!("Operation in progress: {label}")
+        })
+    });
     let running_ops = snapshot
         .journal
         .entries
@@ -73,6 +83,21 @@ pub fn build_status_panel(snapshot: &StoreSnapshot) -> ViewNode {
         .map(|entry| {
             let detail = entry.error.as_deref().unwrap_or("unknown error");
             format!("Operation error: {}: {}", entry.op, detail)
+        });
+    let session_badge = snapshot
+        .journal
+        .entries
+        .iter()
+        .rev()
+        .find_map(|entry| {
+            let session_id = entry.session_id?;
+            let state = match entry.session_state.as_ref() {
+                Some(state_store::OperationSessionState::Running) => "running",
+                Some(state_store::OperationSessionState::Succeeded) => "succeeded",
+                Some(state_store::OperationSessionState::Failed) => "failed",
+                None => "unknown",
+            };
+            Some(format!("Session #{session_id}: {} ({state})", entry.op))
         });
 
     let mut children = vec![
@@ -99,8 +124,14 @@ pub fn build_status_panel(snapshot: &StoreSnapshot) -> ViewNode {
     if let Some(error) = commit_error {
         children.push(ViewNode::Text { value: error });
     }
+    if let Some(banner) = operation_banner {
+        children.push(ViewNode::Text { value: banner });
+    }
     if let Some(loading) = loading_line {
         children.push(ViewNode::Text { value: loading });
+    }
+    if let Some(session) = session_badge {
+        children.push(ViewNode::Text { value: session });
     }
     if let Some(error) = operation_error {
         children.push(ViewNode::Text { value: error });
@@ -424,6 +455,11 @@ mod tests {
                         started_at_ms: 1,
                         finished_at_ms: None,
                         error: None,
+                        session_id: Some(10),
+                        session_kind: Some(state_store::OperationSessionKind::AdvancedBranchOperation),
+                        session_state: Some(state_store::OperationSessionState::Running),
+                        pre_refs: None,
+                        post_refs: None,
                     },
                     state_store::OperationJournalEntry {
                         id: 2,
@@ -433,6 +469,11 @@ mod tests {
                         started_at_ms: 2,
                         finished_at_ms: Some(3),
                         error: Some("nothing to commit".to_string()),
+                        session_id: None,
+                        session_kind: None,
+                        session_state: None,
+                        pre_refs: None,
+                        post_refs: None,
                     },
                 ],
             },
@@ -444,6 +485,7 @@ mod tests {
         let panel = build_status_panel(&snapshot);
         let rendered = render(&panel, &snapshot);
         assert!(rendered.contains("Loading: status.refresh"));
+        assert!(rendered.contains("Session #10: status.refresh (running)"));
         assert!(rendered.contains("Operation error: commit.create: nothing to commit"));
     }
 }

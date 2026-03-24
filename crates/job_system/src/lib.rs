@@ -5,7 +5,8 @@ use git_service::{GitCommand, GitServiceError, RepoOpenResult, StatusSummary};
 use plugin_api::{ConflictState, RepoSnapshot};
 use state_store::{
     BranchInfo, CommitDetails, DiffChunk, DiffDescriptor, DiffLoadRequest, DiffSource, DiffState,
-    HistoryCursor, JournalStatus, SelectionState, StateStore, StatusSnapshot,
+    HistoryCursor, JournalStatus, OperationSessionKind, OperationSessionState, RefSnapshotSummary,
+    SelectionState, StateStore, StatusSnapshot,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -146,7 +147,17 @@ pub fn execute_job_op(
     request: &JobRequest,
     store: &mut StateStore,
 ) -> Result<JobExecutionResult, JobExecutionError> {
-    let journal_entry = start_journal_entry(store, request);
+    let session_id = if is_session_op(&request.op) {
+        Some(store.allocate_session_id())
+    } else {
+        None
+    };
+    let pre_refs = if is_ref_snapshot_op(&request.op) {
+        capture_ref_snapshot(cwd)
+    } else {
+        None
+    };
+    let journal_entry = start_journal_entry(store, request, session_id, pre_refs);
     let result = (|| match request.op.as_str() {
         "repo.open" => {
             refresh_repo_and_status(cwd, store)?;
@@ -475,6 +486,99 @@ pub fn execute_job_op(
                 state_version: store.snapshot().version,
             })
         }
+        "merge.execute" => {
+            ensure_no_conflicts(cwd, "merge.execute")?;
+            let source_ref = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "merge.execute requires source ref in request.paths[0]".to_string(),
+                }
+            })?;
+            let mode = parse_merge_mode(request.paths.get(1).map(String::as_str).unwrap_or("ff"))?;
+            match git_service::merge_ref(cwd, source_ref, mode) {
+                Ok(()) => {
+                    refresh_after_advanced_op(cwd, store)?;
+                    Ok(JobExecutionResult {
+                        op: request.op.clone(),
+                        success: true,
+                        state_version: store.snapshot().version,
+                    })
+                }
+                Err(err) => {
+                    // Merge conflicts leave repo in merge state; refresh snapshot to expose partial state.
+                    let _ = refresh_repo_and_status(cwd, store);
+                    Err(JobExecutionError::from(err))
+                }
+            }
+        }
+        "merge.abort" => {
+            git_service::merge_abort(cwd)?;
+            refresh_after_advanced_op(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "cherry_pick.commit" => {
+            ensure_no_conflicts(cwd, "cherry_pick.commit")?;
+            let oid = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "cherry_pick.commit requires commit oid in request.paths[0]"
+                        .to_string(),
+                }
+            })?;
+            match git_service::cherry_pick_commit(cwd, oid) {
+                Ok(()) => {
+                    refresh_after_advanced_op(cwd, store)?;
+                    Ok(JobExecutionResult {
+                        op: request.op.clone(),
+                        success: true,
+                        state_version: store.snapshot().version,
+                    })
+                }
+                Err(err) => {
+                    let _ = refresh_repo_and_status(cwd, store);
+                    Err(JobExecutionError::from(err))
+                }
+            }
+        }
+        "cherry_pick.abort" => {
+            git_service::cherry_pick_abort(cwd)?;
+            refresh_after_advanced_op(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "revert.commit" => {
+            ensure_no_conflicts(cwd, "revert.commit")?;
+            let oid = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "revert.commit requires commit oid in request.paths[0]".to_string(),
+                }
+            })?;
+            git_service::revert_commit(cwd, oid)?;
+            refresh_after_advanced_op(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "reset.refs" => {
+            ensure_no_conflicts(cwd, "reset.refs")?;
+            let mode_raw = request.paths.first().map(String::as_str).unwrap_or("mixed");
+            let mode = parse_reset_mode(mode_raw)?;
+            let target = request.paths.get(1).map(String::as_str).unwrap_or("HEAD");
+            git_service::reset_ref(cwd, mode, target)?;
+            refresh_after_advanced_op(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
         "branch.checkout" => {
             ensure_no_conflicts(cwd, "branch.checkout")?;
             let name = request.paths.first().map(String::as_str).ok_or_else(|| {
@@ -640,7 +744,7 @@ pub fn execute_job_op(
         }),
     })();
 
-    finish_journal_entry(store, journal_entry, &result);
+    finish_journal_entry(store, journal_entry, &result, cwd, request.op.as_str());
     result
 }
 
@@ -727,6 +831,38 @@ fn refresh_refs(cwd: &Path, store: &mut StateStore) -> Result<(), JobExecutionEr
         .collect();
     store.update_tags(mapped_tags);
     Ok(())
+}
+
+fn refresh_after_advanced_op(cwd: &Path, store: &mut StateStore) -> Result<(), JobExecutionError> {
+    refresh_repo_and_status(cwd, store)?;
+    refresh_refs(cwd, store)?;
+    store.clear_history();
+    store.clear_compare();
+    store.update_diff(DiffState::default());
+    store.update_selection(SelectionState::default());
+    Ok(())
+}
+
+fn parse_merge_mode(raw: &str) -> Result<git_service::MergeMode, JobExecutionError> {
+    match raw {
+        "ff" | "fast-forward" => Ok(git_service::MergeMode::FastForward),
+        "no-ff" => Ok(git_service::MergeMode::NoFastForward),
+        "squash" => Ok(git_service::MergeMode::Squash),
+        _ => Err(JobExecutionError::InvalidInput {
+            message: "merge.execute mode must be one of: ff, no-ff, squash".to_string(),
+        }),
+    }
+}
+
+fn parse_reset_mode(raw: &str) -> Result<git_service::ResetMode, JobExecutionError> {
+    match raw {
+        "soft" => Ok(git_service::ResetMode::Soft),
+        "mixed" => Ok(git_service::ResetMode::Mixed),
+        "hard" => Ok(git_service::ResetMode::Hard),
+        _ => Err(JobExecutionError::InvalidInput {
+            message: "reset.refs mode must be one of: soft, mixed, hard".to_string(),
+        }),
+    }
 }
 
 fn parse_history_request(request: &JobRequest) -> Result<(usize, usize), JobExecutionError> {
@@ -854,17 +990,36 @@ fn split_diff_chunks(text: &str, chunk_size: usize) -> Vec<DiffChunk> {
         .collect()
 }
 
-fn start_journal_entry(store: &mut StateStore, request: &JobRequest) -> Option<u64> {
+fn start_journal_entry(
+    store: &mut StateStore,
+    request: &JobRequest,
+    session_id: Option<u64>,
+    pre_refs: Option<RefSnapshotSummary>,
+) -> Option<u64> {
     if !is_journaled_op(&request.op) {
         return None;
     }
-    Some(store.append_journal_entry(request.job_id, request.op.clone(), now_millis()))
+    let entry_id = store.append_journal_entry(request.job_id, request.op.clone(), now_millis());
+    if let Some(session_id) = session_id {
+        store.set_journal_session(
+            entry_id,
+            session_id,
+            OperationSessionKind::AdvancedBranchOperation,
+            OperationSessionState::Running,
+        );
+    }
+    if let Some(pre_refs) = pre_refs {
+        store.set_journal_pre_refs(entry_id, pre_refs);
+    }
+    Some(entry_id)
 }
 
 fn finish_journal_entry(
     store: &mut StateStore,
     entry_id: Option<u64>,
     result: &Result<JobExecutionResult, JobExecutionError>,
+    cwd: &Path,
+    op: &str,
 ) {
     let entry_id = match entry_id {
         Some(id) => id,
@@ -875,8 +1030,49 @@ fn finish_journal_entry(
     } else {
         JournalStatus::Failed
     };
+    let session_state = if result.is_ok() {
+        OperationSessionState::Succeeded
+    } else {
+        OperationSessionState::Failed
+    };
     let error = result.as_ref().err().map(|err| format!("{err:?}"));
     store.finish_journal_entry(entry_id, status, now_millis(), error);
+    if is_session_op(op) {
+        store.set_journal_session_state(entry_id, session_state);
+    }
+    if is_ref_snapshot_op(op)
+        && let Some(post_refs) = capture_ref_snapshot(cwd)
+    {
+        store.set_journal_post_refs(entry_id, post_refs);
+    }
+}
+
+fn capture_ref_snapshot(cwd: &Path) -> Option<RefSnapshotSummary> {
+    let repo = git_service::repo_open(cwd).ok()?;
+    let branches = git_service::list_local_branches(cwd).ok()?;
+    let tags = git_service::list_tags(cwd).ok()?;
+    Some(RefSnapshotSummary {
+        head: repo.head,
+        branch_count: branches.len(),
+        tag_count: tags.len(),
+        conflict_state: map_conflict_state(repo.conflict_state.as_ref()),
+    })
+}
+
+fn is_session_op(op: &str) -> bool {
+    matches!(
+        op,
+        "merge.execute"
+            | "merge.abort"
+            | "cherry_pick.commit"
+            | "cherry_pick.abort"
+            | "revert.commit"
+            | "reset.refs"
+    )
+}
+
+fn is_ref_snapshot_op(op: &str) -> bool {
+    is_session_op(op)
 }
 
 fn is_journaled_op(op: &str) -> bool {
@@ -892,6 +1088,12 @@ fn is_journaled_op(op: &str) -> bool {
             | "branch.create"
             | "branch.rename"
             | "branch.delete"
+            | "merge.execute"
+            | "merge.abort"
+            | "cherry_pick.commit"
+            | "cherry_pick.abort"
+            | "revert.commit"
+            | "reset.refs"
             | "tag.create"
             | "tag.delete"
             | "tag.checkout"

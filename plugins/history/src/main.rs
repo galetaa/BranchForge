@@ -1,5 +1,6 @@
 use plugin_api::{
-    ActionEffects, ActionSpec, ConfirmPolicy, PluginHello, PluginRegister, RpcRequest, ViewSpec,
+    ActionEffects, ActionSpec, ConfirmPolicy, DangerLevel, PluginHello, PluginRegister,
+    RpcRequest, ViewSpec,
 };
 
 fn spec(action_id: &str, title: &str) -> ActionSpec {
@@ -11,6 +12,24 @@ fn spec(action_id: &str, title: &str) -> ActionSpec {
         danger: None,
         effects: ActionEffects::read_only(),
         confirm_policy: ConfirmPolicy::Never,
+    }
+}
+
+fn mutation_spec(action_id: &str, title: &str) -> ActionSpec {
+    ActionSpec {
+        action_id: action_id.to_string(),
+        title: title.to_string(),
+        when: Some("repo.is_open".to_string()),
+        params_schema: None,
+        danger: Some(DangerLevel::Medium),
+        effects: ActionEffects {
+            writes_refs: true,
+            writes_index: true,
+            writes_worktree: true,
+            danger_level: DangerLevel::Medium,
+            ..ActionEffects::default()
+        },
+        confirm_policy: ConfirmPolicy::OnDanger,
     }
 }
 
@@ -29,6 +48,8 @@ fn build_register_request() -> RpcRequest {
             spec("history.select_commit", "Select Commit"),
             spec("history.search", "Search History"),
             spec("history.clear_filter", "Clear History Filter"),
+            mutation_spec("cherry_pick.commit", "Cherry-pick Commit"),
+            mutation_spec("revert.commit", "Revert Commit"),
         ],
         views: vec![ViewSpec {
             view_id: "history.panel".to_string(),

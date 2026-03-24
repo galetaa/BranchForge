@@ -970,6 +970,34 @@ pub fn history_registration_payload() -> PluginRegister {
                 ActionEffects::read_only(),
                 ConfirmPolicy::Never,
             ),
+            spec(
+                "cherry_pick.commit",
+                "Cherry-pick Commit",
+                Some("repo.is_open"),
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_refs: true,
+                    writes_index: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "revert.commit",
+                "Revert Commit",
+                Some("repo.is_open"),
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_refs: true,
+                    writes_index: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
         ],
         views: vec![plugin_api::ViewSpec {
             view_id: "history.panel".to_string(),
@@ -1032,6 +1060,73 @@ pub fn branches_registration_payload() -> PluginRegister {
             spec(
                 "rebase.interactive",
                 "Interactive Rebase (beta)",
+                Some("repo.is_open"),
+                Some(DangerLevel::High),
+                ActionEffects {
+                    writes_refs: true,
+                    writes_index: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::High,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::Always,
+            ),
+            spec(
+                "merge.execute",
+                "Merge Branch",
+                Some("repo.is_open"),
+                Some(DangerLevel::High),
+                ActionEffects {
+                    writes_refs: true,
+                    writes_index: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::High,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::Always,
+            ),
+            spec(
+                "merge.abort",
+                "Abort Merge",
+                Some("repo.is_open"),
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_refs: true,
+                    writes_index: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "reset.soft",
+                "Reset --soft",
+                Some("repo.is_open"),
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_refs: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "reset.mixed",
+                "Reset --mixed",
+                Some("repo.is_open"),
+                Some(DangerLevel::High),
+                ActionEffects {
+                    writes_refs: true,
+                    writes_index: true,
+                    danger_level: DangerLevel::High,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::Always,
+            ),
+            spec(
+                "reset.hard",
+                "Reset --hard",
                 Some("repo.is_open"),
                 Some(DangerLevel::High),
                 ActionEffects {
@@ -1699,6 +1794,18 @@ mod tests {
                 .iter()
                 .any(|a| a.action_id == "history.clear_filter")
         );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "cherry_pick.commit")
+        );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "revert.commit")
+        );
         assert!(payload.views.iter().any(|v| v.view_id == "history.panel"));
     }
 
@@ -1729,6 +1836,21 @@ mod tests {
                 .iter()
                 .any(|a| a.action_id == "branch.delete")
         );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "merge.execute")
+        );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "merge.abort")
+        );
+        assert!(payload.actions.iter().any(|a| a.action_id == "reset.soft"));
+        assert!(payload.actions.iter().any(|a| a.action_id == "reset.mixed"));
+        assert!(payload.actions.iter().any(|a| a.action_id == "reset.hard"));
         assert!(payload.views.iter().any(|v| v.view_id == "branches.panel"));
     }
 
