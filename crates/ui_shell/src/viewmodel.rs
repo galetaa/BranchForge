@@ -199,6 +199,16 @@ pub fn build_history_panel(snapshot: &StoreSnapshot) -> ViewNode {
         on_action: "history.select_commit".to_string(),
         enabled_when: snapshot.history_has_selection(),
     });
+    children.push(ViewNode::Button {
+        label: "Cherry-pick".to_string(),
+        on_action: "cherry_pick.commit".to_string(),
+        enabled_when: snapshot.history_has_selection(),
+    });
+    children.push(ViewNode::Button {
+        label: "Revert".to_string(),
+        on_action: "revert.commit".to_string(),
+        enabled_when: snapshot.history_has_selection(),
+    });
 
     ViewNode::Container { children }
 }
@@ -346,6 +356,31 @@ pub fn build_branches_panel(snapshot: &StoreSnapshot) -> ViewNode {
     children.push(ViewNode::Text {
         value: "Danger copy: reset --hard is destructive and requires explicit confirm"
             .to_string(),
+    });
+    children.push(ViewNode::Button {
+        label: "Create Rebase Plan".to_string(),
+        on_action: "rebase.plan.create".to_string(),
+        enabled_when: snapshot.repo.is_some(),
+    });
+    children.push(ViewNode::Button {
+        label: "Execute Rebase".to_string(),
+        on_action: "rebase.execute".to_string(),
+        enabled_when: snapshot.rebase.plan.is_some(),
+    });
+    children.push(ViewNode::Button {
+        label: "Continue Rebase".to_string(),
+        on_action: "rebase.continue".to_string(),
+        enabled_when: snapshot.rebase.session.is_some(),
+    });
+    children.push(ViewNode::Button {
+        label: "Skip Rebase Commit".to_string(),
+        on_action: "rebase.skip".to_string(),
+        enabled_when: snapshot.rebase.session.is_some(),
+    });
+    children.push(ViewNode::Button {
+        label: "Abort Rebase".to_string(),
+        on_action: "rebase.abort".to_string(),
+        enabled_when: snapshot.rebase.session.is_some(),
     });
 
     if !has_branches {
@@ -676,5 +711,52 @@ mod tests {
         assert!(rendered.contains("Rebase warning: published branch"));
         assert!(rendered.contains("Rebase session: active=true step=1/3"));
         assert!(rendered.contains("Rebase controls: continue / skip / abort"));
+        assert!(rendered.contains("[Create Rebase Plan] enabled -> rebase.plan.create"));
+        assert!(rendered.contains("[Execute Rebase] enabled -> rebase.execute"));
+        assert!(rendered.contains("[Continue Rebase] enabled -> rebase.continue"));
+        assert!(rendered.contains("[Skip Rebase Commit] enabled -> rebase.skip"));
+        assert!(rendered.contains("[Abort Rebase] enabled -> rebase.abort"));
+    }
+
+    #[test]
+    fn history_panel_shows_rewrite_entry_points() {
+        let snapshot = StoreSnapshot {
+            repo: Some(plugin_api::RepoSnapshot {
+                root: "./demo".to_string(),
+                head: Some("main".to_string()),
+                conflict_state: None,
+            }),
+            status: StatusSnapshot::default(),
+            selection: SelectionState {
+                selected_paths: Vec::new(),
+                selected_commit_oid: Some("abc123".to_string()),
+                selected_branch: None,
+            },
+            history: state_store::HistoryState {
+                commits: vec![state_store::CommitSummary {
+                    oid: "abc123".to_string(),
+                    author: "Dev".to_string(),
+                    time: "now".to_string(),
+                    summary: "feat: one".to_string(),
+                }],
+                ..state_store::HistoryState::default()
+            },
+            commit_cache: std::collections::HashMap::new(),
+            diff: state_store::DiffState::default(),
+            compare: state_store::CompareState::default(),
+            branches: state_store::BranchesState::default(),
+            tags: state_store::TagsState::default(),
+            commit_message: state_store::CommitMessageState::default(),
+            rebase: state_store::RebaseState::default(),
+            journal: state_store::OperationJournalState::default(),
+            active_view: None,
+            plugins: Vec::new(),
+            version: 1,
+        };
+
+        let panel = build_history_panel(&snapshot);
+        let rendered = render(&panel, &snapshot);
+        assert!(rendered.contains("[Cherry-pick] enabled -> cherry_pick.commit"));
+        assert!(rendered.contains("[Revert] enabled -> revert.commit"));
     }
 }

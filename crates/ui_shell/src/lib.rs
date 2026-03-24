@@ -158,10 +158,29 @@ pub fn render_diagnostics_panel(store: &StateStore) -> String {
         .find(|entry| matches!(entry.status, state_store::JournalStatus::Failed))
         .and_then(|entry| entry.error.clone())
         .unwrap_or_else(|| "<none>".to_string());
+    let rebase_plan = store.snapshot().rebase.plan.as_ref().map(|plan| {
+        format!(
+            "base={} commits={} autosquash={}",
+            plan.base_ref, plan.affected_commit_count, plan.autosquash_aware
+        )
+    });
+    let rebase_session = store.snapshot().rebase.session.as_ref().map(|session| {
+        let step = match (session.current_step, session.total_steps) {
+            (Some(current), Some(total)) => format!("{current}/{total}"),
+            _ => "<unknown>".to_string(),
+        };
+        format!("active={} step={step}", session.active)
+    });
 
     format!(
-        "Diagnostics Panel\nJournal entries: {}\nRunning: {}\nSucceeded: {}\nFailed: {}\nLast error: {}\n",
-        entries.len(), started, succeeded, failed, last_error
+        "Diagnostics Panel\nJournal entries: {}\nRunning: {}\nSucceeded: {}\nFailed: {}\nLast error: {}\nRebase plan: {}\nRebase session: {}\n",
+        entries.len(),
+        started,
+        succeeded,
+        failed,
+        last_error,
+        rebase_plan.unwrap_or_else(|| "<none>".to_string()),
+        rebase_session.unwrap_or_else(|| "<none>".to_string())
     )
 }
 
@@ -507,6 +526,32 @@ mod tests {
         );
         let rendered = render_window(&store, &palette_items);
         assert!(rendered.contains("Commit (on)"));
+    }
+
+    #[test]
+    fn diagnostics_panel_shows_rebase_summary() {
+        let mut store = StateStore::new();
+        store.update_rebase_plan(state_store::RebasePlan {
+            base_ref: "main".to_string(),
+            base_oid: Some("abc".to_string()),
+            entries: Vec::new(),
+            affected_commit_count: 2,
+            rewrite_types: vec!["pick".to_string()],
+            published_history_warning: None,
+            autosquash_aware: true,
+        });
+        store.update_rebase_session(state_store::RebaseSessionSnapshot {
+            active: true,
+            repo_root: Some("/tmp/repo".to_string()),
+            base_ref: Some("main".to_string()),
+            current_step: Some(1),
+            total_steps: Some(2),
+            blocking_conflict: false,
+        });
+
+        let rendered = render_diagnostics_panel(&store);
+        assert!(rendered.contains("Rebase plan: base=main commits=2 autosquash=true"));
+        assert!(rendered.contains("Rebase session: active=true step=1/2"));
     }
 
     #[test]
