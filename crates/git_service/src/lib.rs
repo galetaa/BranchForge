@@ -53,6 +53,20 @@ pub struct CompareSummary {
     pub commits: Vec<CommitSummary>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeMode {
+    FastForward,
+    NoFastForward,
+    Squash,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResetMode {
+    Soft,
+    Mixed,
+    Hard,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TagTarget {
     pub name: String,
@@ -461,6 +475,54 @@ pub fn compare_refs(
     })
 }
 
+pub fn merge_ref(cwd: &Path, source_ref: &str, mode: MergeMode) -> Result<(), GitServiceError> {
+    let mut args = vec!["merge".to_string()];
+    match mode {
+        MergeMode::FastForward => args.push("--ff-only".to_string()),
+        MergeMode::NoFastForward => args.push("--no-ff".to_string()),
+        MergeMode::Squash => args.push("--squash".to_string()),
+    }
+    args.push(source_ref.to_string());
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let _ = run_git(cwd, &refs)?;
+    Ok(())
+}
+
+pub fn merge_abort(cwd: &Path) -> Result<(), GitServiceError> {
+    let _ = run_git(cwd, &["merge", "--abort"])?;
+    Ok(())
+}
+
+pub fn cherry_pick_commit(cwd: &Path, oid: &str) -> Result<(), GitServiceError> {
+    let _ = run_git(cwd, &["cherry-pick", oid])?;
+    Ok(())
+}
+
+pub fn cherry_pick_abort(cwd: &Path) -> Result<(), GitServiceError> {
+    let _ = run_git(cwd, &["cherry-pick", "--abort"])?;
+    Ok(())
+}
+
+pub fn revert_commit(cwd: &Path, oid: &str) -> Result<(), GitServiceError> {
+    if is_merge_commit(cwd, oid)? {
+        return Err(GitServiceError::ParseError(
+            "revert of merge commit is not supported without parent selection".to_string(),
+        ));
+    }
+    let _ = run_git(cwd, &["revert", "--no-edit", oid])?;
+    Ok(())
+}
+
+pub fn reset_ref(cwd: &Path, mode: ResetMode, target: &str) -> Result<(), GitServiceError> {
+    let mode_flag = match mode {
+        ResetMode::Soft => "--soft",
+        ResetMode::Mixed => "--mixed",
+        ResetMode::Hard => "--hard",
+    };
+    let _ = run_git(cwd, &["reset", mode_flag, target])?;
+    Ok(())
+}
+
 pub fn stage_hunk(cwd: &Path, path: &str, hunk_index: usize) -> Result<(), GitServiceError> {
     let hunks =
         diff_worktree_raw(cwd, &[path.to_string()]).map(|text| parse_unified_diff_hunks(&text))?;
@@ -837,6 +899,13 @@ fn commit_log_range(
     Ok(commits)
 }
 
+fn is_merge_commit(cwd: &Path, oid: &str) -> Result<bool, GitServiceError> {
+    let out = run_git(cwd, &["rev-list", "--parents", "-n", "1", oid])?;
+    let text = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+    let parent_count = text.split_whitespace().skip(1).count();
+    Ok(parent_count > 1)
+}
+
 pub fn commit_amend(cwd: &Path, message: Option<&str>) -> Result<(), GitServiceError> {
     match message {
         Some(msg) => {
@@ -907,6 +976,19 @@ pub fn parse_status_porcelain_v2_z(raw: &[u8]) -> Result<StatusSummary, GitServi
                     idx += 1;
                 }
             }
+            "u" => {
+                let _xy = parts
+                    .next()
+                    .ok_or_else(|| GitServiceError::ParseError("missing XY status".to_string()))?;
+                let path = parts
+                    .last()
+                    .ok_or_else(|| {
+                        GitServiceError::ParseError("missing path in unmerged entry".to_string())
+                    })?
+                    .to_string();
+                summary.unstaged.push(path);
+                idx += 1;
+            }
             other => {
                 return Err(GitServiceError::ParseError(format!(
                     "unsupported status record kind: {other}"
@@ -976,10 +1058,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_rejects_unsupported_status_kind() {
+    fn parses_unmerged_status_kind() {
         let fixture = b"u UU N... 100644 100644 100644 abcdef abcdef conflict.txt\0";
         let parsed = parse_status_porcelain_v2_z(fixture);
-        assert!(parsed.is_err());
+        assert!(parsed.is_ok());
+        if let Ok(summary) = parsed {
+            assert!(summary.unstaged.iter().any(|path| path == "conflict.txt"));
+        }
     }
 
     #[test]
@@ -1289,6 +1374,102 @@ mod tests {
         if let Ok(output) = staged_after {
             assert!(output.text.trim().is_empty());
         }
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn merge_cherry_pick_revert_and_reset_baseline() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let file = repo_dir.join("advanced.txt");
+        assert!(std::fs::write(&file, "base\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["advanced.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "base").is_ok());
+
+        assert!(create_branch(&repo_dir, "feature").is_ok());
+        assert!(checkout_branch(&repo_dir, "feature").is_ok());
+        assert!(std::fs::write(&file, "base\nfeature\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["advanced.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "feature commit").is_ok());
+
+        assert!(checkout_branch(&repo_dir, "main").is_ok() || checkout_branch(&repo_dir, "master").is_ok());
+        assert!(merge_ref(&repo_dir, "feature", MergeMode::FastForward).is_ok());
+        let merged = std::fs::read_to_string(&file).unwrap_or_default();
+        assert!(merged.contains("feature"));
+
+        assert!(std::fs::write(&file, "base\nfeature\nlocal\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["advanced.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "local commit").is_ok());
+        let head = commit_log_page(&repo_dir, 0, 1)
+            .ok()
+            .and_then(|mut page| page.pop())
+            .map(|item| item.oid)
+            .unwrap_or_default();
+        assert!(!head.is_empty());
+
+        assert!(revert_commit(&repo_dir, &head).is_ok());
+        let reverted = std::fs::read_to_string(&file).unwrap_or_default();
+        assert!(!reverted.contains("local"));
+
+        assert!(std::fs::write(&file, "dirty\n").is_ok());
+        assert!(reset_ref(&repo_dir, ResetMode::Hard, "HEAD").is_ok());
+        let reset = std::fs::read_to_string(&file).unwrap_or_default();
+        assert!(!reset.contains("dirty"));
+
+        assert!(create_branch(&repo_dir, "pick-source").is_ok());
+        assert!(checkout_branch(&repo_dir, "pick-source").is_ok());
+        assert!(std::fs::write(repo_dir.join("pick.txt"), "picked\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["pick.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "pick commit").is_ok());
+        let pick_oid = commit_log_page(&repo_dir, 0, 1)
+            .ok()
+            .and_then(|mut page| page.pop())
+            .map(|item| item.oid)
+            .unwrap_or_default();
+        assert!(!pick_oid.is_empty());
+
+        assert!(checkout_branch(&repo_dir, "main").is_ok() || checkout_branch(&repo_dir, "master").is_ok());
+        assert!(cherry_pick_commit(&repo_dir, &pick_oid).is_ok());
+        assert!(repo_dir.join("pick.txt").exists());
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn merge_abort_clears_conflict_state() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let file = repo_dir.join("conflict.txt");
+        assert!(std::fs::write(&file, "line\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["conflict.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "base").is_ok());
+
+        assert!(create_branch(&repo_dir, "feature").is_ok());
+        assert!(checkout_branch(&repo_dir, "feature").is_ok());
+        assert!(std::fs::write(&file, "feature\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["conflict.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "feature change").is_ok());
+
+        assert!(checkout_branch(&repo_dir, "main").is_ok() || checkout_branch(&repo_dir, "master").is_ok());
+        assert!(std::fs::write(&file, "main\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["conflict.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "main change").is_ok());
+
+        let merge = merge_ref(&repo_dir, "feature", MergeMode::NoFastForward);
+        assert!(merge.is_err());
+        assert!(matches!(detect_conflict_state(&repo_dir), Ok(Some(ConflictState::Merge))));
+
+        assert!(merge_abort(&repo_dir).is_ok());
+        assert!(matches!(detect_conflict_state(&repo_dir), Ok(None)));
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use plugin_api::RepoSnapshot;
+use plugin_api::{ConflictState, RepoSnapshot};
 use serde::{Deserialize, Serialize};
 
 pub type StoreVersion = u64;
@@ -146,6 +146,26 @@ pub enum JournalStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OperationSessionKind {
+    AdvancedBranchOperation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OperationSessionState {
+    Running,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefSnapshotSummary {
+    pub head: Option<String>,
+    pub branch_count: usize,
+    pub tag_count: usize,
+    pub conflict_state: Option<ConflictState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OperationJournalEntry {
     pub id: u64,
     pub job_id: Option<u64>,
@@ -154,6 +174,16 @@ pub struct OperationJournalEntry {
     pub started_at_ms: u64,
     pub finished_at_ms: Option<u64>,
     pub error: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<u64>,
+    #[serde(default)]
+    pub session_kind: Option<OperationSessionKind>,
+    #[serde(default)]
+    pub session_state: Option<OperationSessionState>,
+    #[serde(default)]
+    pub pre_refs: Option<RefSnapshotSummary>,
+    #[serde(default)]
+    pub post_refs: Option<RefSnapshotSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -213,6 +243,7 @@ pub struct StateStore {
     subscribers: HashMap<u64, Vec<StateEvent>>,
     next_subscriber_id: u64,
     next_journal_id: u64,
+    next_session_id: u64,
 }
 
 const JOURNAL_RETENTION_LIMIT: usize = 200;
@@ -224,6 +255,7 @@ impl Default for StateStore {
             subscribers: HashMap::new(),
             next_subscriber_id: 1,
             next_journal_id: 1,
+            next_session_id: 1,
         }
     }
 }
@@ -335,6 +367,11 @@ impl StateStore {
             started_at_ms,
             finished_at_ms: None,
             error: None,
+            session_id: None,
+            session_kind: None,
+            session_state: None,
+            pre_refs: None,
+            post_refs: None,
         });
         self.enforce_journal_retention();
         self.bump_version();
@@ -358,6 +395,72 @@ impl StateStore {
             entry.status = status;
             entry.finished_at_ms = Some(finished_at_ms);
             entry.error = error;
+        }
+        self.bump_version();
+    }
+
+    pub fn allocate_session_id(&mut self) -> u64 {
+        let id = self.next_session_id;
+        self.next_session_id += 1;
+        id
+    }
+
+    pub fn set_journal_session(
+        &mut self,
+        entry_id: u64,
+        session_id: u64,
+        session_kind: OperationSessionKind,
+        session_state: OperationSessionState,
+    ) {
+        if let Some(entry) = self
+            .snapshot
+            .journal
+            .entries
+            .iter_mut()
+            .find(|entry| entry.id == entry_id)
+        {
+            entry.session_id = Some(session_id);
+            entry.session_kind = Some(session_kind);
+            entry.session_state = Some(session_state);
+        }
+        self.bump_version();
+    }
+
+    pub fn set_journal_session_state(&mut self, entry_id: u64, session_state: OperationSessionState) {
+        if let Some(entry) = self
+            .snapshot
+            .journal
+            .entries
+            .iter_mut()
+            .find(|entry| entry.id == entry_id)
+        {
+            entry.session_state = Some(session_state);
+        }
+        self.bump_version();
+    }
+
+    pub fn set_journal_pre_refs(&mut self, entry_id: u64, pre_refs: RefSnapshotSummary) {
+        if let Some(entry) = self
+            .snapshot
+            .journal
+            .entries
+            .iter_mut()
+            .find(|entry| entry.id == entry_id)
+        {
+            entry.pre_refs = Some(pre_refs);
+        }
+        self.bump_version();
+    }
+
+    pub fn set_journal_post_refs(&mut self, entry_id: u64, post_refs: RefSnapshotSummary) {
+        if let Some(entry) = self
+            .snapshot
+            .journal
+            .entries
+            .iter_mut()
+            .find(|entry| entry.id == entry_id)
+        {
+            entry.post_refs = Some(post_refs);
         }
         self.bump_version();
     }
@@ -515,6 +618,15 @@ impl StateStore {
             .last()
             .map(|entry| entry.id + 1)
             .unwrap_or(1);
+        self.next_session_id = self
+            .snapshot
+            .journal
+            .entries
+            .iter()
+            .filter_map(|entry| entry.session_id)
+            .max()
+            .map(|id| id + 1)
+            .unwrap_or(1);
         self.bump_version();
         Ok(())
     }
@@ -665,6 +777,60 @@ mod tests {
         assert_eq!(entry.job_id, Some(42));
         assert_eq!(entry.finished_at_ms, Some(200));
         assert!(matches!(entry.status, JournalStatus::Succeeded));
+    }
+
+    #[test]
+    fn journal_entry_tracks_session_and_ref_snapshots() {
+        let mut store = StateStore::new();
+        let entry_id = store.append_journal_entry(None, "merge.execute".to_string(), 10);
+        let session_id = store.allocate_session_id();
+        store.set_journal_session(
+            entry_id,
+            session_id,
+            OperationSessionKind::AdvancedBranchOperation,
+            OperationSessionState::Running,
+        );
+        store.set_journal_pre_refs(
+            entry_id,
+            RefSnapshotSummary {
+                head: Some("main".to_string()),
+                branch_count: 2,
+                tag_count: 1,
+                conflict_state: None,
+            },
+        );
+        store.set_journal_session_state(entry_id, OperationSessionState::Succeeded);
+        store.set_journal_post_refs(
+            entry_id,
+            RefSnapshotSummary {
+                head: Some("main".to_string()),
+                branch_count: 2,
+                tag_count: 1,
+                conflict_state: None,
+            },
+        );
+
+        let entry = store
+            .snapshot()
+            .journal
+            .entries
+            .iter()
+            .find(|entry| entry.id == entry_id)
+            .cloned();
+        assert!(entry.is_some());
+        if let Some(entry) = entry {
+            assert_eq!(entry.session_id, Some(session_id));
+            assert!(matches!(
+                entry.session_kind,
+                Some(OperationSessionKind::AdvancedBranchOperation)
+            ));
+            assert!(matches!(
+                entry.session_state,
+                Some(OperationSessionState::Succeeded)
+            ));
+            assert!(entry.pre_refs.is_some());
+            assert!(entry.post_refs.is_some());
+        }
     }
 
     #[test]

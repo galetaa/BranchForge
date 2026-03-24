@@ -205,6 +205,38 @@ mod tests {
     }
 
     #[test]
+    fn route_action_invoke_requires_confirmation_for_hard_reset() {
+        let mut session = RuntimeSession::new("branches");
+        let hello = PluginHello {
+            plugin_id: "branches".to_string(),
+            version: "0.1".to_string(),
+        };
+        let hello_result = session.handle_hello(&hello);
+        assert!(hello_result.is_ok());
+
+        let register_result = session.handle_register(&branches_registration_payload());
+        assert!(register_result.is_ok());
+
+        let action = ActionRequest {
+            action: "reset.hard".to_string(),
+            confirmed: false,
+        };
+        let routed = route_action_invoke(
+            &mut session,
+            &action,
+            ActionContext {
+                selection_files: Vec::new(),
+            },
+            Instant::now(),
+        );
+        assert!(matches!(
+            routed,
+            Err(InvokeError::ConfirmationRequired { action_id, danger })
+                if action_id == "reset.hard" && danger == DangerLevel::High
+        ));
+    }
+
+    #[test]
     fn route_action_invoke_rejects_invalid_action() {
         let mut session = RuntimeSession::new("status");
         let action = ActionRequest {

@@ -42,7 +42,11 @@ fn action_owner_plugin(action_id: &str) -> Option<&'static str> {
     if action_id.starts_with("history.") {
         return Some("history");
     }
-    if action_id.starts_with("branch.") || action_id.starts_with("rebase.") {
+    if action_id.starts_with("branch.")
+        || action_id.starts_with("rebase.")
+        || action_id.starts_with("merge.")
+        || action_id.starts_with("reset.")
+    {
         return Some("branches");
     }
     if action_id.starts_with("tag.") {
