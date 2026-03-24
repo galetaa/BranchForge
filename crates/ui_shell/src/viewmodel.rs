@@ -354,8 +354,7 @@ pub fn build_branches_panel(snapshot: &StoreSnapshot) -> ViewNode {
                 .to_string(),
     });
     children.push(ViewNode::Text {
-        value: "Danger copy: reset --hard is destructive and requires explicit confirm"
-            .to_string(),
+        value: "Danger copy: reset --hard is destructive and requires explicit confirm".to_string(),
     });
     children.push(ViewNode::Button {
         label: "Create Rebase Plan".to_string(),
