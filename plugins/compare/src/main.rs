@@ -5,7 +5,7 @@ use plugin_api::{
 fn build_hello_request() -> RpcRequest {
     PluginHello {
         plugin_id: "compare".to_string(),
-        version: "0.1".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
     }
     .to_request("hello-1")
 }

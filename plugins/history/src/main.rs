@@ -36,7 +36,7 @@ fn mutation_spec(action_id: &str, title: &str) -> ActionSpec {
 fn build_hello_request() -> RpcRequest {
     PluginHello {
         plugin_id: "history".to_string(),
-        version: "0.1".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
     }
     .to_request("hello-1")
 }

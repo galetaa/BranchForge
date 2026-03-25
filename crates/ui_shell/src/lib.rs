@@ -141,6 +141,8 @@ pub fn render_diff_panel(store: &StateStore) -> String {
 }
 
 pub fn render_diagnostics_panel(store: &StateStore) -> String {
+    let host_version = env!("CARGO_PKG_VERSION");
+    let protocol_version = plugin_api::HOST_PLUGIN_PROTOCOL_VERSION;
     let entries = &store.snapshot().journal.entries;
     let started = entries
         .iter()
@@ -203,7 +205,9 @@ pub fn render_diagnostics_panel(store: &StateStore) -> String {
     });
 
     format!(
-        "Diagnostics Panel\nJournal entries: {}\nRunning: {}\nSucceeded: {}\nFailed: {}\nLast error: {}\nAvg duration(ms): {}\nSlowest op: {}\nActionable blockers: {}\nRebase plan: {}\nRebase session: {}\n",
+        "Diagnostics Panel\nHost version: {}\nProtocol version: {}\nJournal entries: {}\nRunning: {}\nSucceeded: {}\nFailed: {}\nLast error: {}\nAvg duration(ms): {}\nSlowest op: {}\nActionable blockers: {}\nRebase plan: {}\nRebase session: {}\n",
+        host_version,
+        protocol_version,
         entries.len(),
         started,
         succeeded,
@@ -589,6 +593,8 @@ mod tests {
         });
 
         let rendered = render_diagnostics_panel(&store);
+        assert!(rendered.contains("Host version:"));
+        assert!(rendered.contains("Protocol version:"));
         assert!(rendered.contains("Rebase plan: base=main commits=2 autosquash=true"));
         assert!(rendered.contains("Rebase session: active=true step=1/2"));
     }
