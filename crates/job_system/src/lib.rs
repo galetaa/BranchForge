@@ -212,6 +212,7 @@ pub fn execute_job_op(
                 })?;
             git_service::stage_hunk(cwd, path, hunk_index)?;
             refresh_status(cwd, store)?;
+            refresh_loaded_diff(cwd, store)?;
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -234,6 +235,30 @@ pub fn execute_job_op(
                 })?;
             git_service::unstage_hunk(cwd, path, hunk_index)?;
             refresh_status(cwd, store)?;
+            refresh_loaded_diff(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "file.discard_hunk" => {
+            let path = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "file.discard_hunk requires path in request.paths[0]".to_string(),
+                }
+            })?;
+            let hunk_index = request
+                .paths
+                .get(1)
+                .and_then(|value| value.parse::<usize>().ok())
+                .ok_or_else(|| JobExecutionError::InvalidInput {
+                    message: "file.discard_hunk requires hunk index in request.paths[1]"
+                        .to_string(),
+                })?;
+            git_service::discard_hunk(cwd, path, hunk_index)?;
+            refresh_status(cwd, store)?;
+            refresh_loaded_diff(cwd, store)?;
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -1015,6 +1040,79 @@ fn refresh_after_advanced_op(cwd: &Path, store: &mut StateStore) -> Result<(), J
     Ok(())
 }
 
+fn refresh_loaded_diff(cwd: &Path, store: &mut StateStore) -> Result<(), JobExecutionError> {
+    let source = store.snapshot().diff.source.clone();
+    let Some(source) = source else {
+        return Ok(());
+    };
+
+    match source {
+        DiffSource::Worktree { paths } => {
+            let diff = git_service::diff_worktree_with_hunks(cwd, &paths, 256 * 1024)?;
+            let mapped_hunks = diff
+                .hunks
+                .into_iter()
+                .map(|hunk| state_store::DiffHunk {
+                    file_path: hunk.file_path,
+                    hunk_index: hunk.hunk_index,
+                    header: hunk.header,
+                    lines: hunk.lines,
+                })
+                .collect();
+            store.update_diff(build_diff_state(
+                DiffSource::Worktree { paths },
+                diff.text,
+                mapped_hunks,
+            ));
+        }
+        DiffSource::Index { paths } => {
+            let diff = git_service::diff_index_with_hunks(cwd, &paths, 256 * 1024)?;
+            let mapped_hunks = diff
+                .hunks
+                .into_iter()
+                .map(|hunk| state_store::DiffHunk {
+                    file_path: hunk.file_path,
+                    hunk_index: hunk.hunk_index,
+                    header: hunk.header,
+                    lines: hunk.lines,
+                })
+                .collect();
+            store.update_diff(build_diff_state(
+                DiffSource::Index { paths },
+                diff.text,
+                mapped_hunks,
+            ));
+        }
+        DiffSource::Commit { oid } => {
+            let diff = git_service::diff_commit(cwd, &oid, 64 * 1024)?;
+            store.update_diff(build_diff_state(
+                DiffSource::Commit { oid },
+                diff,
+                Vec::new(),
+            ));
+        }
+        DiffSource::Compare { base, head } => {
+            let diff = git_service::diff_compare_with_hunks(cwd, &base, &head, 256 * 1024)?;
+            let mapped_hunks = diff
+                .hunks
+                .into_iter()
+                .map(|hunk| state_store::DiffHunk {
+                    file_path: hunk.file_path,
+                    hunk_index: hunk.hunk_index,
+                    header: hunk.header,
+                    lines: hunk.lines,
+                })
+                .collect();
+            store.update_diff(build_diff_state(
+                DiffSource::Compare { base, head },
+                diff.text,
+                mapped_hunks,
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn parse_merge_mode(raw: &str) -> Result<git_service::MergeMode, JobExecutionError> {
     match raw {
         "ff" | "fast-forward" => Ok(git_service::MergeMode::FastForward),
@@ -1355,6 +1453,7 @@ fn is_journaled_op(op: &str) -> bool {
             | "index.unstage_paths"
             | "index.stage_hunk"
             | "index.unstage_hunk"
+            | "file.discard_hunk"
             | "commit.create"
             | "commit.amend"
             | "branch.checkout"
@@ -2170,6 +2269,60 @@ mod tests {
             git_service::detect_conflict_state(&repo_dir),
             Ok(None)
         ));
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn discard_hunk_updates_status_and_diff_state() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let file = "discard.txt".to_string();
+        assert!(std::fs::write(repo_dir.join(&file), "line1\nline2\nline3\nline4\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, std::slice::from_ref(&file)).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "base").is_ok());
+        assert!(
+            std::fs::write(repo_dir.join(&file), "line1-updated\nline2\nline3\nline4\n").is_ok()
+        );
+
+        let mut store = StateStore::new();
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "diff.worktree".to_string(),
+                    lock: JobLock::Read,
+                    paths: vec![file.clone()],
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert!(!store.snapshot().diff.hunks.is_empty());
+
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "file.discard_hunk".to_string(),
+                    lock: JobLock::IndexWrite,
+                    paths: vec![file.clone(), "0".to_string()],
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+
+        assert!(store.snapshot().status.unstaged.is_empty());
+        assert!(store.snapshot().diff.hunks.is_empty());
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }

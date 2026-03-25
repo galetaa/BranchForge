@@ -121,12 +121,14 @@ pub fn render_diff_panel(store: &StateStore) -> String {
                 "  {}[{}] {}\n",
                 hunk.file_path, hunk.hunk_index, hunk.header
             ));
-            let action = match diff.source {
-                Some(state_store::DiffSource::Worktree { .. }) => Some("index.stage_hunk"),
-                Some(state_store::DiffSource::Index { .. }) => Some("index.unstage_hunk"),
-                _ => None,
+            let actions: &[&str] = match diff.source {
+                Some(state_store::DiffSource::Worktree { .. }) => {
+                    &["index.stage_hunk", "file.discard_hunk"]
+                }
+                Some(state_store::DiffSource::Index { .. }) => &["index.unstage_hunk"],
+                _ => &[],
             };
-            if let Some(action_id) = action {
+            for action_id in actions {
                 out.push_str(&format!(
                     "  [Hunk Action] enabled -> {} {} {}\n",
                     action_id, hunk.file_path, hunk.hunk_index
@@ -565,6 +567,32 @@ mod tests {
         let rendered = render_diagnostics_panel(&store);
         assert!(rendered.contains("Rebase plan: base=main commits=2 autosquash=true"));
         assert!(rendered.contains("Rebase session: active=true step=1/2"));
+    }
+
+    #[test]
+    fn render_diff_panel_shows_stage_and_discard_hunk_actions_for_worktree() {
+        let mut store = StateStore::new();
+        store.update_diff(state_store::DiffState {
+            source: Some(state_store::DiffSource::Worktree {
+                paths: vec!["file.txt".to_string()],
+            }),
+            descriptor: None,
+            load_request: None,
+            chunks: Vec::new(),
+            content: Some("diff --git a/file.txt b/file.txt".to_string()),
+            hunks: vec![state_store::DiffHunk {
+                file_path: "file.txt".to_string(),
+                hunk_index: 0,
+                header: "@@ -1 +1 @@".to_string(),
+                lines: vec!["-old".to_string(), "+new".to_string()],
+            }],
+            loading: false,
+            error: None,
+        });
+
+        let rendered = render_diff_panel(&store);
+        assert!(rendered.contains("index.stage_hunk file.txt 0"));
+        assert!(rendered.contains("file.discard_hunk file.txt 0"));
     }
 
     #[test]
