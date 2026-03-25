@@ -48,6 +48,8 @@ fn build_register_request() -> RpcRequest {
             spec("history.select_commit", "Select Commit"),
             spec("history.search", "Search History"),
             spec("history.clear_filter", "Clear History Filter"),
+            spec("history.file", "File History"),
+            spec("blame.file", "Blame File"),
             mutation_spec("cherry_pick.commit", "Cherry-pick Commit"),
             mutation_spec("revert.commit", "Revert Commit"),
         ],

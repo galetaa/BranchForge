@@ -287,6 +287,7 @@ pub fn execute_job_op(
             let (offset, limit) = parse_history_request(request)?;
             let filter_author = request.paths.get(2).cloned().filter(|v| !v.is_empty());
             let filter_text = request.paths.get(3).cloned().filter(|v| !v.is_empty());
+            let hash_prefix = request.paths.get(4).cloned().filter(|v| !v.is_empty());
             load_history_page(
                 cwd,
                 store,
@@ -297,6 +298,7 @@ pub fn execute_job_op(
                     append: offset > 0,
                     filter_author,
                     filter_text,
+                    hash_prefix,
                 },
             )
         }
@@ -321,6 +323,7 @@ pub fn execute_job_op(
                     append: true,
                     filter_author,
                     filter_text,
+                    hash_prefix: None,
                 },
             )
         }
@@ -336,6 +339,7 @@ pub fn execute_job_op(
             let (offset, limit) = parse_history_request(request)?;
             let filter_author = request.paths.get(2).cloned().filter(|v| !v.is_empty());
             let filter_text = request.paths.get(3).cloned().filter(|v| !v.is_empty());
+            let hash_prefix = request.paths.get(4).cloned().filter(|v| !v.is_empty());
             load_history_page(
                 cwd,
                 store,
@@ -346,6 +350,7 @@ pub fn execute_job_op(
                     append: false,
                     filter_author,
                     filter_text,
+                    hash_prefix,
                 },
             )
         }
@@ -359,8 +364,160 @@ pub fn execute_job_op(
                 append: false,
                 filter_author: None,
                 filter_text: None,
+                hash_prefix: None,
             },
         ),
+        "history.file" => {
+            let path = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "history.file requires file path in request.paths[0]".to_string(),
+                }
+            })?;
+            let offset = request
+                .paths
+                .get(1)
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(0);
+            let limit = request
+                .paths
+                .get(2)
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(20);
+            let commits = git_service::file_history_page(cwd, path, offset, limit)?;
+            let next_cursor = if commits.len() == limit {
+                Some(HistoryCursor {
+                    offset: offset + commits.len(),
+                    page_size: limit,
+                })
+            } else {
+                None
+            };
+            let history_commits = commits
+                .into_iter()
+                .map(|commit| state_store::CommitSummary {
+                    oid: commit.oid,
+                    author: commit.author,
+                    time: commit.time,
+                    summary: commit.summary,
+                })
+                .collect();
+            store.update_history_page(
+                history_commits,
+                next_cursor,
+                false,
+                None,
+                Some(path.to_string()),
+            );
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "blame.file" => {
+            let path = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "blame.file requires file path in request.paths[0]".to_string(),
+                }
+            })?;
+            let rev = request.paths.get(1).map(String::as_str);
+            let lines = git_service::file_blame(cwd, path, rev)?;
+            let text = lines
+                .into_iter()
+                .map(|line| {
+                    let short = line.oid.chars().take(8).collect::<String>();
+                    format!(
+                        "{} {} {} | {}",
+                        line.line_no, short, line.author, line.content
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            store.update_diff(build_diff_state(
+                DiffSource::Commit {
+                    oid: format!("blame:{path}"),
+                },
+                text,
+                Vec::new(),
+            ));
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "stash.create" => {
+            let message = request.paths.first().map(String::as_str);
+            git_service::stash_create(cwd, message)?;
+            refresh_repo_and_status(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "stash.list" => {
+            let entries = git_service::stash_list(cwd)?;
+            let text = if entries.is_empty() {
+                "stash: <empty>".to_string()
+            } else {
+                entries
+                    .into_iter()
+                    .map(|entry| format!("{} {}", entry.reference, entry.message))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            store.update_diff(build_diff_state(
+                DiffSource::Commit {
+                    oid: "stash:list".to_string(),
+                },
+                text,
+                Vec::new(),
+            ));
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "stash.apply" => {
+            let reference = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "stash.apply requires stash ref in request.paths[0]".to_string(),
+                }
+            })?;
+            git_service::stash_apply(cwd, reference)?;
+            refresh_repo_and_status(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "stash.pop" => {
+            let reference = request.paths.first().map(String::as_str);
+            git_service::stash_pop(cwd, reference)?;
+            refresh_repo_and_status(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "stash.drop" => {
+            let reference = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "stash.drop requires stash ref in request.paths[0]".to_string(),
+                }
+            })?;
+            git_service::stash_drop(cwd, reference)?;
+            refresh_repo_and_status(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
         "history.select_commit" => {
             let oid = request.paths.first().map(String::as_str).ok_or_else(|| {
                 JobExecutionError::InvalidInput {
@@ -1251,6 +1408,7 @@ struct HistoryLoadRequest<'a> {
     append: bool,
     filter_author: Option<String>,
     filter_text: Option<String>,
+    hash_prefix: Option<String>,
 }
 
 fn load_history_page(
@@ -1265,14 +1423,16 @@ fn load_history_page(
         append,
         filter_author,
         filter_text,
+        hash_prefix,
     } = request;
     store.set_history_loading(true);
-    let commits = git_service::commit_log_page_filtered(
+    let commits = git_service::commit_log_page_filtered_with_hash_prefix(
         cwd,
         offset,
         limit,
         filter_author.as_deref(),
         filter_text.as_deref(),
+        hash_prefix.as_deref(),
     )
     .map_err(|err| {
         store.set_history_error(format!("{err:?}"));
@@ -1477,6 +1637,13 @@ fn is_journaled_op(op: &str) -> bool {
             | "conflict.mark_resolved"
             | "conflict.continue"
             | "conflict.abort"
+            | "history.file"
+            | "blame.file"
+            | "stash.create"
+            | "stash.list"
+            | "stash.apply"
+            | "stash.pop"
+            | "stash.drop"
             | "tag.create"
             | "tag.delete"
             | "tag.checkout"
