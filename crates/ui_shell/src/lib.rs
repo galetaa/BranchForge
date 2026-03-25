@@ -165,11 +165,18 @@ pub fn render_diagnostics_panel(store: &StateStore) -> String {
         )
     });
     let rebase_session = store.snapshot().rebase.session.as_ref().map(|session| {
-        let step = match (session.current_step, session.total_steps) {
-            (Some(current), Some(total)) => format!("{current}/{total}"),
-            _ => "<unknown>".to_string(),
-        };
-        format!("active={} step={step}", session.active)
+        format!(
+            "active={} step={}/{}",
+            session.active,
+            session
+                .current_step
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "?".to_string()),
+            session
+                .total_steps
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "?".to_string())
+        )
     });
 
     format!(
@@ -185,17 +192,23 @@ pub fn render_diagnostics_panel(store: &StateStore) -> String {
 }
 
 pub fn render_merge_dialog_preview(source_ref: &str, target_ref: &str, mode: &str) -> String {
+    let impact = match mode {
+        "ff" | "fast-forward" => "fast-forward only, aborts if history diverged",
+        "no-ff" => "creates merge commit and preserves branch topology",
+        "squash" => "squashes incoming changes without merge commit",
+        _ => "unknown merge mode",
+    };
     format!(
-        "Merge dialog\nsource: {source_ref}\ntarget: {target_ref}\nmode: {mode}\nsafety: review ahead/behind and conflict route before execute\n"
+        "Merge dialog\nsource: {source_ref}\ntarget: {target_ref}\nmode: {mode}\nimpact: {impact}\nsafety: verify branch selection before continue\n"
     )
 }
 
 pub fn render_reset_dialog_preview(mode: &str, target: &str) -> String {
     let impact = match mode {
-        "soft" => "moves HEAD only; index and worktree stay intact",
-        "mixed" => "moves HEAD and resets index; worktree changes remain",
-        "hard" => "moves HEAD, resets index and drops worktree changes",
-        _ => "unknown mode",
+        "soft" => "moves HEAD only and keeps index/worktree",
+        "mixed" => "moves HEAD and unstages index changes",
+        "hard" => "moves HEAD and drops worktree changes",
+        _ => "unknown reset mode",
     };
     let danger = if mode == "hard" {
         "danger: destructive operation, explicit confirm required"

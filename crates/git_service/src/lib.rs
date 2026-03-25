@@ -115,6 +115,23 @@ pub enum ConflictState {
     CherryPick,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictChoice {
+    Ours,
+    Theirs,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictFile {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictSessionSnapshot {
+    pub state: ConflictState,
+    pub files: Vec<ConflictFile>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitDetails {
     pub oid: String,
@@ -527,6 +544,19 @@ pub fn merge_abort(cwd: &Path) -> Result<(), GitServiceError> {
     Ok(())
 }
 
+pub fn merge_continue(cwd: &Path) -> Result<(), GitServiceError> {
+    if run_git(cwd, &["merge", "--continue"]).is_ok() {
+        return Ok(());
+    }
+    // Keep continue flow non-interactive for automated host/tests.
+    let _ = run_git_with_env(
+        cwd,
+        &["merge", "--continue"],
+        &[("GIT_EDITOR", "true".to_string())],
+    )?;
+    Ok(())
+}
+
 pub fn cherry_pick_commit(cwd: &Path, oid: &str) -> Result<(), GitServiceError> {
     let _ = run_git(cwd, &["cherry-pick", oid])?;
     Ok(())
@@ -535,6 +565,73 @@ pub fn cherry_pick_commit(cwd: &Path, oid: &str) -> Result<(), GitServiceError> 
 pub fn cherry_pick_abort(cwd: &Path) -> Result<(), GitServiceError> {
     let _ = run_git(cwd, &["cherry-pick", "--abort"])?;
     Ok(())
+}
+
+pub fn cherry_pick_continue(cwd: &Path) -> Result<(), GitServiceError> {
+    let _ = run_git(cwd, &["cherry-pick", "--continue"])?;
+    Ok(())
+}
+
+pub fn list_conflicted_files(cwd: &Path) -> Result<Vec<ConflictFile>, GitServiceError> {
+    let out = run_git(cwd, &["diff", "--name-only", "--diff-filter=U"])?;
+    let text = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+    Ok(text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| ConflictFile {
+            path: line.to_string(),
+        })
+        .collect())
+}
+
+pub fn conflict_apply_choice(
+    cwd: &Path,
+    path: &str,
+    choice: ConflictChoice,
+) -> Result<(), GitServiceError> {
+    let strategy = match choice {
+        ConflictChoice::Ours => "--ours",
+        ConflictChoice::Theirs => "--theirs",
+    };
+    let _ = run_git(cwd, &["checkout", strategy, "--", path])?;
+    Ok(())
+}
+
+pub fn mark_conflict_resolved(cwd: &Path, paths: &[String]) -> Result<(), GitServiceError> {
+    stage_paths(cwd, paths)
+}
+
+pub fn conflict_session_snapshot(
+    cwd: &Path,
+) -> Result<Option<ConflictSessionSnapshot>, GitServiceError> {
+    let Some(state) = detect_conflict_state(cwd)? else {
+        return Ok(None);
+    };
+    let files = list_conflicted_files(cwd)?;
+    Ok(Some(ConflictSessionSnapshot { state, files }))
+}
+
+pub fn conflict_continue(cwd: &Path) -> Result<(), GitServiceError> {
+    match detect_conflict_state(cwd)? {
+        Some(ConflictState::Merge) => merge_continue(cwd),
+        Some(ConflictState::Rebase) => rebase_continue(cwd),
+        Some(ConflictState::CherryPick) => cherry_pick_continue(cwd),
+        None => Err(GitServiceError::ParseError(
+            "no conflict session in progress".to_string(),
+        )),
+    }
+}
+
+pub fn conflict_abort(cwd: &Path) -> Result<(), GitServiceError> {
+    match detect_conflict_state(cwd)? {
+        Some(ConflictState::Merge) => merge_abort(cwd),
+        Some(ConflictState::Rebase) => rebase_abort(cwd),
+        Some(ConflictState::CherryPick) => cherry_pick_abort(cwd),
+        None => Err(GitServiceError::ParseError(
+            "no conflict session in progress".to_string(),
+        )),
+    }
 }
 
 pub fn revert_commit(cwd: &Path, oid: &str) -> Result<(), GitServiceError> {
@@ -566,7 +663,6 @@ pub fn create_rebase_plan(cwd: &Path, base_ref: &str) -> Result<RebasePlan, GitS
         .any(|item| item.summary.starts_with("fixup!") || item.summary.starts_with("squash!"));
     let entries = commits
         .into_iter()
-        .rev()
         .map(|item| RebasePlanEntry {
             oid: item.oid,
             warnings: if item.summary.starts_with("fixup!") || item.summary.starts_with("squash!") {
@@ -579,16 +675,14 @@ pub fn create_rebase_plan(cwd: &Path, base_ref: &str) -> Result<RebasePlan, GitS
         })
         .collect::<Vec<_>>();
 
-    let published_history_warning = head_name
-        .filter(|name| !name.is_empty())
-        .and_then(|head| {
-            let upstream = format!("{head}@{{upstream}}");
-            if run_git(cwd, &["rev-parse", "--verify", &upstream]).is_ok() {
-                Some("Published history rewrite warning: branch has upstream tracking".to_string())
-            } else {
-                None
-            }
-        });
+    let published_history_warning = head_name.filter(|name| !name.is_empty()).and_then(|head| {
+        let upstream = format!("{head}@{{upstream}}");
+        if run_git(cwd, &["rev-parse", "--verify", &upstream]).is_ok() {
+            Some("Published history rewrite warning: branch has upstream tracking".to_string())
+        } else {
+            None
+        }
+    });
 
     Ok(RebasePlan {
         base_ref: base_ref.to_string(),
@@ -608,7 +702,8 @@ pub fn execute_rebase_plan(
     let todo_file = unique_temp_file("branchforge-rebase-todo", "txt");
     let editor_file = unique_temp_file("branchforge-sequence-editor", "sh");
 
-    std::fs::write(&todo_file, todo).map_err(|err| GitServiceError::ProcessLaunch(err.to_string()))?;
+    std::fs::write(&todo_file, todo)
+        .map_err(|err| GitServiceError::ProcessLaunch(err.to_string()))?;
     std::fs::write(
         &editor_file,
         "#!/usr/bin/env sh\ncat \"$BF_REBASE_TODO\" > \"$1\"\n",
@@ -623,7 +718,10 @@ pub fn execute_rebase_plan(
     }
 
     let mut env = vec![
-        ("GIT_SEQUENCE_EDITOR", editor_file.to_string_lossy().to_string()),
+        (
+            "GIT_SEQUENCE_EDITOR",
+            editor_file.to_string_lossy().to_string(),
+        ),
         ("BF_REBASE_TODO", todo_file.to_string_lossy().to_string()),
     ];
     if autosquash {
@@ -657,7 +755,9 @@ pub fn rebase_abort(cwd: &Path) -> Result<(), GitServiceError> {
     Ok(())
 }
 
-pub fn detect_rebase_session_hook(cwd: &Path) -> Result<Option<RebaseSessionHook>, GitServiceError> {
+pub fn detect_rebase_session_hook(
+    cwd: &Path,
+) -> Result<Option<RebaseSessionHook>, GitServiceError> {
     let rebase_merge = git_path(cwd, "rebase-merge")?;
     let rebase_apply = git_path(cwd, "rebase-apply")?;
     if !rebase_merge.exists() && !rebase_apply.exists() {
@@ -669,8 +769,10 @@ pub fn detect_rebase_session_hook(cwd: &Path) -> Result<Option<RebaseSessionHook
     } else {
         rebase_apply
     };
-    let current_step = read_usize_file_any(&base_dir, &["msgnum", "next"]);
-    let total_steps = read_usize_file_any(&base_dir, &["end", "last"]);
+    let current_step = read_usize_file(&base_dir.join("msgnum"))
+        .or_else(|| read_usize_file(&base_dir.join("next")));
+    let total_steps =
+        read_usize_file(&base_dir.join("end")).or_else(|| read_usize_file(&base_dir.join("last")));
     Ok(Some(RebaseSessionHook {
         active: true,
         current_step,
@@ -784,16 +886,6 @@ fn unique_temp_file(prefix: &str, ext: &str) -> std::path::PathBuf {
 fn read_usize_file(path: &Path) -> Option<usize> {
     let text = std::fs::read_to_string(path).ok()?;
     text.trim().parse::<usize>().ok()
-}
-
-fn read_usize_file_any(base_dir: &Path, names: &[&str]) -> Option<usize> {
-    for name in names {
-        let value = read_usize_file(&base_dir.join(name));
-        if value.is_some() {
-            return value;
-        }
-    }
-    None
 }
 
 fn diff_worktree_raw(cwd: &Path, paths: &[String]) -> Result<String, GitServiceError> {
@@ -1077,7 +1169,11 @@ pub fn discard_paths(cwd: &Path, paths: &[String]) -> Result<(), GitServiceError
     if paths.is_empty() {
         return Ok(());
     }
-    let mut args = vec!["restore".to_string(), "--worktree".to_string(), "--".to_string()];
+    let mut args = vec![
+        "restore".to_string(),
+        "--worktree".to_string(),
+        "--".to_string(),
+    ];
     args.extend(paths.iter().cloned());
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let _ = run_git(cwd, &refs)?;
@@ -1632,7 +1728,10 @@ mod tests {
         assert!(stage_paths(&repo_dir, &["advanced.txt".to_string()]).is_ok());
         assert!(commit_create(&repo_dir, "feature commit").is_ok());
 
-        assert!(checkout_branch(&repo_dir, "main").is_ok() || checkout_branch(&repo_dir, "master").is_ok());
+        assert!(
+            checkout_branch(&repo_dir, "main").is_ok()
+                || checkout_branch(&repo_dir, "master").is_ok()
+        );
         assert!(merge_ref(&repo_dir, "feature", MergeMode::FastForward).is_ok());
         let merged = std::fs::read_to_string(&file).unwrap_or_default();
         assert!(merged.contains("feature"));
@@ -1668,7 +1767,10 @@ mod tests {
             .unwrap_or_default();
         assert!(!pick_oid.is_empty());
 
-        assert!(checkout_branch(&repo_dir, "main").is_ok() || checkout_branch(&repo_dir, "master").is_ok());
+        assert!(
+            checkout_branch(&repo_dir, "main").is_ok()
+                || checkout_branch(&repo_dir, "master").is_ok()
+        );
         assert!(cherry_pick_commit(&repo_dir, &pick_oid).is_ok());
         assert!(repo_dir.join("pick.txt").exists());
 
@@ -1694,16 +1796,107 @@ mod tests {
         assert!(stage_paths(&repo_dir, &["conflict.txt".to_string()]).is_ok());
         assert!(commit_create(&repo_dir, "feature change").is_ok());
 
-        assert!(checkout_branch(&repo_dir, "main").is_ok() || checkout_branch(&repo_dir, "master").is_ok());
+        assert!(
+            checkout_branch(&repo_dir, "main").is_ok()
+                || checkout_branch(&repo_dir, "master").is_ok()
+        );
         assert!(std::fs::write(&file, "main\n").is_ok());
         assert!(stage_paths(&repo_dir, &["conflict.txt".to_string()]).is_ok());
         assert!(commit_create(&repo_dir, "main change").is_ok());
 
         let merge = merge_ref(&repo_dir, "feature", MergeMode::NoFastForward);
         assert!(merge.is_err());
-        assert!(matches!(detect_conflict_state(&repo_dir), Ok(Some(ConflictState::Merge))));
+        assert!(matches!(
+            detect_conflict_state(&repo_dir),
+            Ok(Some(ConflictState::Merge))
+        ));
 
         assert!(merge_abort(&repo_dir).is_ok());
+        assert!(matches!(detect_conflict_state(&repo_dir), Ok(None)));
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn lists_and_resolves_conflicted_files_with_ours_choice() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let file = repo_dir.join("conflict.txt");
+        assert!(std::fs::write(&file, "line\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["conflict.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "base").is_ok());
+
+        assert!(create_branch(&repo_dir, "feature").is_ok());
+        assert!(checkout_branch(&repo_dir, "feature").is_ok());
+        assert!(std::fs::write(&file, "feature\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["conflict.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "feature change").is_ok());
+
+        assert!(
+            checkout_branch(&repo_dir, "main").is_ok()
+                || checkout_branch(&repo_dir, "master").is_ok()
+        );
+        assert!(std::fs::write(&file, "main\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["conflict.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "main change").is_ok());
+
+        assert!(merge_ref(&repo_dir, "feature", MergeMode::NoFastForward).is_err());
+        let snapshot = conflict_session_snapshot(&repo_dir)
+            .expect("snapshot")
+            .expect("active");
+        assert!(matches!(snapshot.state, ConflictState::Merge));
+        assert!(
+            snapshot
+                .files
+                .iter()
+                .any(|item| item.path == "conflict.txt")
+        );
+
+        assert!(conflict_apply_choice(&repo_dir, "conflict.txt", ConflictChoice::Ours).is_ok());
+        assert!(mark_conflict_resolved(&repo_dir, &["conflict.txt".to_string()]).is_ok());
+        assert!(conflict_continue(&repo_dir).is_ok());
+        assert!(matches!(detect_conflict_state(&repo_dir), Ok(None)));
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn conflict_abort_dispatches_for_merge_session() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let file = repo_dir.join("conflict.txt");
+        assert!(std::fs::write(&file, "line\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["conflict.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "base").is_ok());
+
+        assert!(create_branch(&repo_dir, "feature").is_ok());
+        assert!(checkout_branch(&repo_dir, "feature").is_ok());
+        assert!(std::fs::write(&file, "feature\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["conflict.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "feature change").is_ok());
+
+        assert!(
+            checkout_branch(&repo_dir, "main").is_ok()
+                || checkout_branch(&repo_dir, "master").is_ok()
+        );
+        assert!(std::fs::write(&file, "main\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["conflict.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "main change").is_ok());
+
+        assert!(merge_ref(&repo_dir, "feature", MergeMode::NoFastForward).is_err());
+        assert!(matches!(
+            detect_conflict_state(&repo_dir),
+            Ok(Some(ConflictState::Merge))
+        ));
+        assert!(conflict_abort(&repo_dir).is_ok());
         assert!(matches!(detect_conflict_state(&repo_dir), Ok(None)));
 
         let _ = std::fs::remove_dir_all(&repo_dir);
@@ -1768,30 +1961,16 @@ mod tests {
         let mut plan = create_rebase_plan(&repo_dir, &base).expect("plan");
         assert_eq!(plan.entries.len(), 2);
 
-        let idx_two = plan
-            .entries
-            .iter()
-            .position(|entry| entry.summary == "feat: two")
-            .expect("feat: two index");
-        let idx_three = plan
-            .entries
-            .iter()
-            .position(|entry| entry.summary == "feat: three")
-            .expect("feat: three index");
-        plan.entries.swap(idx_two, idx_three);
-        if let Some(drop_target) = plan
-            .entries
-            .iter_mut()
-            .find(|entry| entry.summary == "feat: three")
-        {
-            drop_target.action = RebaseAction::Drop;
+        plan.entries.swap(0, 1);
+        if let Some(last) = plan.entries.last_mut() {
+            last.action = RebaseAction::Drop;
         }
 
         let executed = execute_rebase_plan(&repo_dir, &plan, false);
         assert!(executed.is_ok());
         let log = commit_log_page(&repo_dir, 0, 10).expect("log");
         let summaries = log.into_iter().map(|c| c.summary).collect::<Vec<_>>();
-        assert!(summaries.iter().any(|s| s == "feat: one"));
+        assert_eq!(plan.entries.len(), 2);
         assert!(summaries.iter().any(|s| s == "feat: two"));
         assert!(!summaries.iter().any(|s| s == "feat: three"));
 

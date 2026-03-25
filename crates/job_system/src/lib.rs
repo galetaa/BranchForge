@@ -585,8 +585,7 @@ pub fn execute_job_op(
             ensure_no_conflicts(cwd, "rebase.plan.create")?;
             let base_ref = request.paths.first().map(String::as_str).ok_or_else(|| {
                 JobExecutionError::InvalidInput {
-                    message: "rebase.plan.create requires base ref in request.paths[0]"
-                        .to_string(),
+                    message: "rebase.plan.create requires base ref in request.paths[0]".to_string(),
                 }
             })?;
             let plan = git_service::create_rebase_plan(cwd, base_ref)?;
@@ -612,7 +611,8 @@ pub fn execute_job_op(
                 .first()
                 .map(|v| v == "autosquash")
                 .unwrap_or(false);
-            match git_service::execute_rebase_plan(cwd, &map_rebase_plan_to_git(&plan), autosquash) {
+            match git_service::execute_rebase_plan(cwd, &map_rebase_plan_to_git(&plan), autosquash)
+            {
                 Ok(()) => {
                     sync_rebase_session_state(cwd, store)?;
                     if store.snapshot().rebase.session.is_none() {
@@ -662,6 +662,88 @@ pub fn execute_job_op(
             git_service::rebase_abort(cwd)?;
             sync_rebase_session_state(cwd, store)?;
             store.clear_rebase_plan();
+            refresh_after_advanced_op(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "conflict.list" => {
+            let conflicts = git_service::list_conflicted_files(cwd)?;
+            refresh_repo_and_status(cwd, store)?;
+            store.update_selected_paths(conflicts.into_iter().map(|item| item.path).collect());
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "conflict.resolve.ours" => {
+            let path = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "conflict.resolve.ours requires path in request.paths[0]".to_string(),
+                }
+            })?;
+            git_service::conflict_apply_choice(cwd, path, git_service::ConflictChoice::Ours)?;
+            refresh_status(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "conflict.resolve.theirs" => {
+            let path = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "conflict.resolve.theirs requires path in request.paths[0]"
+                        .to_string(),
+                }
+            })?;
+            git_service::conflict_apply_choice(cwd, path, git_service::ConflictChoice::Theirs)?;
+            refresh_status(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "conflict.mark_resolved" => {
+            if request.paths.is_empty() {
+                return Err(JobExecutionError::InvalidInput {
+                    message: "conflict.mark_resolved requires at least one path".to_string(),
+                });
+            }
+            git_service::mark_conflict_resolved(cwd, &request.paths)?;
+            refresh_status(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "conflict.continue" => match git_service::conflict_continue(cwd) {
+            Ok(()) => {
+                sync_rebase_session_state(cwd, store)?;
+                if store.snapshot().rebase.session.is_none() {
+                    refresh_after_advanced_op(cwd, store)?;
+                } else {
+                    refresh_repo_and_status(cwd, store)?;
+                }
+                Ok(JobExecutionResult {
+                    op: request.op.clone(),
+                    success: true,
+                    state_version: store.snapshot().version,
+                })
+            }
+            Err(err) => {
+                let _ = refresh_repo_and_status(cwd, store);
+                Err(JobExecutionError::from(err))
+            }
+        },
+        "conflict.abort" => {
+            git_service::conflict_abort(cwd)?;
+            sync_rebase_session_state(cwd, store)?;
             refresh_after_advanced_op(cwd, store)?;
             Ok(JobExecutionResult {
                 op: request.op.clone(),
@@ -1034,7 +1116,12 @@ fn sync_rebase_session_state(cwd: &Path, store: &mut StateStore) -> Result<(), J
             store.update_rebase_session(RebaseSessionSnapshot {
                 active: hook.active,
                 repo_root,
-                base_ref: store.snapshot().rebase.plan.as_ref().map(|plan| plan.base_ref.clone()),
+                base_ref: store
+                    .snapshot()
+                    .rebase
+                    .plan
+                    .as_ref()
+                    .map(|plan| plan.base_ref.clone()),
                 current_step: hook.current_step,
                 total_steps: hook.total_steps,
                 blocking_conflict: matches!(git_service::detect_conflict_state(cwd), Ok(Some(_))),
@@ -1252,6 +1339,8 @@ fn is_session_op(op: &str) -> bool {
             | "rebase.continue"
             | "rebase.skip"
             | "rebase.abort"
+            | "conflict.continue"
+            | "conflict.abort"
     )
 }
 
@@ -1283,6 +1372,12 @@ fn is_journaled_op(op: &str) -> bool {
             | "rebase.continue"
             | "rebase.skip"
             | "rebase.abort"
+            | "conflict.list"
+            | "conflict.resolve.ours"
+            | "conflict.resolve.theirs"
+            | "conflict.mark_resolved"
+            | "conflict.continue"
+            | "conflict.abort"
             | "tag.create"
             | "tag.delete"
             | "tag.checkout"
@@ -1972,6 +2067,109 @@ mod tests {
             &mut store,
         );
         assert!(commit_result.is_err());
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn conflict_flow_merge_list_resolve_mark_and_continue() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let file = repo_dir.join("conflict.txt");
+        assert!(std::fs::write(&file, "line\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["conflict.txt".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "base").is_ok());
+
+        assert!(git_service::create_branch(&repo_dir, "feature").is_ok());
+        assert!(git_service::checkout_branch(&repo_dir, "feature").is_ok());
+        assert!(std::fs::write(&file, "feature\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["conflict.txt".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "feature change").is_ok());
+
+        assert!(
+            git_service::checkout_branch(&repo_dir, "main").is_ok()
+                || git_service::checkout_branch(&repo_dir, "master").is_ok()
+        );
+        assert!(std::fs::write(&file, "main\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["conflict.txt".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "main change").is_ok());
+        assert!(
+            git_service::merge_ref(&repo_dir, "feature", git_service::MergeMode::NoFastForward)
+                .is_err()
+        );
+
+        let mut store = StateStore::new();
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "conflict.list".to_string(),
+                    lock: JobLock::Read,
+                    paths: Vec::new(),
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert!(
+            store
+                .snapshot()
+                .selection
+                .selected_paths
+                .iter()
+                .any(|path| path == "conflict.txt")
+        );
+
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "conflict.resolve.ours".to_string(),
+                    lock: JobLock::IndexWrite,
+                    paths: vec!["conflict.txt".to_string()],
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "conflict.mark_resolved".to_string(),
+                    lock: JobLock::IndexWrite,
+                    paths: vec!["conflict.txt".to_string()],
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+
+        let continued = execute_job_op(
+            &repo_dir,
+            &JobRequest {
+                op: "conflict.continue".to_string(),
+                lock: JobLock::RefsWrite,
+                paths: Vec::new(),
+                job_id: None,
+            },
+            &mut store,
+        );
+        assert!(continued.is_ok());
+        assert!(matches!(
+            git_service::detect_conflict_state(&repo_dir),
+            Ok(None)
+        ));
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }

@@ -472,7 +472,11 @@ impl StateStore {
         self.bump_version();
     }
 
-    pub fn set_journal_session_state(&mut self, entry_id: u64, session_state: OperationSessionState) {
+    pub fn set_journal_session_state(
+        &mut self,
+        entry_id: u64,
+        session_state: OperationSessionState,
+    ) {
         if let Some(entry) = self
             .snapshot
             .journal
@@ -905,7 +909,10 @@ mod tests {
         for idx in 0..(JOURNAL_RETENTION_LIMIT + 10) {
             let _ = store.append_journal_entry(None, format!("op.{idx}"), idx as u64);
         }
-        assert_eq!(store.snapshot().journal.entries.len(), JOURNAL_RETENTION_LIMIT);
+        assert_eq!(
+            store.snapshot().journal.entries.len(),
+            JOURNAL_RETENTION_LIMIT
+        );
         let first = store
             .snapshot()
             .journal
@@ -920,7 +927,12 @@ mod tests {
     fn journal_persists_and_restores_from_file() {
         let mut store = StateStore::new();
         let entry_id = store.append_journal_entry(Some(7), "tag.delete".to_string(), 100);
-        store.finish_journal_entry(entry_id, JournalStatus::Failed, 200, Some("boom".to_string()));
+        store.finish_journal_entry(
+            entry_id,
+            JournalStatus::Failed,
+            200,
+            Some("boom".to_string()),
+        );
 
         let path = std::env::temp_dir().join("branchforge-journal-state-store-test.json");
         let write = store.persist_journal(&path);

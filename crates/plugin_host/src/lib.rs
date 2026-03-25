@@ -1164,6 +1164,70 @@ pub fn branches_registration_payload() -> PluginRegister {
                 ConfirmPolicy::OnDanger,
             ),
             spec(
+                "conflict.list",
+                "List Conflicts",
+                Some("repo.is_open"),
+                Some(DangerLevel::Low),
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "conflict.resolve.ours",
+                "Resolve Conflict (Ours)",
+                Some("repo.is_open"),
+                Some(DangerLevel::Medium),
+                ActionEffects::mutating_worktree(),
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "conflict.resolve.theirs",
+                "Resolve Conflict (Theirs)",
+                Some("repo.is_open"),
+                Some(DangerLevel::Medium),
+                ActionEffects::mutating_worktree(),
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "conflict.mark_resolved",
+                "Mark Conflict Resolved",
+                Some("repo.is_open"),
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_index: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "conflict.continue",
+                "Continue Conflict Session",
+                Some("repo.is_open"),
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_refs: true,
+                    writes_index: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "conflict.abort",
+                "Abort Conflict Session",
+                Some("repo.is_open"),
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_refs: true,
+                    writes_index: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
                 "reset.soft",
                 "Reset --soft",
                 Some("repo.is_open"),
@@ -1912,7 +1976,12 @@ mod tests {
                 .iter()
                 .any(|a| a.action_id == "rebase.plan.create")
         );
-        assert!(payload.actions.iter().any(|a| a.action_id == "rebase.execute"));
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "rebase.execute")
+        );
         assert!(
             payload
                 .actions
@@ -1920,13 +1989,13 @@ mod tests {
                 .any(|a| a.action_id == "rebase.continue")
         );
         assert!(payload.actions.iter().any(|a| a.action_id == "rebase.skip"));
-        assert!(payload.actions.iter().any(|a| a.action_id == "rebase.abort"));
         assert!(
             payload
                 .actions
                 .iter()
-                .any(|a| a.action_id == "merge.abort")
+                .any(|a| a.action_id == "rebase.abort")
         );
+        assert!(payload.actions.iter().any(|a| a.action_id == "merge.abort"));
         assert!(payload.actions.iter().any(|a| a.action_id == "reset.soft"));
         assert!(payload.actions.iter().any(|a| a.action_id == "reset.mixed"));
         assert!(payload.actions.iter().any(|a| a.action_id == "reset.hard"));
@@ -1938,14 +2007,24 @@ mod tests {
         let payload = tags_registration_payload();
         assert!(payload.actions.iter().any(|a| a.action_id == "tag.create"));
         assert!(payload.actions.iter().any(|a| a.action_id == "tag.delete"));
-        assert!(payload.actions.iter().any(|a| a.action_id == "tag.checkout"));
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "tag.checkout")
+        );
         assert!(payload.views.iter().any(|v| v.view_id == "tags.panel"));
     }
 
     #[test]
     fn compare_registration_payload_contains_view_and_actions() {
         let payload = compare_registration_payload();
-        assert!(payload.actions.iter().any(|a| a.action_id == "compare.refs"));
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "compare.refs")
+        );
         assert!(payload.views.iter().any(|v| v.view_id == "compare.panel"));
     }
 
@@ -1958,7 +2037,12 @@ mod tests {
                 .iter()
                 .any(|a| a.action_id == "diagnostics.journal_summary")
         );
-        assert!(payload.views.iter().any(|v| v.view_id == "diagnostics.panel"));
+        assert!(
+            payload
+                .views
+                .iter()
+                .any(|v| v.view_id == "diagnostics.panel")
+        );
     }
 
     #[test]
