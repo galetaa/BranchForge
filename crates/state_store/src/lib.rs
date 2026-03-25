@@ -293,6 +293,7 @@ pub struct StateStore {
 }
 
 const JOURNAL_RETENTION_LIMIT: usize = 200;
+const COMMIT_CACHE_LIMIT: usize = 256;
 
 impl Default for StateStore {
     fn default() -> Self {
@@ -524,6 +525,13 @@ impl StateStore {
         self.snapshot
             .commit_cache
             .insert(details.oid.clone(), details);
+        while self.snapshot.commit_cache.len() > COMMIT_CACHE_LIMIT {
+            if let Some(key) = self.snapshot.commit_cache.keys().next().cloned() {
+                self.snapshot.commit_cache.remove(&key);
+            } else {
+                break;
+            }
+        }
         self.bump_version();
     }
 
@@ -1026,6 +1034,20 @@ mod tests {
         );
         store.clear_compare();
         assert!(store.snapshot().compare.base_ref.is_none());
+    }
+
+    #[test]
+    fn commit_cache_is_bounded() {
+        let mut store = StateStore::new();
+        for idx in 0..(COMMIT_CACHE_LIMIT + 20) {
+            store.update_commit_details(CommitDetails {
+                oid: format!("oid-{idx}"),
+                author: "Dev".to_string(),
+                time: "now".to_string(),
+                message: format!("msg-{idx}"),
+            });
+        }
+        assert!(store.snapshot().commit_cache.len() <= COMMIT_CACHE_LIMIT);
     }
 
     #[test]

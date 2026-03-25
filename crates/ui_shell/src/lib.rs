@@ -160,6 +160,27 @@ pub fn render_diagnostics_panel(store: &StateStore) -> String {
         .find(|entry| matches!(entry.status, state_store::JournalStatus::Failed))
         .and_then(|entry| entry.error.clone())
         .unwrap_or_else(|| "<none>".to_string());
+    let durations = entries
+        .iter()
+        .filter_map(|entry| match (entry.started_at_ms, entry.finished_at_ms) {
+            (start, Some(end)) if end >= start => Some((entry.op.as_str(), end - start)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let avg_duration_ms = if durations.is_empty() {
+        0
+    } else {
+        durations.iter().map(|(_, ms)| *ms).sum::<u64>() / durations.len() as u64
+    };
+    let slowest = durations
+        .iter()
+        .max_by_key(|(_, ms)| *ms)
+        .map(|(op, ms)| format!("{op} ({ms}ms)"))
+        .unwrap_or_else(|| "<none>".to_string());
+    let actionable_blockers = entries
+        .iter()
+        .filter(|entry| matches!(entry.status, state_store::JournalStatus::Failed))
+        .count();
     let rebase_plan = store.snapshot().rebase.plan.as_ref().map(|plan| {
         format!(
             "base={} commits={} autosquash={}",
@@ -182,12 +203,15 @@ pub fn render_diagnostics_panel(store: &StateStore) -> String {
     });
 
     format!(
-        "Diagnostics Panel\nJournal entries: {}\nRunning: {}\nSucceeded: {}\nFailed: {}\nLast error: {}\nRebase plan: {}\nRebase session: {}\n",
+        "Diagnostics Panel\nJournal entries: {}\nRunning: {}\nSucceeded: {}\nFailed: {}\nLast error: {}\nAvg duration(ms): {}\nSlowest op: {}\nActionable blockers: {}\nRebase plan: {}\nRebase session: {}\n",
         entries.len(),
         started,
         succeeded,
         failed,
         last_error,
+        avg_duration_ms,
+        slowest,
+        actionable_blockers,
         rebase_plan.unwrap_or_else(|| "<none>".to_string()),
         rebase_session.unwrap_or_else(|| "<none>".to_string())
     )
@@ -567,6 +591,39 @@ mod tests {
         let rendered = render_diagnostics_panel(&store);
         assert!(rendered.contains("Rebase plan: base=main commits=2 autosquash=true"));
         assert!(rendered.contains("Rebase session: active=true step=1/2"));
+    }
+
+    #[test]
+    fn diagnostics_panel_shows_performance_aggregates() {
+        let mut store = StateStore::new();
+        let entry_id = store.append_journal_entry(None, "history.search".to_string(), 100);
+        store.finish_journal_entry(entry_id, state_store::JournalStatus::Succeeded, 160, None);
+        let entry_id = store.append_journal_entry(None, "diff.worktree".to_string(), 200);
+        store.finish_journal_entry(entry_id, state_store::JournalStatus::Failed, 320, None);
+
+        let rendered = render_diagnostics_panel(&store);
+        assert!(rendered.contains("Avg duration(ms):"));
+        assert!(rendered.contains("Slowest op:"));
+        assert!(rendered.contains("Actionable blockers:"));
+    }
+
+    #[test]
+    fn status_panel_includes_keyboard_hints() {
+        let mut store = StateStore::new();
+        store.update_repo(plugin_api::RepoSnapshot {
+            root: "/tmp/demo".to_string(),
+            head: Some("main".to_string()),
+            conflict_state: None,
+        });
+        store.update_status(state_store::StatusSnapshot {
+            staged: vec!["src/lib.rs".to_string()],
+            unstaged: Vec::new(),
+            untracked: Vec::new(),
+        });
+
+        let rendered = render_status_panel(&store);
+        assert!(rendered.contains("Keyboard hints: c=commit, a=amend"));
+        assert!(rendered.contains("key:c"));
     }
 
     #[test]

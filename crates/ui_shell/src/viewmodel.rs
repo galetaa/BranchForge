@@ -33,6 +33,8 @@ pub enum ViewNode {
         label: String,
         on_action: String,
         enabled_when: bool,
+        shortcut_hint: Option<String>,
+        accessibility_label: Option<String>,
     },
 }
 
@@ -148,11 +150,18 @@ pub fn build_status_panel(snapshot: &StoreSnapshot) -> ViewNode {
         label: "Commit".to_string(),
         on_action: "commit.create".to_string(),
         enabled_when: !snapshot.status.staged.is_empty(),
+        shortcut_hint: Some("c".to_string()),
+        accessibility_label: Some("Commit staged changes".to_string()),
     });
     children.push(ViewNode::Button {
         label: "Amend".to_string(),
         on_action: "commit.amend".to_string(),
         enabled_when: snapshot.repo.is_some(),
+        shortcut_hint: Some("a".to_string()),
+        accessibility_label: Some("Amend latest commit".to_string()),
+    });
+    children.push(ViewNode::Text {
+        value: "Keyboard hints: c=commit, a=amend".to_string(),
     });
 
     ViewNode::Container { children }
@@ -201,21 +210,33 @@ pub fn build_history_panel(snapshot: &StoreSnapshot) -> ViewNode {
         label: "Load more".to_string(),
         on_action: "history.load_more".to_string(),
         enabled_when: snapshot.history_can_load_more(),
+        shortcut_hint: Some("l".to_string()),
+        accessibility_label: Some("Load next history page".to_string()),
     });
     children.push(ViewNode::Button {
         label: "Show commit".to_string(),
         on_action: "history.select_commit".to_string(),
         enabled_when: snapshot.history_has_selection(),
+        shortcut_hint: Some("enter".to_string()),
+        accessibility_label: Some("Open selected commit details".to_string()),
     });
     children.push(ViewNode::Button {
         label: "Cherry-pick".to_string(),
         on_action: "cherry_pick.commit".to_string(),
         enabled_when: snapshot.history_has_selection(),
+        shortcut_hint: Some("p".to_string()),
+        accessibility_label: Some("Cherry-pick selected commit".to_string()),
     });
     children.push(ViewNode::Button {
         label: "Revert".to_string(),
         on_action: "revert.commit".to_string(),
         enabled_when: snapshot.history_has_selection(),
+        shortcut_hint: Some("r".to_string()),
+        accessibility_label: Some("Revert selected commit".to_string()),
+    });
+    children.push(ViewNode::Text {
+        value: "Keyboard hints: l=load more, enter=show commit, p=cherry-pick, r=revert"
+            .to_string(),
     });
 
     ViewNode::Container { children }
@@ -377,26 +398,36 @@ pub fn build_branches_panel(snapshot: &StoreSnapshot) -> ViewNode {
         label: "Create Rebase Plan".to_string(),
         on_action: "rebase.plan.create".to_string(),
         enabled_when: snapshot.repo.is_some(),
+        shortcut_hint: None,
+        accessibility_label: Some("Create interactive rebase plan".to_string()),
     });
     children.push(ViewNode::Button {
         label: "Execute Rebase".to_string(),
         on_action: "rebase.execute".to_string(),
         enabled_when: snapshot.rebase.plan.is_some(),
+        shortcut_hint: None,
+        accessibility_label: Some("Execute rebase plan".to_string()),
     });
     children.push(ViewNode::Button {
         label: "Continue Rebase".to_string(),
         on_action: "rebase.continue".to_string(),
         enabled_when: snapshot.rebase.session.is_some(),
+        shortcut_hint: None,
+        accessibility_label: Some("Continue active rebase".to_string()),
     });
     children.push(ViewNode::Button {
         label: "Skip Rebase Commit".to_string(),
         on_action: "rebase.skip".to_string(),
         enabled_when: snapshot.rebase.session.is_some(),
+        shortcut_hint: None,
+        accessibility_label: Some("Skip current commit in rebase".to_string()),
     });
     children.push(ViewNode::Button {
         label: "Abort Rebase".to_string(),
         on_action: "rebase.abort".to_string(),
         enabled_when: snapshot.rebase.session.is_some(),
+        shortcut_hint: None,
+        accessibility_label: Some("Abort active rebase".to_string()),
     });
 
     if !has_branches {
@@ -502,9 +533,21 @@ fn render_into(node: &ViewNode, snapshot: &StoreSnapshot, level: usize, out: &mu
             label,
             on_action,
             enabled_when,
+            shortcut_hint,
+            accessibility_label,
         } => {
             let state = if *enabled_when { "enabled" } else { "disabled" };
-            out.push_str(&format!("{indent}[{label}] {state} -> {on_action}\n"));
+            let shortcut = shortcut_hint
+                .as_ref()
+                .map(|value| format!(" key:{value}"))
+                .unwrap_or_default();
+            let a11y = accessibility_label
+                .as_ref()
+                .map(|value| format!(" a11y:{value}"))
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "{indent}[{label}] {state} -> {on_action}{shortcut}{a11y}\n"
+            ));
         }
     }
 }
