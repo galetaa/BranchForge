@@ -37,4 +37,3 @@ fn main() {
 
     println!("{} -> {}", hello.method, register.method);
 }
-

@@ -55,9 +55,12 @@ fn next_correlation_id() -> String {
 
 pub fn translate_job_error(error: &JobExecutionError) -> UserFacingError {
     match error {
-        JobExecutionError::InvalidInput { message } => {
-            UserFacingError::with_category("Invalid input", message, None, ErrorCategory::Validation)
-        }
+        JobExecutionError::InvalidInput { message } => UserFacingError::with_category(
+            "Invalid input",
+            message,
+            None,
+            ErrorCategory::Validation,
+        ),
         JobExecutionError::UnsupportedOp { op } => UserFacingError::with_category(
             "Unsupported operation",
             &format!("Operation `{op}` is not supported yet."),

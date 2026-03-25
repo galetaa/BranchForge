@@ -62,6 +62,16 @@ pub fn build_status_panel(snapshot: &StoreSnapshot) -> ViewNode {
             format!("Operation in progress: {label}")
         })
     });
+    let recovery_prompt = snapshot.repo.as_ref().and_then(|repo| {
+        repo.conflict_state.as_ref().map(|state| {
+            let label = match state {
+                plugin_api::ConflictState::Merge => "merge",
+                plugin_api::ConflictState::Rebase => "rebase",
+                plugin_api::ConflictState::CherryPick => "cherry-pick",
+            };
+            format!("Recovery prompt: unfinished {label} detected (continue or abort).")
+        })
+    });
     let running_ops = snapshot
         .journal
         .entries
@@ -84,21 +94,16 @@ pub fn build_status_panel(snapshot: &StoreSnapshot) -> ViewNode {
             let detail = entry.error.as_deref().unwrap_or("unknown error");
             format!("Operation error: {}: {}", entry.op, detail)
         });
-    let session_badge = snapshot
-        .journal
-        .entries
-        .iter()
-        .rev()
-        .find_map(|entry| {
-            let session_id = entry.session_id?;
-            let state = match entry.session_state.as_ref() {
-                Some(state_store::OperationSessionState::Running) => "running",
-                Some(state_store::OperationSessionState::Succeeded) => "succeeded",
-                Some(state_store::OperationSessionState::Failed) => "failed",
-                None => "unknown",
-            };
-            Some(format!("Session #{session_id}: {} ({state})", entry.op))
-        });
+    let session_badge = snapshot.journal.entries.iter().rev().find_map(|entry| {
+        let session_id = entry.session_id?;
+        let state = match entry.session_state.as_ref() {
+            Some(state_store::OperationSessionState::Running) => "running",
+            Some(state_store::OperationSessionState::Succeeded) => "succeeded",
+            Some(state_store::OperationSessionState::Failed) => "failed",
+            None => "unknown",
+        };
+        Some(format!("Session #{session_id}: {} ({state})", entry.op))
+    });
 
     let mut children = vec![
         ViewNode::Text {
@@ -126,6 +131,9 @@ pub fn build_status_panel(snapshot: &StoreSnapshot) -> ViewNode {
     }
     if let Some(banner) = operation_banner {
         children.push(ViewNode::Text { value: banner });
+    }
+    if let Some(prompt) = recovery_prompt {
+        children.push(ViewNode::Text { value: prompt });
     }
     if let Some(loading) = loading_line {
         children.push(ViewNode::Text { value: loading });
@@ -216,7 +224,6 @@ pub fn build_history_panel(snapshot: &StoreSnapshot) -> ViewNode {
 pub fn build_branches_panel(snapshot: &StoreSnapshot) -> ViewNode {
     let has_branches = !snapshot.branches.branches.is_empty();
     let has_tags = !snapshot.tags.tags.is_empty();
-    let header = "Branches Panel".to_string();
     let compare_line = match (
         snapshot.compare.base_ref.as_deref(),
         snapshot.compare.head_ref.as_deref(),
@@ -234,31 +241,31 @@ pub fn build_branches_panel(snapshot: &StoreSnapshot) -> ViewNode {
             format!("Operation in progress: {label}")
         })
     });
-    let conflict_route = snapshot.repo.as_ref().and_then(|repo| match repo.conflict_state {
-        Some(plugin_api::ConflictState::Merge) => {
-            Some("Conflict route: resolve conflicts or run merge.abort".to_string())
-        }
-        Some(plugin_api::ConflictState::CherryPick) => {
-            Some("Conflict route: resolve conflicts or run cherry_pick.abort".to_string())
-        }
-        _ => None,
-    });
-    let session_badge = snapshot
-        .journal
-        .entries
-        .iter()
-        .rev()
-        .find_map(|entry| {
-            let session_id = entry.session_id?;
-            let state = match entry.session_state.as_ref() {
-                Some(state_store::OperationSessionState::Running) => "running",
-                Some(state_store::OperationSessionState::Succeeded) => "succeeded",
-                Some(state_store::OperationSessionState::Failed) => "failed",
-                None => "unknown",
-            };
-            Some(format!("Session #{session_id}: {} ({state})", entry.op))
+    let conflict_route = snapshot
+        .repo
+        .as_ref()
+        .and_then(|repo| match repo.conflict_state {
+            Some(plugin_api::ConflictState::Merge) => {
+                Some("Conflict route: resolve conflicts or run merge.abort".to_string())
+            }
+            Some(plugin_api::ConflictState::Rebase) => {
+                Some("Conflict route: resolve conflicts or run rebase.abort".to_string())
+            }
+            Some(plugin_api::ConflictState::CherryPick) => {
+                Some("Conflict route: resolve conflicts or run cherry_pick.abort".to_string())
+            }
+            _ => None,
         });
-
+    let session_badge = snapshot.journal.entries.iter().rev().find_map(|entry| {
+        let session_id = entry.session_id?;
+        let state = match entry.session_state.as_ref() {
+            Some(state_store::OperationSessionState::Running) => "running",
+            Some(state_store::OperationSessionState::Succeeded) => "succeeded",
+            Some(state_store::OperationSessionState::Failed) => "failed",
+            None => "unknown",
+        };
+        Some(format!("Session #{session_id}: {} ({state})", entry.op))
+    });
     let current_branch = snapshot
         .branches
         .branches
@@ -269,7 +276,9 @@ pub fn build_branches_panel(snapshot: &StoreSnapshot) -> ViewNode {
         .unwrap_or("<unknown>");
 
     let mut children = vec![
-        ViewNode::Text { value: header },
+        ViewNode::Text {
+            value: "Branches Panel".to_string(),
+        },
         ViewNode::Text {
             value: format!("Current branch: {current_branch}"),
         },
@@ -280,6 +289,7 @@ pub fn build_branches_panel(snapshot: &StoreSnapshot) -> ViewNode {
             title: "tags".to_string(),
         },
     ];
+
     if let Some(line) = compare_line {
         children.push(ViewNode::Text { value: line });
         children.push(ViewNode::Text {
@@ -305,6 +315,7 @@ pub fn build_branches_panel(snapshot: &StoreSnapshot) -> ViewNode {
             });
         }
     }
+
     if let Some(banner) = operation_banner {
         children.push(ViewNode::Text { value: banner });
     }
@@ -314,6 +325,15 @@ pub fn build_branches_panel(snapshot: &StoreSnapshot) -> ViewNode {
     if let Some(session) = session_badge {
         children.push(ViewNode::Text { value: session });
     }
+
+    children.push(ViewNode::Text {
+        value: "Merge safety: ensure clean worktree before merge/cherry-pick/rebase.".to_string(),
+    });
+    children.push(ViewNode::Text {
+        value: "Reset safety: reset --hard is destructive and requires explicit confirm"
+            .to_string(),
+    });
+
     if let Some(plan) = snapshot.rebase.plan.as_ref() {
         children.push(ViewNode::Text {
             value: format!(
@@ -332,30 +352,27 @@ pub fn build_branches_panel(snapshot: &StoreSnapshot) -> ViewNode {
             });
         }
     }
-    if let Some(rebase_session) = snapshot.rebase.session.as_ref() {
-        let step = match (rebase_session.current_step, rebase_session.total_steps) {
-            (Some(current), Some(total)) => format!("{current}/{total}"),
-            _ => "<unknown>".to_string(),
-        };
+
+    if let Some(session) = snapshot.rebase.session.as_ref() {
+        let step = session
+            .current_step
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "?".to_string());
+        let total = session
+            .total_steps
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "?".to_string());
         children.push(ViewNode::Text {
-            value: format!("Rebase session: active={} step={step}", rebase_session.active),
+            value: format!(
+                "Rebase session: active={} step={step}/{total}",
+                session.active
+            ),
         });
         children.push(ViewNode::Text {
             value: "Rebase controls: continue / skip / abort".to_string(),
         });
     }
-    children.push(ViewNode::Text {
-        value: "Merge safety: choose ff/no-ff/squash and review conflict route before execute"
-            .to_string(),
-    });
-    children.push(ViewNode::Text {
-        value:
-            "Reset safety: soft keeps index/worktree, mixed resets index, hard drops worktree changes"
-                .to_string(),
-    });
-    children.push(ViewNode::Text {
-        value: "Danger copy: reset --hard is destructive and requires explicit confirm".to_string(),
-    });
+
     children.push(ViewNode::Button {
         label: "Create Rebase Plan".to_string(),
         on_action: "rebase.plan.create".to_string(),
@@ -407,7 +424,7 @@ fn render_into(node: &ViewNode, snapshot: &StoreSnapshot, level: usize, out: &mu
     match node {
         ViewNode::Container { children } => {
             for child in children {
-                render_into(child, snapshot, level, out);
+                render_into(child, snapshot, level + 1, out);
             }
         }
         ViewNode::Text { value } => {
@@ -419,17 +436,23 @@ fn render_into(node: &ViewNode, snapshot: &StoreSnapshot, level: usize, out: &mu
                 ItemsRef::Unstaged => &snapshot.status.unstaged,
                 ItemsRef::Untracked => &snapshot.status.untracked,
             };
-            out.push_str(&format!("{indent}{title}: {}\n", items.join(", ")));
+            let list = items.join(", ");
+            out.push_str(&format!("{indent}{title}: {list}\n"));
         }
         ViewNode::HistoryList { title } => {
-            let selected = snapshot.selection.selected_commit_oid.as_deref();
             let list = snapshot
                 .history
                 .commits
                 .iter()
                 .map(|commit| {
                     let short = commit.oid.chars().take(7).collect::<String>();
-                    let marker = if Some(commit.oid.as_str()) == selected {
+                    let marker = if snapshot
+                        .selection
+                        .selected_commit_oid
+                        .as_deref()
+                        .map(|selected| selected == commit.oid)
+                        .unwrap_or(false)
+                    {
                         "*"
                     } else {
                         " "
@@ -551,6 +574,35 @@ mod tests {
     }
 
     #[test]
+    fn status_panel_shows_recovery_prompt_when_conflict_active() {
+        let snapshot = StoreSnapshot {
+            repo: Some(plugin_api::RepoSnapshot {
+                root: "./demo".to_string(),
+                head: Some("main".to_string()),
+                conflict_state: Some(plugin_api::ConflictState::Merge),
+            }),
+            status: StatusSnapshot::default(),
+            selection: SelectionState::default(),
+            history: state_store::HistoryState::default(),
+            commit_cache: std::collections::HashMap::new(),
+            diff: state_store::DiffState::default(),
+            compare: state_store::CompareState::default(),
+            branches: state_store::BranchesState::default(),
+            tags: state_store::TagsState::default(),
+            commit_message: state_store::CommitMessageState::default(),
+            rebase: state_store::RebaseState::default(),
+            journal: state_store::OperationJournalState::default(),
+            active_view: None,
+            plugins: Vec::new(),
+            version: 1,
+        };
+
+        let panel = build_status_panel(&snapshot);
+        let rendered = render(&panel, &snapshot);
+        assert!(rendered.contains("Recovery prompt: unfinished merge detected"));
+    }
+
+    #[test]
     fn shows_loading_and_operation_error_from_journal() {
         let snapshot = StoreSnapshot {
             repo: None,
@@ -579,7 +631,9 @@ mod tests {
                         finished_at_ms: None,
                         error: None,
                         session_id: Some(10),
-                        session_kind: Some(state_store::OperationSessionKind::AdvancedBranchOperation),
+                        session_kind: Some(
+                            state_store::OperationSessionKind::AdvancedBranchOperation,
+                        ),
                         session_state: Some(state_store::OperationSessionState::Running),
                         pre_refs: None,
                         post_refs: None,

@@ -1,6 +1,6 @@
 use plugin_api::{
-    ActionEffects, ActionSpec, ConfirmPolicy, DangerLevel, PluginHello, PluginRegister,
-    RpcRequest, ViewSpec,
+    ActionEffects, ActionSpec, ConfirmPolicy, DangerLevel, PluginHello, PluginRegister, RpcRequest,
+    ViewSpec,
 };
 
 fn spec(

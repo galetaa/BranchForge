@@ -160,7 +160,11 @@ fn cherry_pick_and_merge_abort_flow_work_end_to_end() {
     );
     assert!(merge.is_err());
     assert!(matches!(
-        store.snapshot().repo.as_ref().and_then(|repo| repo.conflict_state.clone()),
+        store
+            .snapshot()
+            .repo
+            .as_ref()
+            .and_then(|repo| repo.conflict_state.clone()),
         Some(plugin_api::ConflictState::Merge)
     ));
 
@@ -215,5 +219,3 @@ fn cherry_pick_and_merge_abort_flow_work_end_to_end() {
 
     let _ = std::fs::remove_dir_all(&repo_dir);
 }
-
-
