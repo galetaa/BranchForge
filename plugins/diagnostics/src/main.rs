@@ -12,15 +12,26 @@ fn build_hello_request() -> RpcRequest {
 
 fn build_register_request() -> RpcRequest {
     PluginRegister {
-        actions: vec![ActionSpec {
-            action_id: "diagnostics.journal_summary".to_string(),
-            title: "Show Journal Summary".to_string(),
-            when: Some("repo.is_open".to_string()),
-            params_schema: None,
-            danger: None,
-            effects: ActionEffects::read_only(),
-            confirm_policy: ConfirmPolicy::Never,
-        }],
+        actions: vec![
+            ActionSpec {
+                action_id: "diagnostics.journal_summary".to_string(),
+                title: "Show Journal Summary".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+                danger: None,
+                effects: ActionEffects::read_only(),
+                confirm_policy: ConfirmPolicy::Never,
+            },
+            ActionSpec {
+                action_id: "diagnostics.repo_capabilities".to_string(),
+                title: "Show Repo Capabilities".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+                danger: None,
+                effects: ActionEffects::read_only(),
+                confirm_policy: ConfirmPolicy::Never,
+            },
+        ],
         views: vec![ViewSpec {
             view_id: "diagnostics.panel".to_string(),
             title: "Diagnostics".to_string(),
