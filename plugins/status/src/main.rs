@@ -122,6 +122,60 @@ fn build_register_request() -> RpcRequest {
                 },
                 ConfirmPolicy::Always,
             ),
+            spec(
+                "stash.create",
+                "Create Stash",
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_index: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "stash.list",
+                "List Stashes",
+                None,
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "stash.apply",
+                "Apply Stash",
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_index: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "stash.pop",
+                "Pop Stash",
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_index: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "stash.drop",
+                "Drop Stash",
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_refs: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
         ],
         views: vec![ViewSpec {
             view_id: "status.panel".to_string(),

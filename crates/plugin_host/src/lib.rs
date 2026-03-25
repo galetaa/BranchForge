@@ -937,6 +937,65 @@ pub fn status_registration_payload() -> PluginRegister {
                 },
                 ConfirmPolicy::Always,
             ),
+            spec(
+                "stash.create",
+                "Create Stash",
+                Some("repo.is_open"),
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_index: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "stash.list",
+                "List Stashes",
+                Some("repo.is_open"),
+                None,
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "stash.apply",
+                "Apply Stash",
+                Some("repo.is_open"),
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_index: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "stash.pop",
+                "Pop Stash",
+                Some("repo.is_open"),
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_index: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "stash.drop",
+                "Drop Stash",
+                Some("repo.is_open"),
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_refs: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
         ],
         views: vec![plugin_api::ViewSpec {
             view_id: "status.panel".to_string(),
@@ -977,6 +1036,22 @@ pub fn history_registration_payload() -> PluginRegister {
             spec(
                 "history.clear_filter",
                 "Clear History Filter",
+                Some("repo.is_open"),
+                None,
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "history.file",
+                "File History",
+                Some("repo.is_open"),
+                None,
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "blame.file",
+                "Blame File",
                 Some("repo.is_open"),
                 None,
                 ActionEffects::read_only(),
@@ -1910,6 +1985,13 @@ mod tests {
                 .iter()
                 .any(|a| a.action_id == "file.discard_hunk")
         );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "stash.create")
+        );
+        assert!(payload.actions.iter().any(|a| a.action_id == "stash.list"));
         assert!(payload.views.iter().any(|v| v.view_id == "status.panel"));
     }
 
@@ -1934,6 +2016,13 @@ mod tests {
                 .iter()
                 .any(|a| a.action_id == "history.search")
         );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "history.file")
+        );
+        assert!(payload.actions.iter().any(|a| a.action_id == "blame.file"));
         assert!(
             payload
                 .actions

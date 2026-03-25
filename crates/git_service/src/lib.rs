@@ -45,6 +45,20 @@ pub struct CommitSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StashEntry {
+    pub reference: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlameLine {
+    pub line_no: usize,
+    pub oid: String,
+    pub author: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompareSummary {
     pub base_ref: String,
     pub head_ref: String,
@@ -367,18 +381,30 @@ pub fn commit_log_page_filtered(
     author: Option<&str>,
     text: Option<&str>,
 ) -> Result<Vec<CommitSummary>, GitServiceError> {
+    commit_log_page_filtered_with_hash_prefix(cwd, offset, limit, author, text, None)
+}
+
+pub fn commit_log_page_filtered_with_hash_prefix(
+    cwd: &Path,
+    offset: usize,
+    limit: usize,
+    author: Option<&str>,
+    text: Option<&str>,
+    hash_prefix: Option<&str>,
+) -> Result<Vec<CommitSummary>, GitServiceError> {
     let format = "--format=%H%x1f%an%x1f%ad%x1f%s";
-    let max_count = limit.to_string();
-    let skip = offset.to_string();
     let mut args = vec![
         "log".to_string(),
         "--date=iso-strict".to_string(),
         format.to_string(),
-        "--max-count".to_string(),
-        max_count,
-        "--skip".to_string(),
-        skip,
     ];
+
+    if hash_prefix.is_none() {
+        args.push("--max-count".to_string());
+        args.push(limit.to_string());
+        args.push("--skip".to_string());
+        args.push(offset.to_string());
+    }
     if let Some(author) = author {
         args.push(format!("--author={author}"));
     }
@@ -390,6 +416,7 @@ pub fn commit_log_page_filtered(
     let text = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
     let mut commits = Vec::new();
 
+    let mut all = Vec::new();
     for line in text.lines() {
         if line.trim().is_empty() {
             continue;
@@ -400,7 +427,7 @@ pub fn commit_log_page_filtered(
                 "invalid commit log line".to_string(),
             ));
         }
-        commits.push(CommitSummary {
+        all.push(CommitSummary {
             oid: parts[0].to_string(),
             author: parts[1].to_string(),
             time: parts[2].to_string(),
@@ -408,7 +435,169 @@ pub fn commit_log_page_filtered(
         });
     }
 
+    if let Some(prefix) = hash_prefix {
+        let filtered = all
+            .into_iter()
+            .filter(|item| item.oid.starts_with(prefix))
+            .skip(offset)
+            .take(limit)
+            .collect();
+        return Ok(filtered);
+    }
+
+    commits.extend(all);
+
     Ok(commits)
+}
+
+pub fn stash_create(cwd: &Path, message: Option<&str>) -> Result<(), GitServiceError> {
+    let mut args = vec!["stash", "push", "--include-untracked"];
+    if let Some(message) = message {
+        let trimmed = message.trim();
+        if !trimmed.is_empty() {
+            args.push("-m");
+            args.push(trimmed);
+        }
+    }
+    let _ = run_git(cwd, &args)?;
+    Ok(())
+}
+
+pub fn stash_list(cwd: &Path) -> Result<Vec<StashEntry>, GitServiceError> {
+    let out = run_git(cwd, &["stash", "list", "--format=%gd%x1f%gs"])?;
+    let text = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+    let mut entries = Vec::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut parts = line.splitn(2, '\x1f');
+        let reference = parts.next().unwrap_or_default().trim().to_string();
+        let message = parts.next().unwrap_or_default().trim().to_string();
+        if !reference.is_empty() {
+            entries.push(StashEntry { reference, message });
+        }
+    }
+    Ok(entries)
+}
+
+pub fn stash_apply(cwd: &Path, reference: &str) -> Result<(), GitServiceError> {
+    let _ = run_git(cwd, &["stash", "apply", reference])?;
+    Ok(())
+}
+
+pub fn stash_pop(cwd: &Path, reference: Option<&str>) -> Result<(), GitServiceError> {
+    match reference {
+        Some(reference) if !reference.trim().is_empty() => {
+            let _ = run_git(cwd, &["stash", "pop", reference])?;
+        }
+        _ => {
+            let _ = run_git(cwd, &["stash", "pop"])?;
+        }
+    }
+    Ok(())
+}
+
+pub fn stash_drop(cwd: &Path, reference: &str) -> Result<(), GitServiceError> {
+    let _ = run_git(cwd, &["stash", "drop", reference])?;
+    Ok(())
+}
+
+pub fn file_history_page(
+    cwd: &Path,
+    path: &str,
+    offset: usize,
+    limit: usize,
+) -> Result<Vec<CommitSummary>, GitServiceError> {
+    let format = "--format=%H%x1f%an%x1f%ad%x1f%s";
+    let out = run_git(
+        cwd,
+        &[
+            "log",
+            "--follow",
+            "--date=iso-strict",
+            format,
+            "--max-count",
+            &limit.to_string(),
+            "--skip",
+            &offset.to_string(),
+            "--",
+            path,
+        ],
+    )?;
+    let text = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+    let mut commits = Vec::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = line.split('\x1f').collect();
+        if parts.len() != 4 {
+            return Err(GitServiceError::ParseError(
+                "invalid file history log line".to_string(),
+            ));
+        }
+        commits.push(CommitSummary {
+            oid: parts[0].to_string(),
+            author: parts[1].to_string(),
+            time: parts[2].to_string(),
+            summary: parts[3].to_string(),
+        });
+    }
+    Ok(commits)
+}
+
+pub fn file_blame(
+    cwd: &Path,
+    path: &str,
+    rev: Option<&str>,
+) -> Result<Vec<BlameLine>, GitServiceError> {
+    let mut args = vec!["blame", "--line-porcelain"];
+    if let Some(rev) = rev
+        && !rev.trim().is_empty()
+    {
+        args.push(rev);
+    }
+    args.push("--");
+    args.push(path);
+    let out = run_git(cwd, &args)?;
+    let text = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+
+    let mut lines = Vec::new();
+    let mut current_oid = String::new();
+    let mut current_author = String::new();
+
+    for line in text.lines() {
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Some(content) = line.strip_prefix('\t') {
+            let line_no = lines.len() + 1;
+            lines.push(BlameLine {
+                line_no,
+                oid: current_oid.clone(),
+                author: current_author.clone(),
+                content: content.to_string(),
+            });
+            continue;
+        }
+
+        if let Some(author) = line.strip_prefix("author ") {
+            current_author = author.to_string();
+            continue;
+        }
+
+        let mut parts = line.split_whitespace();
+        if let Some(first) = parts.next()
+            && first.len() >= 8
+            && first.chars().all(|ch| ch.is_ascii_hexdigit())
+        {
+            current_oid = first.to_string();
+        }
+    }
+
+    Ok(lines)
 }
 
 pub fn commit_details(cwd: &Path, oid: &str) -> Result<CommitDetails, GitServiceError> {
@@ -1969,6 +2158,71 @@ mod tests {
             assert_eq!(plan.entries.len(), 1);
             assert!(plan.autosquash_aware);
         }
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn stash_create_list_apply_pop_drop_flow() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let file = repo_dir.join("stash.txt");
+        assert!(std::fs::write(&file, "base\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["stash.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "base").is_ok());
+
+        assert!(std::fs::write(&file, "work\n").is_ok());
+        assert!(stash_create(&repo_dir, Some("wip")).is_ok());
+        let list = stash_list(&repo_dir).expect("stash list");
+        assert!(!list.is_empty());
+
+        let reference = list[0].reference.clone();
+        assert!(stash_apply(&repo_dir, &reference).is_ok());
+        let applied = std::fs::read_to_string(&file).unwrap_or_default();
+        assert!(applied.contains("work"));
+
+        assert!(stash_drop(&repo_dir, &reference).is_ok());
+
+        assert!(std::fs::write(&file, "next\n").is_ok());
+        assert!(stash_create(&repo_dir, Some("next")).is_ok());
+        assert!(stash_pop(&repo_dir, None).is_ok());
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn file_history_and_blame_baseline() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let file = "tracked.txt".to_string();
+        assert!(std::fs::write(repo_dir.join(&file), "line\n").is_ok());
+        assert!(stage_paths(&repo_dir, std::slice::from_ref(&file)).is_ok());
+        assert!(commit_create(&repo_dir, "feat: tracked").is_ok());
+
+        assert!(std::fs::write(repo_dir.join(&file), "line\nnext\n").is_ok());
+        assert!(stage_paths(&repo_dir, std::slice::from_ref(&file)).is_ok());
+        assert!(commit_create(&repo_dir, "feat: tracked 2").is_ok());
+
+        let history = file_history_page(&repo_dir, &file, 0, 10).expect("file history");
+        assert!(history.len() >= 2);
+
+        let blame = file_blame(&repo_dir, &file, None).expect("blame");
+        assert!(blame.iter().any(|line| line.content.contains("line")));
+
+        let prefix = history[0].oid.chars().take(7).collect::<String>();
+        let filtered =
+            commit_log_page_filtered_with_hash_prefix(&repo_dir, 0, 10, None, None, Some(&prefix))
+                .expect("hash filter");
+        assert!(!filtered.is_empty());
+        assert!(filtered.iter().all(|item| item.oid.starts_with(&prefix)));
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }
