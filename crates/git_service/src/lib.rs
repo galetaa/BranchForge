@@ -34,6 +34,7 @@ pub struct RepoOpenResult {
     pub head: Option<String>,
     pub detached: bool,
     pub conflict_state: Option<ConflictState>,
+    pub capabilities: RepoCapabilities,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +57,28 @@ pub struct BlameLine {
     pub oid: String,
     pub author: String,
     pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RepoCapabilities {
+    pub is_linked_worktree: bool,
+    pub has_submodules: bool,
+    pub lfs_detected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeEntry {
+    pub path: String,
+    pub head: Option<String>,
+    pub branch: Option<String>,
+    pub bare: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubmoduleEntry {
+    pub path: String,
+    pub oid: String,
+    pub status: char,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -272,13 +295,161 @@ pub fn repo_open(cwd: &Path) -> Result<RepoOpenResult, GitServiceError> {
     let detached = head_raw.is_empty();
     let head = if detached { None } else { Some(head_raw) };
     let conflict_state = detect_conflict_state(cwd)?;
+    let capabilities = repo_capabilities(cwd)?;
 
     Ok(RepoOpenResult {
         root,
         head,
         detached,
         conflict_state,
+        capabilities,
     })
+}
+
+pub fn repo_capabilities(cwd: &Path) -> Result<RepoCapabilities, GitServiceError> {
+    let common = run_git(cwd, &["rev-parse", "--git-common-dir"])?;
+    let git_dir = run_git(cwd, &["rev-parse", "--git-dir"])?;
+    let common = String::from_utf8(common.stdout)
+        .map_err(|_| GitServiceError::Utf8Decode)?
+        .trim()
+        .to_string();
+    let git_dir = String::from_utf8(git_dir.stdout)
+        .map_err(|_| GitServiceError::Utf8Decode)?
+        .trim()
+        .to_string();
+
+    let submodules = list_submodules(cwd)?;
+    let lfs_detected = detect_lfs_baseline(cwd);
+
+    Ok(RepoCapabilities {
+        is_linked_worktree: common != git_dir,
+        has_submodules: !submodules.is_empty(),
+        lfs_detected,
+    })
+}
+
+pub fn list_worktrees(cwd: &Path) -> Result<Vec<WorktreeEntry>, GitServiceError> {
+    let out = run_git(cwd, &["worktree", "list", "--porcelain"])?;
+    let text = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+
+    let mut entries = Vec::new();
+    let mut current_path: Option<String> = None;
+    let mut current_head: Option<String> = None;
+    let mut current_branch: Option<String> = None;
+    let mut current_bare = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            if let Some(path) = current_path.take() {
+                entries.push(WorktreeEntry {
+                    path,
+                    head: current_head.take(),
+                    branch: current_branch.take(),
+                    bare: current_bare,
+                });
+            }
+            current_bare = false;
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("worktree ") {
+            current_path = Some(value.to_string());
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("HEAD ") {
+            current_head = Some(value.to_string());
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("branch ") {
+            current_branch = Some(value.to_string());
+            continue;
+        }
+        if trimmed == "bare" {
+            current_bare = true;
+        }
+    }
+
+    if let Some(path) = current_path.take() {
+        entries.push(WorktreeEntry {
+            path,
+            head: current_head.take(),
+            branch: current_branch.take(),
+            bare: current_bare,
+        });
+    }
+
+    Ok(entries)
+}
+
+pub fn worktree_add(cwd: &Path, path: &Path, branch: Option<&str>) -> Result<(), GitServiceError> {
+    let path = path
+        .to_str()
+        .ok_or_else(|| GitServiceError::ParseError("invalid worktree path".to_string()))?;
+    match branch {
+        Some(branch) if !branch.trim().is_empty() => {
+            let _ = run_git(cwd, &["worktree", "add", "-b", branch, path])?;
+        }
+        _ => {
+            let _ = run_git(cwd, &["worktree", "add", path])?;
+        }
+    }
+    Ok(())
+}
+
+pub fn worktree_remove(cwd: &Path, path: &Path, force: bool) -> Result<(), GitServiceError> {
+    let path = path
+        .to_str()
+        .ok_or_else(|| GitServiceError::ParseError("invalid worktree path".to_string()))?;
+    if force {
+        let _ = run_git(cwd, &["worktree", "remove", "--force", path])?;
+    } else {
+        let _ = run_git(cwd, &["worktree", "remove", path])?;
+    }
+    Ok(())
+}
+
+pub fn list_submodules(cwd: &Path) -> Result<Vec<SubmoduleEntry>, GitServiceError> {
+    let out = run_git(cwd, &["submodule", "status"])?;
+    let text = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+    let mut entries = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let status = trimmed.chars().next().unwrap_or(' ');
+        let rest = trimmed.trim_start_matches([' ', '-', '+', 'U']);
+        let mut parts = rest.split_whitespace();
+        let oid = parts.next().unwrap_or_default().to_string();
+        let path = parts.next().unwrap_or_default().to_string();
+        if !path.is_empty() {
+            entries.push(SubmoduleEntry { path, oid, status });
+        }
+    }
+    Ok(entries)
+}
+
+pub fn submodule_init_update(cwd: &Path, path: Option<&str>) -> Result<(), GitServiceError> {
+    match path {
+        Some(path) if !path.trim().is_empty() => {
+            let _ = run_git(cwd, &["submodule", "update", "--init", "--", path])?;
+        }
+        _ => {
+            let _ = run_git(cwd, &["submodule", "update", "--init", "--recursive"])?;
+        }
+    }
+    Ok(())
+}
+
+fn detect_lfs_baseline(cwd: &Path) -> bool {
+    if run_git(cwd, &["lfs", "version"]).is_ok() {
+        return true;
+    }
+    let attrs = cwd.join(".gitattributes");
+    std::fs::read_to_string(attrs)
+        .ok()
+        .map(|text| text.contains("filter=lfs"))
+        .unwrap_or(false)
 }
 
 pub fn detect_conflict_state(cwd: &Path) -> Result<Option<ConflictState>, GitServiceError> {

@@ -480,6 +480,140 @@ pub fn execute_job_op(
                 state_version: store.snapshot().version,
             })
         }
+        "worktree.list" => {
+            let entries = git_service::list_worktrees(cwd)?;
+            let text = entries
+                .into_iter()
+                .map(|entry| {
+                    let branch = entry.branch.unwrap_or_else(|| "<detached>".to_string());
+                    format!("{} [{}]", entry.path, branch)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            store.update_diff(build_diff_state(
+                DiffSource::Commit {
+                    oid: "worktree:list".to_string(),
+                },
+                text,
+                Vec::new(),
+            ));
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "worktree.create" => {
+            let path = request
+                .paths
+                .first()
+                .ok_or_else(|| JobExecutionError::InvalidInput {
+                    message: "worktree.create requires path in request.paths[0]".to_string(),
+                })?;
+            let branch = request.paths.get(1).map(String::as_str);
+            git_service::worktree_add(cwd, std::path::Path::new(path), branch)?;
+            refresh_repo_and_status(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "worktree.remove" => {
+            let path = request
+                .paths
+                .first()
+                .ok_or_else(|| JobExecutionError::InvalidInput {
+                    message: "worktree.remove requires path in request.paths[0]".to_string(),
+                })?;
+            let force = request.paths.get(1).map(|v| v == "force").unwrap_or(false);
+            git_service::worktree_remove(cwd, std::path::Path::new(path), force)?;
+            refresh_repo_and_status(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "worktree.open" => {
+            let path = request
+                .paths
+                .first()
+                .ok_or_else(|| JobExecutionError::InvalidInput {
+                    message: "worktree.open requires path in request.paths[0]".to_string(),
+                })?;
+            refresh_repo_and_status_for_path(std::path::Path::new(path), store)?;
+            refresh_refs(std::path::Path::new(path), store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "submodule.list" => {
+            let entries = git_service::list_submodules(cwd)?;
+            let text = entries
+                .into_iter()
+                .map(|entry| format!("{} {} {}", entry.status, entry.oid, entry.path))
+                .collect::<Vec<_>>()
+                .join("\n");
+            store.update_diff(build_diff_state(
+                DiffSource::Commit {
+                    oid: "submodule:list".to_string(),
+                },
+                text,
+                Vec::new(),
+            ));
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "submodule.init_update" => {
+            let path = request.paths.first().map(String::as_str);
+            git_service::submodule_init_update(cwd, path)?;
+            refresh_repo_and_status(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "submodule.open" => {
+            let path = request
+                .paths
+                .first()
+                .ok_or_else(|| JobExecutionError::InvalidInput {
+                    message: "submodule.open requires path in request.paths[0]".to_string(),
+                })?;
+            refresh_repo_and_status_for_path(&cwd.join(path), store)?;
+            refresh_refs(&cwd.join(path), store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "diagnostics.repo_capabilities" => {
+            let caps = git_service::repo_capabilities(cwd)?;
+            let text = format!(
+                "linked_worktree: {}\nhas_submodules: {}\nlfs_detected: {}",
+                caps.is_linked_worktree, caps.has_submodules, caps.lfs_detected
+            );
+            store.update_diff(build_diff_state(
+                DiffSource::Commit {
+                    oid: "repo:capabilities".to_string(),
+                },
+                text,
+                Vec::new(),
+            ));
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
         "stash.apply" => {
             let reference = request.paths.first().map(String::as_str).ok_or_else(|| {
                 JobExecutionError::InvalidInput {
@@ -1167,6 +1301,16 @@ fn refresh_repo_and_status(cwd: &Path, store: &mut StateStore) -> Result<(), Job
     Ok(())
 }
 
+fn refresh_repo_and_status_for_path(
+    repo_path: &Path,
+    store: &mut StateStore,
+) -> Result<(), JobExecutionError> {
+    let repo = git_service::repo_open(repo_path)?;
+    let status = git_service::status_refresh(repo_path)?;
+    apply_repo_open(store, &repo, &status);
+    Ok(())
+}
+
 fn refresh_refs(cwd: &Path, store: &mut StateStore) -> Result<(), JobExecutionError> {
     let branches = git_service::list_local_branches(cwd)?;
     let mapped = branches
@@ -1644,6 +1788,14 @@ fn is_journaled_op(op: &str) -> bool {
             | "stash.apply"
             | "stash.pop"
             | "stash.drop"
+            | "worktree.list"
+            | "worktree.create"
+            | "worktree.remove"
+            | "worktree.open"
+            | "submodule.list"
+            | "submodule.init_update"
+            | "submodule.open"
+            | "diagnostics.repo_capabilities"
             | "tag.create"
             | "tag.delete"
             | "tag.checkout"

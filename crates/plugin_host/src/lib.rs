@@ -824,14 +824,86 @@ fn spec(
 
 pub fn repo_manager_registration_payload() -> PluginRegister {
     PluginRegister {
-        actions: vec![spec(
-            "repo.open",
-            "Open Repository",
-            Some("always"),
-            None,
-            ActionEffects::read_only(),
-            ConfirmPolicy::Never,
-        )],
+        actions: vec![
+            spec(
+                "repo.open",
+                "Open Repository",
+                Some("always"),
+                None,
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "worktree.list",
+                "List Worktrees",
+                Some("repo.is_open"),
+                None,
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "worktree.create",
+                "Create Worktree",
+                Some("repo.is_open"),
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_refs: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "worktree.remove",
+                "Remove Worktree",
+                Some("repo.is_open"),
+                Some(DangerLevel::High),
+                ActionEffects {
+                    writes_refs: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::High,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::Always,
+            ),
+            spec(
+                "worktree.open",
+                "Open Worktree",
+                Some("repo.is_open"),
+                None,
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "submodule.list",
+                "List Submodules",
+                Some("repo.is_open"),
+                None,
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "submodule.init_update",
+                "Init/Update Submodule",
+                Some("repo.is_open"),
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "submodule.open",
+                "Open Submodule",
+                Some("repo.is_open"),
+                None,
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
+        ],
         views: Vec::new(),
     }
 }
@@ -1443,14 +1515,24 @@ pub fn compare_registration_payload() -> PluginRegister {
 
 pub fn diagnostics_registration_payload() -> PluginRegister {
     PluginRegister {
-        actions: vec![spec(
-            "diagnostics.journal_summary",
-            "Show Journal Summary",
-            Some("repo.is_open"),
-            None,
-            ActionEffects::read_only(),
-            ConfirmPolicy::Never,
-        )],
+        actions: vec![
+            spec(
+                "diagnostics.journal_summary",
+                "Show Journal Summary",
+                Some("repo.is_open"),
+                None,
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "diagnostics.repo_capabilities",
+                "Show Repo Capabilities",
+                Some("repo.is_open"),
+                None,
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
+        ],
         views: vec![plugin_api::ViewSpec {
             view_id: "diagnostics.panel".to_string(),
             title: "Diagnostics".to_string(),
@@ -1777,8 +1859,7 @@ mod tests {
         );
 
         let actions = session.list_actions();
-        assert_eq!(actions.len(), 1);
-        assert_eq!(actions[0].action_id, "repo.open");
+        assert!(actions.iter().any(|a| a.action_id == "repo.open"));
     }
 
     #[test]
@@ -2146,9 +2227,38 @@ mod tests {
         );
         assert!(
             payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "diagnostics.repo_capabilities")
+        );
+        assert!(
+            payload
                 .views
                 .iter()
                 .any(|v| v.view_id == "diagnostics.panel")
+        );
+    }
+
+    #[test]
+    fn repo_manager_payload_contains_advanced_repo_actions() {
+        let payload = repo_manager_registration_payload();
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "worktree.list")
+        );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "worktree.create")
+        );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "submodule.list")
         );
     }
 
