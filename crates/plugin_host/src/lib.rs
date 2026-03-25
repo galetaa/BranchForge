@@ -1,14 +1,191 @@
 use std::collections::HashMap;
 use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use plugin_api::{
     ActionContext, ActionEffects, ActionSpec, CodecError, ConfirmPolicy, DangerLevel, FrameCodec,
-    HelloAck, METHOD_HOST_ACTION_INVOKE, METHOD_PLUGIN_READY, PluginHello, PluginRegister,
-    RegisterAck, RpcMessage, RpcNotification, RpcRequest, RpcResponse,
+    HOST_PLUGIN_PROTOCOL_VERSION, HelloAck, METHOD_HOST_ACTION_INVOKE, METHOD_PLUGIN_READY,
+    PLUGIN_MANIFEST_VERSION_V1, PluginHello, PluginManifestV1, PluginRegister, RegisterAck,
+    RpcMessage, RpcNotification, RpcRequest, RpcResponse,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledPluginInfo {
+    pub manifest: PluginManifestV1,
+    pub enabled: bool,
+    pub install_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginManagerError {
+    Io(String),
+    InvalidManifest(String),
+    IncompatiblePlugin {
+        plugin_id: String,
+        required_protocol: String,
+        host_protocol: String,
+    },
+    AlreadyInstalled(String),
+    NotInstalled(String),
+}
+
+impl From<std::io::Error> for PluginManagerError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value.to_string())
+    }
+}
+
+pub fn install_local_plugin(
+    plugin_package_dir: &Path,
+    plugins_root: &Path,
+) -> Result<InstalledPluginInfo, PluginManagerError> {
+    let manifest = read_manifest(plugin_package_dir)?;
+    validate_manifest_compatibility(&manifest)?;
+
+    std::fs::create_dir_all(plugins_root)?;
+    let install_dir = plugins_root.join(&manifest.plugin_id);
+    if install_dir.exists() {
+        return Err(PluginManagerError::AlreadyInstalled(manifest.plugin_id));
+    }
+
+    copy_dir_recursive(plugin_package_dir, &install_dir)?;
+    write_enabled_state(&install_dir, true)?;
+
+    Ok(InstalledPluginInfo {
+        manifest,
+        enabled: true,
+        install_dir,
+    })
+}
+
+pub fn set_plugin_enabled(
+    plugins_root: &Path,
+    plugin_id: &str,
+    enabled: bool,
+) -> Result<InstalledPluginInfo, PluginManagerError> {
+    let install_dir = plugins_root.join(plugin_id);
+    if !install_dir.exists() {
+        return Err(PluginManagerError::NotInstalled(plugin_id.to_string()));
+    }
+    let manifest = read_manifest(&install_dir)?;
+    write_enabled_state(&install_dir, enabled)?;
+    Ok(InstalledPluginInfo {
+        manifest,
+        enabled,
+        install_dir,
+    })
+}
+
+pub fn remove_local_plugin(plugins_root: &Path, plugin_id: &str) -> Result<(), PluginManagerError> {
+    let install_dir = plugins_root.join(plugin_id);
+    if !install_dir.exists() {
+        return Err(PluginManagerError::NotInstalled(plugin_id.to_string()));
+    }
+    std::fs::remove_dir_all(install_dir)?;
+    Ok(())
+}
+
+pub fn list_installed_plugins(
+    plugins_root: &Path,
+) -> Result<Vec<InstalledPluginInfo>, PluginManagerError> {
+    if !plugins_root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut plugins = Vec::new();
+    for item in std::fs::read_dir(plugins_root)? {
+        let entry = item?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let manifest = match read_manifest(&path) {
+            Ok(manifest) => manifest,
+            Err(_) => continue,
+        };
+        let enabled = read_enabled_state(&path).unwrap_or(true);
+        plugins.push(InstalledPluginInfo {
+            manifest,
+            enabled,
+            install_dir: path,
+        });
+    }
+    plugins.sort_by(|a, b| a.manifest.plugin_id.cmp(&b.manifest.plugin_id));
+    Ok(plugins)
+}
+
+fn read_manifest(plugin_dir: &Path) -> Result<PluginManifestV1, PluginManagerError> {
+    let manifest_path = plugin_dir.join("plugin.json");
+    let raw = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| PluginManagerError::Io(format!("{}: {}", manifest_path.display(), e)))?;
+    let manifest: PluginManifestV1 = serde_json::from_str(&raw)
+        .map_err(|e| PluginManagerError::InvalidManifest(e.to_string()))?;
+
+    if manifest.manifest_version != PLUGIN_MANIFEST_VERSION_V1 {
+        return Err(PluginManagerError::InvalidManifest(
+            "manifest_version must be '1'".to_string(),
+        ));
+    }
+    if manifest.plugin_id.trim().is_empty() {
+        return Err(PluginManagerError::InvalidManifest(
+            "plugin_id cannot be empty".to_string(),
+        ));
+    }
+    if manifest.entrypoint.trim().is_empty() {
+        return Err(PluginManagerError::InvalidManifest(
+            "entrypoint cannot be empty".to_string(),
+        ));
+    }
+    let entrypoint = plugin_dir.join(&manifest.entrypoint);
+    if !entrypoint.exists() {
+        return Err(PluginManagerError::InvalidManifest(format!(
+            "entrypoint does not exist: {}",
+            entrypoint.display()
+        )));
+    }
+
+    Ok(manifest)
+}
+
+fn validate_manifest_compatibility(manifest: &PluginManifestV1) -> Result<(), PluginManagerError> {
+    if manifest.protocol_version != HOST_PLUGIN_PROTOCOL_VERSION {
+        return Err(PluginManagerError::IncompatiblePlugin {
+            plugin_id: manifest.plugin_id.clone(),
+            required_protocol: manifest.protocol_version.clone(),
+            host_protocol: HOST_PLUGIN_PROTOCOL_VERSION.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn write_enabled_state(install_dir: &Path, enabled: bool) -> Result<(), PluginManagerError> {
+    let state = serde_json::json!({"enabled": enabled});
+    std::fs::write(install_dir.join("state.json"), state.to_string())?;
+    Ok(())
+}
+
+fn read_enabled_state(install_dir: &Path) -> Option<bool> {
+    let raw = std::fs::read_to_string(install_dir.join("state.json")).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    value.get("enabled").and_then(|v| v.as_bool())
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), PluginManagerError> {
+    std::fs::create_dir_all(dst)?;
+    for item in std::fs::read_dir(src)? {
+        let entry = item?;
+        let path = entry.path();
+        let target = dst.join(entry.file_name());
+        if path.is_dir() {
+            copy_dir_recursive(&path, &target)?;
+        } else {
+            std::fs::copy(&path, &target)?;
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginRegistration {
@@ -2260,6 +2437,91 @@ mod tests {
                 .iter()
                 .any(|a| a.action_id == "submodule.list")
         );
+    }
+
+    #[test]
+    fn plugin_manager_install_enable_disable_remove_flow() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!("branchforge-plugin-mgr-{nanos}"));
+        let package_dir = root.join("pkg");
+        let plugins_root = root.join("installed");
+        assert!(std::fs::create_dir_all(&package_dir).is_ok());
+
+        let binary = package_dir.join("sample_external_plugin");
+        assert!(std::fs::write(&binary, "#!/usr/bin/env sh\nexit 0\n").is_ok());
+
+        let manifest = plugin_api::PluginManifestV1 {
+            manifest_version: plugin_api::PLUGIN_MANIFEST_VERSION_V1.to_string(),
+            plugin_id: "sample_external".to_string(),
+            version: "0.1.0".to_string(),
+            protocol_version: plugin_api::HOST_PLUGIN_PROTOCOL_VERSION.to_string(),
+            entrypoint: "sample_external_plugin".to_string(),
+            description: Some("Sample plugin".to_string()),
+            permissions: vec!["read_state".to_string()],
+        };
+        let raw = serde_json::to_string_pretty(&manifest).unwrap_or_else(|_| "{}".to_string());
+        assert!(std::fs::write(package_dir.join("plugin.json"), raw).is_ok());
+
+        let installed = install_local_plugin(&package_dir, &plugins_root);
+        assert!(installed.is_ok());
+        let installed = installed.expect("install");
+        assert!(installed.enabled);
+        assert_eq!(installed.manifest.plugin_id, "sample_external");
+
+        let disabled = set_plugin_enabled(&plugins_root, "sample_external", false);
+        assert!(disabled.is_ok());
+        let disabled = disabled.expect("disable");
+        assert!(!disabled.enabled);
+
+        let listed = list_installed_plugins(&plugins_root).expect("list");
+        assert_eq!(listed.len(), 1);
+        assert!(!listed[0].enabled);
+
+        let enabled = set_plugin_enabled(&plugins_root, "sample_external", true);
+        assert!(enabled.is_ok());
+        assert!(enabled.expect("enable").enabled);
+
+        assert!(remove_local_plugin(&plugins_root, "sample_external").is_ok());
+        let listed = list_installed_plugins(&plugins_root).expect("list");
+        assert!(listed.is_empty());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn plugin_manager_rejects_incompatible_manifest() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!("branchforge-plugin-mgr-bad-{nanos}"));
+        let package_dir = root.join("pkg");
+        let plugins_root = root.join("installed");
+        assert!(std::fs::create_dir_all(&package_dir).is_ok());
+
+        assert!(std::fs::write(package_dir.join("bin"), "binary").is_ok());
+        let manifest = plugin_api::PluginManifestV1 {
+            manifest_version: plugin_api::PLUGIN_MANIFEST_VERSION_V1.to_string(),
+            plugin_id: "bad_plugin".to_string(),
+            version: "0.1.0".to_string(),
+            protocol_version: "9.9".to_string(),
+            entrypoint: "bin".to_string(),
+            description: None,
+            permissions: Vec::new(),
+        };
+        let raw = serde_json::to_string_pretty(&manifest).unwrap_or_else(|_| "{}".to_string());
+        assert!(std::fs::write(package_dir.join("plugin.json"), raw).is_ok());
+
+        let installed = install_local_plugin(&package_dir, &plugins_root);
+        assert!(matches!(
+            installed,
+            Err(PluginManagerError::IncompatiblePlugin { .. })
+        ));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
