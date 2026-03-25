@@ -925,6 +925,18 @@ pub fn status_registration_payload() -> PluginRegister {
                 },
                 ConfirmPolicy::Always,
             ),
+            spec(
+                "file.discard_hunk",
+                "Discard Hunk",
+                Some("repo.is_open"),
+                Some(DangerLevel::High),
+                ActionEffects {
+                    writes_worktree: true,
+                    danger_level: DangerLevel::High,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::Always,
+            ),
         ],
         views: vec![plugin_api::ViewSpec {
             view_id: "status.panel".to_string(),
@@ -1891,6 +1903,12 @@ mod tests {
                 .actions
                 .iter()
                 .any(|a| a.action_id == "commit.amend")
+        );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "file.discard_hunk")
         );
         assert!(payload.views.iter().any(|v| v.view_id == "status.panel"));
     }

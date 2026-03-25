@@ -111,6 +111,17 @@ fn build_register_request() -> RpcRequest {
                 },
                 ConfirmPolicy::Always,
             ),
+            spec(
+                "file.discard_hunk",
+                "Discard Hunk",
+                Some(DangerLevel::High),
+                ActionEffects {
+                    writes_worktree: true,
+                    danger_level: DangerLevel::High,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::Always,
+            ),
         ],
         views: vec![ViewSpec {
             view_id: "status.panel".to_string(),

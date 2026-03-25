@@ -800,6 +800,16 @@ pub fn unstage_hunk(cwd: &Path, path: &str, hunk_index: usize) -> Result<(), Git
     apply_patch(cwd, &hunk.patch, true, true)
 }
 
+pub fn discard_hunk(cwd: &Path, path: &str, hunk_index: usize) -> Result<(), GitServiceError> {
+    let hunks =
+        diff_worktree_raw(cwd, &[path.to_string()]).map(|text| parse_unified_diff_hunks(&text))?;
+    let hunk = hunks
+        .iter()
+        .find(|item| item.file_path == path && item.hunk_index == hunk_index)
+        .ok_or_else(|| GitServiceError::ParseError("hunk not found".to_string()))?;
+    apply_patch(cwd, &hunk.patch, false, true)
+}
+
 fn apply_patch(
     cwd: &Path,
     patch: &str,
@@ -1705,6 +1715,35 @@ mod tests {
         if let Ok(output) = staged_after {
             assert!(output.text.trim().is_empty());
         }
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn discard_hunk_reverts_only_selected_hunk() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let file = repo_dir.join("discard_hunk.txt");
+        let mut lines = Vec::new();
+        for idx in 1..=20 {
+            lines.push(format!("line{idx}\n"));
+        }
+        assert!(std::fs::write(&file, lines.concat()).is_ok());
+        assert!(stage_paths(&repo_dir, &["discard_hunk.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "base").is_ok());
+
+        lines[0] = "line1-updated\n".to_string();
+        lines[19] = "line20-updated\n".to_string();
+        assert!(std::fs::write(&file, lines.concat()).is_ok());
+
+        assert!(discard_hunk(&repo_dir, "discard_hunk.txt", 0).is_ok());
+        let content = std::fs::read_to_string(&file).unwrap_or_default();
+        assert!(content.contains("line1\n"));
+        assert!(content.contains("line20-updated\n"));
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }
