@@ -12,6 +12,8 @@ pub const METHOD_HOST_ACTION_PREVIEW: &str = "host.action.preview";
 pub const METHOD_EVENT_REPO_OPENED: &str = "event.repo.opened";
 pub const METHOD_EVENT_STATE_UPDATED: &str = "event.state.updated";
 pub const METHOD_EVENT_JOB_FINISHED: &str = "event.job.finished";
+pub const HOST_PLUGIN_PROTOCOL_VERSION: &str = "0.1";
+pub const PLUGIN_MANIFEST_VERSION_V1: &str = "1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -266,6 +268,19 @@ pub struct RepoSnapshot {
     pub root: String,
     pub head: Option<String>,
     pub conflict_state: Option<ConflictState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginManifestV1 {
+    pub manifest_version: String,
+    pub plugin_id: String,
+    pub version: String,
+    pub protocol_version: String,
+    pub entrypoint: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub permissions: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
