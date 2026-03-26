@@ -76,6 +76,16 @@ pub fn render_branches_panel(store: &StateStore) -> String {
     viewmodel::render(&panel, store.snapshot())
 }
 
+pub fn render_tags_panel(store: &StateStore) -> String {
+    let panel = viewmodel::build_tags_panel(store.snapshot());
+    viewmodel::render(&panel, store.snapshot())
+}
+
+pub fn render_compare_panel(store: &StateStore) -> String {
+    let panel = viewmodel::build_compare_panel(store.snapshot());
+    viewmodel::render(&panel, store.snapshot())
+}
+
 pub fn render_diff_panel(store: &StateStore) -> String {
     let diff = &store.snapshot().diff;
     if diff.loading {
@@ -203,9 +213,81 @@ pub fn render_diagnostics_panel(store: &StateStore) -> String {
                 .unwrap_or_else(|| "?".to_string())
         )
     });
+    let runtime_plugin_health = if store.snapshot().plugins.is_empty() {
+        "<none>".to_string()
+    } else {
+        store
+            .snapshot()
+            .plugins
+            .iter()
+            .map(|status| match &status.health {
+                state_store::PluginHealth::Ready => format!("{}=ready", status.plugin_id),
+                state_store::PluginHealth::Unavailable { message } => {
+                    format!("{}=unavailable({message})", status.plugin_id)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let selected_plugin = store
+        .snapshot()
+        .selection
+        .selected_plugin_id
+        .as_deref()
+        .unwrap_or("<none>");
+    let installed_plugins = if store.snapshot().installed_plugins.is_empty() {
+        format!("Selected plugin: {selected_plugin}\nInstalled plugins: 0\n<empty>")
+    } else {
+        let mut lines = vec![
+            format!("Selected plugin: {selected_plugin}"),
+            format!(
+                "Installed plugins: {}",
+                store.snapshot().installed_plugins.len()
+            ),
+        ];
+        for plugin in &store.snapshot().installed_plugins {
+            let marker = if store.snapshot().selection.selected_plugin_id.as_deref()
+                == Some(plugin.plugin_id.as_str())
+            {
+                "*"
+            } else {
+                "-"
+            };
+            let enabled = if plugin.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            };
+            let permissions = if plugin.permissions.is_empty() {
+                "<none>".to_string()
+            } else {
+                plugin.permissions.join(", ")
+            };
+            lines.push(format!(
+                "{marker} {} v{} {} protocol={} perms={}",
+                plugin.plugin_id, plugin.version, enabled, plugin.protocol_version, permissions
+            ));
+            lines.push(format!(
+                "  desc: {}",
+                plugin.description.as_deref().unwrap_or("<none>")
+            ));
+            lines.push(format!("  dir: {}", plugin.install_dir));
+        }
+        lines.join("\n")
+    };
+    let plugin_controls = [
+        "Plugin controls:",
+        "- plugin.list",
+        "- plugin.install <package_dir>",
+        "- select plugin <id>",
+        "- run plugin.enable [plugin_id]",
+        "- run plugin.disable [plugin_id]",
+        "- run --confirm plugin.remove [plugin_id]",
+    ]
+    .join("\n");
 
     format!(
-        "Diagnostics Panel\nHost version: {}\nProtocol version: {}\nJournal entries: {}\nRunning: {}\nSucceeded: {}\nFailed: {}\nLast error: {}\nAvg duration(ms): {}\nSlowest op: {}\nActionable blockers: {}\nRebase plan: {}\nRebase session: {}\n",
+        "Diagnostics Panel\nHost version: {}\nProtocol version: {}\nJournal entries: {}\nRunning: {}\nSucceeded: {}\nFailed: {}\nLast error: {}\nAvg duration(ms): {}\nSlowest op: {}\nActionable blockers: {}\nRuntime plugin health: {}\nRebase plan: {}\nRebase session: {}\n{}\n{}\n",
         host_version,
         protocol_version,
         entries.len(),
@@ -216,8 +298,11 @@ pub fn render_diagnostics_panel(store: &StateStore) -> String {
         avg_duration_ms,
         slowest,
         actionable_blockers,
+        runtime_plugin_health,
         rebase_plan.unwrap_or_else(|| "<none>".to_string()),
-        rebase_session.unwrap_or_else(|| "<none>".to_string())
+        rebase_session.unwrap_or_else(|| "<none>".to_string()),
+        installed_plugins,
+        plugin_controls
     )
 }
 
@@ -270,8 +355,8 @@ pub fn render_window(store: &StateStore, palette_items: &[palette::PaletteItem])
             match active {
                 "history.panel" => render_history_panel(store),
                 "branches.panel" => render_branches_panel(store),
-                "tags.panel" => render_branches_panel(store),
-                "compare.panel" => render_branches_panel(store),
+                "tags.panel" => render_tags_panel(store),
+                "compare.panel" => render_compare_panel(store),
                 "diagnostics.panel" => render_diagnostics_panel(store),
                 "status.panel" => render_status_panel(store),
                 _ => {
@@ -453,6 +538,52 @@ mod tests {
     }
 
     #[test]
+    fn renders_tags_panel_when_active_view_set() {
+        let mut store = StateStore::new();
+        store.set_active_view(Some("tags.panel".to_string()));
+        store.update_repo(plugin_api::RepoSnapshot {
+            root: "/tmp/demo".to_string(),
+            head: Some("main".to_string()),
+            conflict_state: None,
+        });
+        store.update_tags(vec![state_store::TagInfo {
+            name: "v1.0.0".to_string(),
+        }]);
+
+        let rendered = render_window(&store, &palette::build_palette(&[], "", true));
+        assert!(rendered.contains("Tags Panel"));
+        assert!(rendered.contains("tags: v1.0.0"));
+    }
+
+    #[test]
+    fn renders_compare_panel_when_active_view_set() {
+        let mut store = StateStore::new();
+        store.set_active_view(Some("compare.panel".to_string()));
+        store.update_repo(plugin_api::RepoSnapshot {
+            root: "/tmp/demo".to_string(),
+            head: Some("main".to_string()),
+            conflict_state: None,
+        });
+        store.update_compare_summary(
+            "main".to_string(),
+            "feature".to_string(),
+            2,
+            1,
+            vec![state_store::CommitSummary {
+                oid: "abc1234".to_string(),
+                author: "Dev".to_string(),
+                time: "now".to_string(),
+                summary: "feat: compare".to_string(),
+            }],
+        );
+
+        let rendered = render_window(&store, &palette::build_palette(&[], "", true));
+        assert!(rendered.contains("Compare Panel"));
+        assert!(rendered.contains("Base ref: main"));
+        assert!(rendered.contains("Compare commits: abc1234 feat: compare"));
+    }
+
+    #[test]
     fn renders_plugin_warning_block() {
         let mut store = StateStore::new();
         store.update_plugin_status(
@@ -595,6 +726,7 @@ mod tests {
         let rendered = render_diagnostics_panel(&store);
         assert!(rendered.contains("Host version:"));
         assert!(rendered.contains("Protocol version:"));
+        assert!(rendered.contains("Runtime plugin health:"));
         assert!(rendered.contains("Rebase plan: base=main commits=2 autosquash=true"));
         assert!(rendered.contains("Rebase session: active=true step=1/2"));
     }
@@ -611,6 +743,33 @@ mod tests {
         assert!(rendered.contains("Avg duration(ms):"));
         assert!(rendered.contains("Slowest op:"));
         assert!(rendered.contains("Actionable blockers:"));
+    }
+
+    #[test]
+    fn diagnostics_panel_shows_installed_plugin_inventory() {
+        let mut store = StateStore::new();
+        store.update_plugin_status("status", state_store::PluginHealth::Ready);
+        store.update_selected_plugin(Some("status".to_string()));
+        store.update_installed_plugins(vec![state_store::InstalledPluginRecord {
+            plugin_id: "status".to_string(),
+            version: "0.1.0".to_string(),
+            protocol_version: plugin_api::HOST_PLUGIN_PROTOCOL_VERSION.to_string(),
+            enabled: true,
+            description: Some("status plugin".to_string()),
+            permissions: vec!["read_state".to_string()],
+            install_dir: "/tmp/plugins/status".to_string(),
+        }]);
+
+        let rendered = render_diagnostics_panel(&store);
+        assert!(rendered.contains("Runtime plugin health: status=ready"));
+        assert!(rendered.contains("Selected plugin: status"));
+        assert!(rendered.contains("Installed plugins: 1"));
+        assert!(rendered.contains("* status v0.1.0 enabled"));
+        assert!(rendered.contains("desc: status plugin"));
+        assert!(rendered.contains("dir: /tmp/plugins/status"));
+        assert!(rendered.contains("Plugin controls:"));
+        assert!(rendered.contains("select plugin <id>"));
+        assert!(rendered.contains("run --confirm plugin.remove [plugin_id]"));
     }
 
     #[test]
