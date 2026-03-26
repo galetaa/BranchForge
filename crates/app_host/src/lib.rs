@@ -15,8 +15,13 @@ use state_store::{
     StateEvent, StateStore, StatusSnapshot,
 };
 
+pub mod console_runner;
 pub mod errors;
 pub mod recent_repos;
+
+pub use console_runner::{
+    ConsoleRunnerConfig, ConsoleSessionOutput, run_console_app, run_console_session,
+};
 
 use errors::{UserFacingError, translate_job_error};
 use plugin_api::{ActionPreflightResult, ActionPreview};
@@ -67,6 +72,7 @@ pub fn run_ui_state_smoke() -> String {
         selected_paths: vec!["README.md".to_string()],
         selected_commit_oid: None,
         selected_branch: None,
+        selected_plugin_id: None,
     });
 
     ui_shell::render_status_panel(&store)
@@ -239,6 +245,7 @@ pub fn run_selection_event_smoke(selected_paths: Vec<String>) -> SelectionState 
         selected_paths,
         selected_commit_oid: None,
         selected_branch: None,
+        selected_plugin_id: None,
     });
     store.snapshot().selection.clone()
 }
@@ -358,6 +365,7 @@ pub fn run_status_stage_unstage_smoke(
         selected_paths: selected_files.clone(),
         selected_commit_oid: None,
         selected_branch: None,
+        selected_plugin_id: None,
     });
 
     let _ = execute_job_op(

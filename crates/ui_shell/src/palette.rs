@@ -29,23 +29,32 @@ pub fn build_palette(actions: &[ActionSpec], filter: &str, repo_open: bool) -> V
         .collect()
 }
 
-fn action_owner_plugin(action_id: &str) -> Option<&'static str> {
-    if action_id == "repo.open" {
+pub fn action_owner_plugin(action_id: &str) -> Option<&'static str> {
+    if action_id == "repo.open"
+        || action_id.starts_with("worktree.")
+        || action_id.starts_with("submodule.")
+    {
         return Some("repo_manager");
     }
     if action_id.starts_with("index.")
         || action_id.starts_with("commit.")
         || action_id.starts_with("file.")
+        || action_id.starts_with("stash.")
     {
         return Some("status");
     }
-    if action_id.starts_with("history.") {
+    if action_id.starts_with("history.")
+        || action_id.starts_with("blame.")
+        || action_id.starts_with("cherry_pick.")
+        || action_id.starts_with("revert.")
+    {
         return Some("history");
     }
     if action_id.starts_with("branch.")
         || action_id.starts_with("rebase.")
         || action_id.starts_with("merge.")
         || action_id.starts_with("reset.")
+        || action_id.starts_with("conflict.")
     {
         return Some("branches");
     }

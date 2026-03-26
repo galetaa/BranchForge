@@ -444,6 +444,114 @@ pub fn build_branches_panel(snapshot: &StoreSnapshot) -> ViewNode {
     ViewNode::Container { children }
 }
 
+pub fn build_tags_panel(snapshot: &StoreSnapshot) -> ViewNode {
+    let current_branch = snapshot
+        .repo
+        .as_ref()
+        .and_then(|repo| repo.head.as_deref())
+        .unwrap_or("<unknown>");
+    let selected_branch = snapshot
+        .selection
+        .selected_branch
+        .as_deref()
+        .unwrap_or("<none>");
+
+    let mut children = vec![
+        ViewNode::Text {
+            value: "Tags Panel".to_string(),
+        },
+        ViewNode::Text {
+            value: format!("Current branch: {current_branch}"),
+        },
+        ViewNode::Text {
+            value: format!("Selected branch context: {selected_branch}"),
+        },
+        ViewNode::TagList {
+            title: "tags".to_string(),
+        },
+        ViewNode::Button {
+            label: "Create Tag".to_string(),
+            on_action: "tag.create".to_string(),
+            enabled_when: snapshot.repo.is_some(),
+            shortcut_hint: None,
+            accessibility_label: Some("Create tag from current HEAD".to_string()),
+        },
+        ViewNode::Text {
+            value: "Tag operations: use `run tag.delete <name>` or `run tag.checkout <name>`."
+                .to_string(),
+        },
+    ];
+
+    if snapshot.tags.tags.is_empty() {
+        children.push(ViewNode::Text {
+            value: "Tags: empty".to_string(),
+        });
+    }
+
+    ViewNode::Container { children }
+}
+
+pub fn build_compare_panel(snapshot: &StoreSnapshot) -> ViewNode {
+    let base_ref = snapshot.compare.base_ref.as_deref().unwrap_or("<unset>");
+    let head_ref = snapshot.compare.head_ref.as_deref().unwrap_or("<unset>");
+    let selected_branch = snapshot
+        .selection
+        .selected_branch
+        .as_deref()
+        .unwrap_or("<none>");
+
+    let mut children = vec![
+        ViewNode::Text {
+            value: "Compare Panel".to_string(),
+        },
+        ViewNode::Text {
+            value: format!("Base ref: {base_ref}"),
+        },
+        ViewNode::Text {
+            value: format!("Head ref: {head_ref}"),
+        },
+        ViewNode::Text {
+            value: format!("Selected branch context: {selected_branch}"),
+        },
+        ViewNode::Text {
+            value: format!(
+                "Ahead/behind: +{} / -{}",
+                snapshot.compare.ahead, snapshot.compare.behind
+            ),
+        },
+        ViewNode::Button {
+            label: "Compare Branches".to_string(),
+            on_action: "compare.refs".to_string(),
+            enabled_when: snapshot.repo.is_some(),
+            shortcut_hint: None,
+            accessibility_label: Some("Compare two refs".to_string()),
+        },
+    ];
+
+    if snapshot.compare.commits.is_empty() {
+        children.push(ViewNode::Text {
+            value: "Compare commits: <empty>".to_string(),
+        });
+    } else {
+        let preview = snapshot
+            .compare
+            .commits
+            .iter()
+            .take(10)
+            .map(|commit| {
+                let short = commit.oid.chars().take(7).collect::<String>();
+                format!("{short} {}", commit.summary)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        children.push(ViewNode::Text {
+            value: format!("Compare commits: {preview}"),
+        });
+    }
+
+    ViewNode::Container { children }
+}
+
 pub fn render(node: &ViewNode, snapshot: &StoreSnapshot) -> String {
     let mut out = String::new();
     render_into(node, snapshot, 0, &mut out);
@@ -578,6 +686,7 @@ mod tests {
             journal: state_store::OperationJournalState::default(),
             active_view: None,
             plugins: Vec::new(),
+            installed_plugins: Vec::new(),
             version: 1,
         };
 
@@ -608,6 +717,7 @@ mod tests {
             journal: state_store::OperationJournalState::default(),
             active_view: None,
             plugins: Vec::new(),
+            installed_plugins: Vec::new(),
             version: 1,
         };
 
@@ -637,6 +747,7 @@ mod tests {
             journal: state_store::OperationJournalState::default(),
             active_view: None,
             plugins: Vec::new(),
+            installed_plugins: Vec::new(),
             version: 1,
         };
 
@@ -699,6 +810,7 @@ mod tests {
             },
             active_view: None,
             plugins: Vec::new(),
+            installed_plugins: Vec::new(),
             version: 1,
         };
 
@@ -745,6 +857,7 @@ mod tests {
             },
             active_view: None,
             plugins: Vec::new(),
+            installed_plugins: Vec::new(),
             version: 1,
         };
 
@@ -797,6 +910,7 @@ mod tests {
             journal: state_store::OperationJournalState::default(),
             active_view: None,
             plugins: Vec::new(),
+            installed_plugins: Vec::new(),
             version: 1,
         };
 
@@ -815,6 +929,99 @@ mod tests {
     }
 
     #[test]
+    fn tags_panel_shows_tag_list_and_actions() {
+        let snapshot = StoreSnapshot {
+            repo: Some(plugin_api::RepoSnapshot {
+                root: "./demo".to_string(),
+                head: Some("main".to_string()),
+                conflict_state: None,
+            }),
+            status: StatusSnapshot::default(),
+            selection: SelectionState {
+                selected_paths: Vec::new(),
+                selected_commit_oid: None,
+                selected_branch: Some("release".to_string()),
+                selected_plugin_id: None,
+            },
+            history: state_store::HistoryState::default(),
+            commit_cache: std::collections::HashMap::new(),
+            diff: state_store::DiffState::default(),
+            compare: state_store::CompareState::default(),
+            branches: state_store::BranchesState::default(),
+            tags: state_store::TagsState {
+                tags: vec![state_store::TagInfo {
+                    name: "v1.0.0".to_string(),
+                }],
+            },
+            commit_message: state_store::CommitMessageState::default(),
+            rebase: state_store::RebaseState::default(),
+            journal: state_store::OperationJournalState::default(),
+            active_view: None,
+            plugins: Vec::new(),
+            installed_plugins: Vec::new(),
+            version: 1,
+        };
+
+        let panel = build_tags_panel(&snapshot);
+        let rendered = render(&panel, &snapshot);
+        assert!(rendered.contains("Tags Panel"));
+        assert!(rendered.contains("Selected branch context: release"));
+        assert!(rendered.contains("tags: v1.0.0"));
+        assert!(rendered.contains("[Create Tag] enabled -> tag.create"));
+    }
+
+    #[test]
+    fn compare_panel_shows_summary_and_action() {
+        let snapshot = StoreSnapshot {
+            repo: Some(plugin_api::RepoSnapshot {
+                root: "./demo".to_string(),
+                head: Some("main".to_string()),
+                conflict_state: None,
+            }),
+            status: StatusSnapshot::default(),
+            selection: SelectionState {
+                selected_paths: Vec::new(),
+                selected_commit_oid: None,
+                selected_branch: Some("feature".to_string()),
+                selected_plugin_id: None,
+            },
+            history: state_store::HistoryState::default(),
+            commit_cache: std::collections::HashMap::new(),
+            diff: state_store::DiffState::default(),
+            compare: state_store::CompareState {
+                base_ref: Some("main".to_string()),
+                head_ref: Some("feature".to_string()),
+                ahead: 2,
+                behind: 1,
+                commits: vec![state_store::CommitSummary {
+                    oid: "abc1234".to_string(),
+                    author: "Dev".to_string(),
+                    time: "now".to_string(),
+                    summary: "feat: compare".to_string(),
+                }],
+            },
+            branches: state_store::BranchesState::default(),
+            tags: state_store::TagsState::default(),
+            commit_message: state_store::CommitMessageState::default(),
+            rebase: state_store::RebaseState::default(),
+            journal: state_store::OperationJournalState::default(),
+            active_view: None,
+            plugins: Vec::new(),
+            installed_plugins: Vec::new(),
+            version: 1,
+        };
+
+        let panel = build_compare_panel(&snapshot);
+        let rendered = render(&panel, &snapshot);
+        assert!(rendered.contains("Compare Panel"));
+        assert!(rendered.contains("Base ref: main"));
+        assert!(rendered.contains("Head ref: feature"));
+        assert!(rendered.contains("Ahead/behind: +2 / -1"));
+        assert!(rendered.contains("Compare commits: abc1234 feat: compare"));
+        assert!(rendered.contains("[Compare Branches] enabled -> compare.refs"));
+    }
+
+    #[test]
     fn history_panel_shows_rewrite_entry_points() {
         let snapshot = StoreSnapshot {
             repo: Some(plugin_api::RepoSnapshot {
@@ -827,6 +1034,7 @@ mod tests {
                 selected_paths: Vec::new(),
                 selected_commit_oid: Some("abc123".to_string()),
                 selected_branch: None,
+                selected_plugin_id: None,
             },
             history: state_store::HistoryState {
                 commits: vec![state_store::CommitSummary {
@@ -847,6 +1055,7 @@ mod tests {
             journal: state_store::OperationJournalState::default(),
             active_view: None,
             plugins: Vec::new(),
+            installed_plugins: Vec::new(),
             version: 1,
         };
 

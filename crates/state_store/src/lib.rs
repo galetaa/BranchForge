@@ -18,6 +18,7 @@ pub struct SelectionState {
     pub selected_paths: Vec<String>,
     pub selected_commit_oid: Option<String>,
     pub selected_branch: Option<String>,
+    pub selected_plugin_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -249,6 +250,17 @@ pub struct PluginStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct InstalledPluginRecord {
+    pub plugin_id: String,
+    pub version: String,
+    pub protocol_version: String,
+    pub enabled: bool,
+    pub description: Option<String>,
+    pub permissions: Vec<String>,
+    pub install_dir: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct StoreSnapshot {
     pub repo: Option<RepoSnapshot>,
     pub status: StatusSnapshot,
@@ -264,6 +276,7 @@ pub struct StoreSnapshot {
     pub journal: OperationJournalState,
     pub active_view: Option<String>,
     pub plugins: Vec<PluginStatus>,
+    pub installed_plugins: Vec<InstalledPluginRecord>,
     pub version: StoreVersion,
 }
 
@@ -354,6 +367,18 @@ impl StateStore {
         self.snapshot.selection.selected_branch = name;
         self.snapshot.selection.selected_commit_oid = None;
         self.snapshot.selection.selected_paths.clear();
+        self.bump_version();
+    }
+
+    pub fn update_selected_plugin(&mut self, plugin_id: Option<String>) {
+        self.snapshot.selection.selected_plugin_id = plugin_id;
+        self.bump_version();
+    }
+
+    pub fn clear_repo_selection_preserving_plugin(&mut self) {
+        self.snapshot.selection.selected_paths.clear();
+        self.snapshot.selection.selected_commit_oid = None;
+        self.snapshot.selection.selected_branch = None;
         self.bump_version();
     }
 
@@ -636,6 +661,11 @@ impl StateStore {
         self.bump_version();
     }
 
+    pub fn update_installed_plugins(&mut self, plugins: Vec<InstalledPluginRecord>) {
+        self.snapshot.installed_plugins = plugins;
+        self.bump_version();
+    }
+
     pub fn subscribe(&mut self) -> u64 {
         let id = self.next_subscriber_id;
         self.next_subscriber_id += 1;
@@ -750,6 +780,7 @@ mod tests {
             selected_paths: vec!["README.md".to_string()],
             selected_commit_oid: None,
             selected_branch: None,
+            selected_plugin_id: None,
         });
 
         assert_eq!(store.snapshot().status.staged.len(), 1);
@@ -801,6 +832,37 @@ mod tests {
     }
 
     #[test]
+    fn update_installed_plugins_replaces_inventory() {
+        let mut store = StateStore::new();
+        store.update_installed_plugins(vec![InstalledPluginRecord {
+            plugin_id: "status".to_string(),
+            version: "0.1.0".to_string(),
+            protocol_version: "1.0".to_string(),
+            enabled: true,
+            description: Some("status plugin".to_string()),
+            permissions: vec!["read_state".to_string()],
+            install_dir: "/tmp/plugins/status".to_string(),
+        }]);
+        assert_eq!(store.snapshot().installed_plugins.len(), 1);
+        assert_eq!(store.snapshot().installed_plugins[0].plugin_id, "status");
+
+        store.update_installed_plugins(vec![InstalledPluginRecord {
+            plugin_id: "history".to_string(),
+            version: "0.2.0".to_string(),
+            protocol_version: "1.0".to_string(),
+            enabled: false,
+            description: None,
+            permissions: vec!["read_state".to_string(), "read_git".to_string()],
+            install_dir: "/tmp/plugins/history".to_string(),
+        }]);
+
+        assert_eq!(store.snapshot().installed_plugins.len(), 1);
+        assert_eq!(store.snapshot().installed_plugins[0].plugin_id, "history");
+        assert!(!store.snapshot().installed_plugins[0].enabled);
+        assert_eq!(store.snapshot().version, 2);
+    }
+
+    #[test]
     fn updates_commit_selection_clears_paths() {
         let mut store = StateStore::new();
         store.update_selected_paths(vec!["README.md".to_string()]);
@@ -822,6 +884,36 @@ mod tests {
         assert_eq!(
             store.snapshot().selection.selected_branch.as_deref(),
             Some("feature")
+        );
+    }
+
+    #[test]
+    fn updates_plugin_selection_without_clearing_repo_selection() {
+        let mut store = StateStore::new();
+        store.update_selected_branch(Some("feature".to_string()));
+        store.update_selected_plugin(Some("status".to_string()));
+        assert_eq!(
+            store.snapshot().selection.selected_branch.as_deref(),
+            Some("feature")
+        );
+        assert_eq!(
+            store.snapshot().selection.selected_plugin_id.as_deref(),
+            Some("status")
+        );
+    }
+
+    #[test]
+    fn clears_repo_selection_but_keeps_plugin_selection() {
+        let mut store = StateStore::new();
+        store.update_selected_paths(vec!["README.md".to_string()]);
+        store.update_selected_plugin(Some("status".to_string()));
+        store.clear_repo_selection_preserving_plugin();
+        assert!(store.snapshot().selection.selected_paths.is_empty());
+        assert!(store.snapshot().selection.selected_commit_oid.is_none());
+        assert!(store.snapshot().selection.selected_branch.is_none());
+        assert_eq!(
+            store.snapshot().selection.selected_plugin_id.as_deref(),
+            Some("status")
         );
     }
 

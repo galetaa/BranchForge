@@ -6,8 +6,8 @@ use plugin_api::{ConflictState, RepoSnapshot};
 use state_store::{
     BranchInfo, CommitDetails, DiffChunk, DiffDescriptor, DiffLoadRequest, DiffSource, DiffState,
     HistoryCursor, JournalStatus, OperationSessionKind, OperationSessionState, RebaseEntryAction,
-    RebasePlan, RebasePlanEntry, RebaseSessionSnapshot, RefSnapshotSummary, SelectionState,
-    StateStore, StatusSnapshot,
+    RebasePlan, RebasePlanEntry, RebaseSessionSnapshot, RefSnapshotSummary, StateStore,
+    StatusSnapshot,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1243,7 +1243,7 @@ fn apply_repo_open(store: &mut StateStore, repo: &RepoOpenResult, status: &Statu
         conflict_state: map_conflict_state(repo.conflict_state.as_ref()),
     });
     apply_status(store, status);
-    store.update_selection(SelectionState::default());
+    store.clear_repo_selection_preserving_plugin();
     store.clear_history();
     store.clear_compare();
     store.update_diff(DiffState::default());
@@ -1337,7 +1337,7 @@ fn refresh_after_advanced_op(cwd: &Path, store: &mut StateStore) -> Result<(), J
     store.clear_history();
     store.clear_compare();
     store.update_diff(DiffState::default());
-    store.update_selection(SelectionState::default());
+    store.clear_repo_selection_preserving_plugin();
     Ok(())
 }
 
@@ -1915,7 +1915,7 @@ mod tests {
     }
 
     #[test]
-    fn repo_open_clears_selection_state() {
+    fn repo_open_clears_repo_selection_but_keeps_plugin_selection() {
         let repo_dir = unique_temp_dir();
         assert!(std::fs::create_dir_all(&repo_dir).is_ok());
         assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
@@ -1926,6 +1926,7 @@ mod tests {
             selected_paths: vec!["README.md".to_string()],
             selected_commit_oid: None,
             selected_branch: None,
+            selected_plugin_id: Some("status".to_string()),
         });
         assert_eq!(store.snapshot().selection.selected_paths.len(), 1);
 
@@ -1937,6 +1938,10 @@ mod tests {
         };
         assert!(execute_job_op(&repo_dir, &req, &mut store).is_ok());
         assert!(store.snapshot().selection.selected_paths.is_empty());
+        assert_eq!(
+            store.snapshot().selection.selected_plugin_id.as_deref(),
+            Some("status")
+        );
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }
