@@ -1,0 +1,11 @@
+{
+  "registry_version": "1",
+  "plugins": [
+    {
+      "plugin_id": "sample_external",
+      "package_dir": "../external_plugins/sample_plugin",
+      "summary": "Sample external plugin package",
+      "channel": "stable"
+    }
+  ]
+}

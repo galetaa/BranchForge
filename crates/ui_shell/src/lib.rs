@@ -144,6 +144,27 @@ pub fn render_diff_panel(store: &StateStore) -> String {
                     action_id, hunk.file_path, hunk.hunk_index
                 ));
             }
+            let line_actions: &[&str] = match diff.source {
+                Some(state_store::DiffSource::Worktree { .. }) => {
+                    &["index.stage_lines", "file.discard_lines"]
+                }
+                Some(state_store::DiffSource::Index { .. }) => &["index.unstage_lines"],
+                _ => &[],
+            };
+            let mut changed_line_index = 0usize;
+            for line in &hunk.lines {
+                if !line.starts_with('+') && !line.starts_with('-') {
+                    continue;
+                }
+                out.push_str(&format!("  line[{changed_line_index}] {line}\n"));
+                for action_id in line_actions {
+                    out.push_str(&format!(
+                        "  [Line Action] enabled -> {} {} {} {}\n",
+                        action_id, hunk.file_path, hunk.hunk_index, changed_line_index
+                    ));
+                }
+                changed_line_index += 1;
+            }
         }
     }
 
@@ -815,6 +836,10 @@ mod tests {
         let rendered = render_diff_panel(&store);
         assert!(rendered.contains("index.stage_hunk file.txt 0"));
         assert!(rendered.contains("file.discard_hunk file.txt 0"));
+        assert!(rendered.contains("line[0] -old"));
+        assert!(rendered.contains("line[1] +new"));
+        assert!(rendered.contains("index.stage_lines file.txt 0 0"));
+        assert!(rendered.contains("file.discard_lines file.txt 0 1"));
     }
 
     #[test]

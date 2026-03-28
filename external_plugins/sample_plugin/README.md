@@ -17,5 +17,6 @@ cargo build --manifest-path external_plugins/sample_plugin/Cargo.toml
 ## Install (manual)
 
 1. Build the plugin binary.
-2. Copy it into a folder on your PATH or alongside the host binary.
-3. Configure your host runner to spawn `sample_external_plugin` (see `docs/architecture/plugin_sdk_alpha.md`).
+2. Package the binary together with `plugin.json`.
+3. Install the package directory through the host plugin lifecycle flow.
+4. Enable it from the diagnostics/plugin manager flow if needed.

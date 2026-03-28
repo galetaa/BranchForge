@@ -206,6 +206,46 @@ pub fn build_history_panel(snapshot: &StoreSnapshot) -> ViewNode {
         title: "commits".to_string(),
     });
     children.push(ViewNode::CommitDetails);
+    if let Some(path) = snapshot.blame.path.as_deref() {
+        let rev = snapshot.blame.rev.as_deref().unwrap_or("HEAD");
+        children.push(ViewNode::Text {
+            value: format!("Blame: {path} @ {rev}"),
+        });
+        if let Some(error) = snapshot.blame.error.as_ref() {
+            children.push(ViewNode::Text {
+                value: format!("Blame error: {error}"),
+            });
+        } else if snapshot.blame.loading {
+            children.push(ViewNode::Text {
+                value: "Blame: loading...".to_string(),
+            });
+        } else if snapshot.blame.lines.is_empty() {
+            children.push(ViewNode::Text {
+                value: "Blame lines: <empty>".to_string(),
+            });
+        } else {
+            children.push(ViewNode::Text {
+                value: format!("Blame lines: {}", snapshot.blame.lines.len()),
+            });
+            for line in snapshot.blame.lines.iter().take(20) {
+                let short = line.oid.chars().take(8).collect::<String>();
+                children.push(ViewNode::Text {
+                    value: format!(
+                        "blame {} {} {} | {}",
+                        line.line_no, short, line.author, line.content
+                    ),
+                });
+            }
+            if snapshot.blame.lines.len() > 20 {
+                children.push(ViewNode::Text {
+                    value: format!(
+                        "Blame truncated: showing first 20 of {} lines",
+                        snapshot.blame.lines.len()
+                    ),
+                });
+            }
+        }
+    }
     children.push(ViewNode::Button {
         label: "Load more".to_string(),
         on_action: "history.load_more".to_string(),
@@ -372,6 +412,30 @@ pub fn build_branches_panel(snapshot: &StoreSnapshot) -> ViewNode {
                 value: format!("Rebase warning: {warning}"),
             });
         }
+        for (index, entry) in plan.entries.iter().enumerate() {
+            let short = entry.oid.chars().take(7).collect::<String>();
+            let action = match entry.action {
+                state_store::RebaseEntryAction::Pick => "pick",
+                state_store::RebaseEntryAction::Reword => "reword",
+                state_store::RebaseEntryAction::Edit => "edit",
+                state_store::RebaseEntryAction::Squash => "squash",
+                state_store::RebaseEntryAction::Fixup => "fixup",
+                state_store::RebaseEntryAction::Drop => "drop",
+            };
+            children.push(ViewNode::Text {
+                value: format!("Plan[{index}] {action} {short} {}", entry.summary),
+            });
+            if !entry.warnings.is_empty() {
+                children.push(ViewNode::Text {
+                    value: format!("  warnings: {}", entry.warnings.join(", ")),
+                });
+            }
+        }
+        children.push(ViewNode::Text {
+            value:
+                "Plan edit commands: rebase.plan.set_action <index> <action>, rebase.plan.move <from> <to>, rebase.plan.clear"
+                    .to_string(),
+        });
     }
 
     if let Some(session) = snapshot.rebase.session.as_ref() {
@@ -400,6 +464,13 @@ pub fn build_branches_panel(snapshot: &StoreSnapshot) -> ViewNode {
         enabled_when: snapshot.repo.is_some(),
         shortcut_hint: None,
         accessibility_label: Some("Create interactive rebase plan".to_string()),
+    });
+    children.push(ViewNode::Button {
+        label: "Clear Rebase Plan".to_string(),
+        on_action: "rebase.plan.clear".to_string(),
+        enabled_when: snapshot.rebase.plan.is_some(),
+        shortcut_hint: None,
+        accessibility_label: Some("Clear current rebase plan".to_string()),
     });
     children.push(ViewNode::Button {
         label: "Execute Rebase".to_string(),
@@ -676,6 +747,7 @@ mod tests {
             },
             selection: SelectionState::default(),
             history: state_store::HistoryState::default(),
+            blame: state_store::BlameState::default(),
             commit_cache: std::collections::HashMap::new(),
             diff: state_store::DiffState::default(),
             compare: state_store::CompareState::default(),
@@ -707,6 +779,7 @@ mod tests {
             status: StatusSnapshot::default(),
             selection: SelectionState::default(),
             history: state_store::HistoryState::default(),
+            blame: state_store::BlameState::default(),
             commit_cache: std::collections::HashMap::new(),
             diff: state_store::DiffState::default(),
             compare: state_store::CompareState::default(),
@@ -737,6 +810,7 @@ mod tests {
             status: StatusSnapshot::default(),
             selection: SelectionState::default(),
             history: state_store::HistoryState::default(),
+            blame: state_store::BlameState::default(),
             commit_cache: std::collections::HashMap::new(),
             diff: state_store::DiffState::default(),
             compare: state_store::CompareState::default(),
@@ -767,6 +841,7 @@ mod tests {
             },
             selection: SelectionState::default(),
             history: state_store::HistoryState::default(),
+            blame: state_store::BlameState::default(),
             commit_cache: std::collections::HashMap::new(),
             diff: state_store::DiffState::default(),
             compare: state_store::CompareState::default(),
@@ -832,6 +907,7 @@ mod tests {
             status: StatusSnapshot::default(),
             selection: SelectionState::default(),
             history: state_store::HistoryState::default(),
+            blame: state_store::BlameState::default(),
             commit_cache: std::collections::HashMap::new(),
             diff: state_store::DiffState::default(),
             compare: state_store::CompareState::default(),
@@ -882,6 +958,7 @@ mod tests {
             status: StatusSnapshot::default(),
             selection: SelectionState::default(),
             history: state_store::HistoryState::default(),
+            blame: state_store::BlameState::default(),
             commit_cache: std::collections::HashMap::new(),
             diff: state_store::DiffState::default(),
             compare: state_store::CompareState::default(),
@@ -892,7 +969,20 @@ mod tests {
                 plan: Some(state_store::RebasePlan {
                     base_ref: "main".to_string(),
                     base_oid: Some("abc".to_string()),
-                    entries: Vec::new(),
+                    entries: vec![
+                        state_store::RebasePlanEntry {
+                            oid: "1234567890".to_string(),
+                            summary: "prepare change".to_string(),
+                            warnings: Vec::new(),
+                            action: state_store::RebaseEntryAction::Pick,
+                        },
+                        state_store::RebasePlanEntry {
+                            oid: "abcdef1234".to_string(),
+                            summary: "fold fixup".to_string(),
+                            warnings: vec!["autosquash marker detected".to_string()],
+                            action: state_store::RebaseEntryAction::Squash,
+                        },
+                    ],
                     affected_commit_count: 3,
                     rewrite_types: vec!["pick".to_string(), "squash".to_string()],
                     published_history_warning: Some("published branch".to_string()),
@@ -919,9 +1009,16 @@ mod tests {
         assert!(rendered.contains("Rebase plan: base=main commits=3 autosquash=true"));
         assert!(rendered.contains("Rebase rewrite types: pick, squash"));
         assert!(rendered.contains("Rebase warning: published branch"));
+        assert!(rendered.contains("Plan[0] pick 1234567 prepare change"));
+        assert!(rendered.contains("Plan[1] squash abcdef1 fold fixup"));
+        assert!(rendered.contains("warnings: autosquash marker detected"));
+        assert!(rendered.contains("rebase.plan.set_action <index> <action>"));
+        assert!(rendered.contains("rebase.plan.move <from> <to>"));
+        assert!(rendered.contains("rebase.plan.clear"));
         assert!(rendered.contains("Rebase session: active=true step=1/3"));
         assert!(rendered.contains("Rebase controls: continue / skip / abort"));
         assert!(rendered.contains("[Create Rebase Plan] enabled -> rebase.plan.create"));
+        assert!(rendered.contains("[Clear Rebase Plan] enabled -> rebase.plan.clear"));
         assert!(rendered.contains("[Execute Rebase] enabled -> rebase.execute"));
         assert!(rendered.contains("[Continue Rebase] enabled -> rebase.continue"));
         assert!(rendered.contains("[Skip Rebase Commit] enabled -> rebase.skip"));
@@ -944,6 +1041,7 @@ mod tests {
                 selected_plugin_id: None,
             },
             history: state_store::HistoryState::default(),
+            blame: state_store::BlameState::default(),
             commit_cache: std::collections::HashMap::new(),
             diff: state_store::DiffState::default(),
             compare: state_store::CompareState::default(),
@@ -986,6 +1084,7 @@ mod tests {
                 selected_plugin_id: None,
             },
             history: state_store::HistoryState::default(),
+            blame: state_store::BlameState::default(),
             commit_cache: std::collections::HashMap::new(),
             diff: state_store::DiffState::default(),
             compare: state_store::CompareState {
@@ -1045,6 +1144,7 @@ mod tests {
                 }],
                 ..state_store::HistoryState::default()
             },
+            blame: state_store::BlameState::default(),
             commit_cache: std::collections::HashMap::new(),
             diff: state_store::DiffState::default(),
             compare: state_store::CompareState::default(),
@@ -1063,5 +1163,48 @@ mod tests {
         let rendered = render(&panel, &snapshot);
         assert!(rendered.contains("[Cherry-pick] enabled -> cherry_pick.commit"));
         assert!(rendered.contains("[Revert] enabled -> revert.commit"));
+    }
+
+    #[test]
+    fn history_panel_shows_blame_lines() {
+        let snapshot = StoreSnapshot {
+            repo: Some(plugin_api::RepoSnapshot {
+                root: "./demo".to_string(),
+                head: Some("main".to_string()),
+                conflict_state: None,
+            }),
+            status: StatusSnapshot::default(),
+            selection: SelectionState::default(),
+            history: state_store::HistoryState::default(),
+            blame: state_store::BlameState {
+                path: Some("src/lib.rs".to_string()),
+                rev: Some("HEAD".to_string()),
+                lines: vec![state_store::BlameLine {
+                    line_no: 1,
+                    oid: "abc12345".to_string(),
+                    author: "Dev".to_string(),
+                    content: "fn demo() {}".to_string(),
+                }],
+                loading: false,
+                error: None,
+            },
+            commit_cache: std::collections::HashMap::new(),
+            diff: state_store::DiffState::default(),
+            compare: state_store::CompareState::default(),
+            branches: state_store::BranchesState::default(),
+            tags: state_store::TagsState::default(),
+            commit_message: state_store::CommitMessageState::default(),
+            rebase: state_store::RebaseState::default(),
+            journal: state_store::OperationJournalState::default(),
+            active_view: None,
+            plugins: Vec::new(),
+            installed_plugins: Vec::new(),
+            version: 1,
+        };
+
+        let panel = build_history_panel(&snapshot);
+        let rendered = render(&panel, &snapshot);
+        assert!(rendered.contains("Blame: src/lib.rs @ HEAD"));
+        assert!(rendered.contains("blame 1 abc12345 Dev | fn demo() {}"));
     }
 }

@@ -139,8 +139,15 @@ fn sprint20_productivity_suite_smoke() {
         )
         .is_ok()
     );
-    let diff_text = store.snapshot().diff.content.clone().unwrap_or_default();
-    assert!(diff_text.contains("Dev User"));
+    assert_eq!(store.snapshot().blame.path.as_deref(), Some("tracked.txt"));
+    assert!(
+        store
+            .snapshot()
+            .blame
+            .lines
+            .iter()
+            .any(|line| line.author.contains("Dev User"))
+    );
 
     let _ = std::fs::remove_dir_all(&repo_dir);
 }

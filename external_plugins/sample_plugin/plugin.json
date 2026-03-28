@@ -1,0 +1,9 @@
+{
+  "manifest_version": "1",
+  "plugin_id": "sample_external",
+  "version": "0.1.0",
+  "protocol_version": "0.1",
+  "entrypoint": "sample_external_plugin",
+  "description": "Sample external plugin",
+  "permissions": ["read_state"]
+}
