@@ -13,6 +13,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "app_gui"
+version = "1.0.1"
+dependencies = [
+ "app_host",
+ "git_service",
+ "state_store",
+]
+
+[[package]]
 name = "app_host"
 version = "1.0.1"
 dependencies = [

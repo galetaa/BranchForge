@@ -59,6 +59,13 @@ pub struct ConsoleSessionOutput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostRuntimeError {
+    pub title: String,
+    pub message: String,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ConsoleCommand {
     Empty,
     Help,
@@ -302,6 +309,51 @@ pub fn run_console_command(
         stdout: String::from_utf8(stdout).map_err(|err| err.to_string())?,
         stderr: String::from_utf8(stderr).map_err(|err| err.to_string())?,
     })
+}
+
+pub struct HostRuntime {
+    runner: ConsoleRunner,
+}
+
+impl HostRuntime {
+    pub fn new(config: ConsoleRunnerConfig) -> Self {
+        Self {
+            runner: ConsoleRunner::new(config),
+        }
+    }
+
+    pub fn submit_line(&mut self, command_line: &str) -> Result<Option<String>, HostRuntimeError> {
+        let command = parse_command_line(command_line).map_err(|message| HostRuntimeError {
+            title: "Invalid input".to_string(),
+            message,
+            detail: None,
+        })?;
+        let result = self
+            .runner
+            .execute(command)
+            .map_err(|error| HostRuntimeError {
+                title: error.title,
+                message: error.message,
+                detail: error.detail,
+            })?;
+        Ok(result.message)
+    }
+
+    pub fn snapshot(&self) -> state_store::StoreSnapshot {
+        self.runner.store.snapshot().clone()
+    }
+
+    pub fn render_screen(&self) -> String {
+        self.runner.render_screen()
+    }
+
+    pub fn render_actions(&self) -> String {
+        self.runner.render_actions()
+    }
+
+    pub fn ops_catalog(&self) -> String {
+        ops_text()
+    }
 }
 
 #[cfg(test)]
