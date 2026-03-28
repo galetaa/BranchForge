@@ -1,8 +1,8 @@
 # Public API Freeze Candidate
 
-This document lists the current public API surface and marks unstable areas for v1.0 planning.
+This document lists the current public API surface and the remaining intentionally unstable areas after the v1.0 freeze pass.
 
-## Public surface (candidate)
+## Public surface
 
 - `plugin_sdk` re-exports from `plugin_api`
 - RPC message types and codec (`RpcRequest`, `RpcResponse`, `RpcNotification`, `RpcMessage`, `FrameCodec`)
@@ -13,19 +13,20 @@ This document lists the current public API surface and marks unstable areas for 
 
 ## Marked unstable
 
-- Beta-only action IDs (`rebase.interactive`)
-- Any new action with `DangerLevel::High` pending confirm UX improvements
-- SDK policy for external plugin discovery/manifest
+- Any future action with `DangerLevel::High` until it is documented in the compatibility matrix
+- Experimental release/discovery extensions beyond the documented path/`file://`/`http://` registry source format
 
-## Compatibility policy (draft)
+## Compatibility policy
 
 - v1.0: breaking changes require major version bump
 - alpha/beta releases may change without notice
-- public API freeze checklist to be completed before v1.0
+- action ids, manifest v1, and RPC framing are stable for v1.0
+- compatibility details are tracked in `docs/architecture/plugin_compatibility_matrix.md`
 
-## Freeze checklist (draft)
+## Freeze checklist
 
 - Audit plugin_api for internal-only structs
 - Tag unstable APIs in docs
 - Align SDK exports with intended public surface
 - Define versioning policy for RPC methods
+- Keep stabilization guidance in `docs/architecture/plugin_sdk_stabilization_guidelines.md`

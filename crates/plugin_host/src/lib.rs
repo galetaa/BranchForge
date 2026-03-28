@@ -1,8 +1,8 @@
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use plugin_api::{
@@ -20,9 +20,21 @@ pub struct InstalledPluginInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoverablePluginInfo {
+    pub manifest: PluginManifestV1,
+    pub package_dir: PathBuf,
+    pub manifest_url: Option<String>,
+    pub entrypoint_url: Option<String>,
+    pub summary: Option<String>,
+    pub channel: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginManagerError {
     Io(String),
     InvalidManifest(String),
+    InvalidRegistry(String),
+    UnsupportedSource(String),
     IncompatiblePlugin {
         plugin_id: String,
         required_protocol: String,
@@ -30,6 +42,7 @@ pub enum PluginManagerError {
     },
     AlreadyInstalled(String),
     NotInstalled(String),
+    RegistryPluginNotFound(String),
 }
 
 impl From<std::io::Error> for PluginManagerError {
@@ -116,12 +129,114 @@ pub fn list_installed_plugins(
     Ok(plugins)
 }
 
+pub fn discover_local_plugins(
+    registry_path: &Path,
+) -> Result<Vec<DiscoverablePluginInfo>, PluginManagerError> {
+    let registry_source = resolve_registry_source_path(registry_path);
+    let raw = fetch_source_text(&registry_source)?;
+    let registry: PluginRegistryV1 = serde_json::from_str(&raw)
+        .map_err(|e| PluginManagerError::InvalidRegistry(e.to_string()))?;
+    if registry.registry_version != "1" {
+        return Err(PluginManagerError::InvalidRegistry(
+            "registry_version must be '1'".to_string(),
+        ));
+    }
+
+    let mut plugins = Vec::new();
+    for entry in registry.plugins {
+        let (manifest, package_dir, manifest_url, entrypoint_url) =
+            resolve_registry_entry(&registry_source, &entry)?;
+        if manifest.plugin_id != entry.plugin_id {
+            return Err(PluginManagerError::InvalidRegistry(format!(
+                "registry plugin_id `{}` does not match manifest plugin_id `{}`",
+                entry.plugin_id, manifest.plugin_id
+            )));
+        }
+        validate_manifest_compatibility(&manifest)?;
+        plugins.push(DiscoverablePluginInfo {
+            manifest,
+            package_dir,
+            manifest_url,
+            entrypoint_url,
+            summary: entry.summary,
+            channel: entry.channel,
+        });
+    }
+    plugins.sort_by(|a, b| a.manifest.plugin_id.cmp(&b.manifest.plugin_id));
+    Ok(plugins)
+}
+
+pub fn install_registry_plugin(
+    registry_path: &Path,
+    plugins_root: &Path,
+    plugin_id: &str,
+) -> Result<InstalledPluginInfo, PluginManagerError> {
+    let discovered = discover_local_plugins(registry_path)?;
+    let plugin = discovered
+        .into_iter()
+        .find(|plugin| plugin.manifest.plugin_id == plugin_id)
+        .ok_or_else(|| PluginManagerError::RegistryPluginNotFound(plugin_id.to_string()))?;
+    if let (Some(manifest_url), Some(entrypoint_url)) = (
+        plugin.manifest_url.as_deref(),
+        plugin.entrypoint_url.as_deref(),
+    ) {
+        install_remote_plugin(&plugin.manifest, manifest_url, entrypoint_url, plugins_root)
+    } else {
+        install_local_plugin(&plugin.package_dir, plugins_root)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+struct PluginRegistryV1 {
+    registry_version: String,
+    plugins: Vec<PluginRegistryEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+struct PluginRegistryEntry {
+    plugin_id: String,
+    package_dir: Option<String>,
+    manifest_url: Option<String>,
+    entrypoint_url: Option<String>,
+    summary: Option<String>,
+    channel: Option<String>,
+}
+
+fn resolve_registry_file(registry_path: &Path) -> PathBuf {
+    if registry_path.is_dir() {
+        registry_path.join("registry.json")
+    } else {
+        registry_path.to_path_buf()
+    }
+}
+
+fn resolve_registry_source_path(registry_path: &Path) -> String {
+    let raw = registry_path.to_string_lossy();
+    if is_source_url(raw.as_ref()) {
+        raw.into_owned()
+    } else {
+        resolve_registry_file(registry_path).display().to_string()
+    }
+}
+
 fn read_manifest(plugin_dir: &Path) -> Result<PluginManifestV1, PluginManagerError> {
     let manifest_path = plugin_dir.join("plugin.json");
     let raw = std::fs::read_to_string(&manifest_path)
         .map_err(|e| PluginManagerError::Io(format!("{}: {}", manifest_path.display(), e)))?;
-    let manifest: PluginManifestV1 = serde_json::from_str(&raw)
-        .map_err(|e| PluginManagerError::InvalidManifest(e.to_string()))?;
+    let manifest = parse_manifest(&raw, &manifest_path.display().to_string())?;
+    let entrypoint = plugin_dir.join(&manifest.entrypoint);
+    if !entrypoint.exists() {
+        return Err(PluginManagerError::InvalidManifest(format!(
+            "entrypoint does not exist: {}",
+            entrypoint.display()
+        )));
+    }
+    Ok(manifest)
+}
+
+fn parse_manifest(raw: &str, source: &str) -> Result<PluginManifestV1, PluginManagerError> {
+    let manifest: PluginManifestV1 = serde_json::from_str(raw)
+        .map_err(|e| PluginManagerError::InvalidManifest(format!("{source}: {}", e)))?;
 
     if manifest.manifest_version != PLUGIN_MANIFEST_VERSION_V1 {
         return Err(PluginManagerError::InvalidManifest(
@@ -138,15 +253,259 @@ fn read_manifest(plugin_dir: &Path) -> Result<PluginManifestV1, PluginManagerErr
             "entrypoint cannot be empty".to_string(),
         ));
     }
-    let entrypoint = plugin_dir.join(&manifest.entrypoint);
-    if !entrypoint.exists() {
-        return Err(PluginManagerError::InvalidManifest(format!(
-            "entrypoint does not exist: {}",
-            entrypoint.display()
+
+    Ok(manifest)
+}
+
+fn resolve_registry_entry(
+    registry_source: &str,
+    entry: &PluginRegistryEntry,
+) -> Result<(PluginManifestV1, PathBuf, Option<String>, Option<String>), PluginManagerError> {
+    if let Some(package_dir) = entry.package_dir.as_deref() {
+        let resolved = resolve_source(registry_source, package_dir)?;
+        let package_path = source_to_local_path(&resolved)?;
+        let manifest = read_manifest(&package_path)?;
+        return Ok((manifest, package_path, None, None));
+    }
+
+    if let (Some(manifest_url), Some(entrypoint_url)) = (
+        entry.manifest_url.as_deref(),
+        entry.entrypoint_url.as_deref(),
+    ) {
+        let manifest_source = resolve_source(registry_source, manifest_url)?;
+        let entrypoint_source = resolve_source(registry_source, entrypoint_url)?;
+        let manifest = load_manifest_from_source(&manifest_source)?;
+        return Ok((
+            manifest,
+            PathBuf::new(),
+            Some(manifest_source),
+            Some(entrypoint_source),
+        ));
+    }
+
+    Err(PluginManagerError::InvalidRegistry(format!(
+        "registry entry `{}` must define package_dir or manifest_url + entrypoint_url",
+        entry.plugin_id
+    )))
+}
+
+fn load_manifest_from_source(source: &str) -> Result<PluginManifestV1, PluginManagerError> {
+    let raw = fetch_source_text(source)?;
+    parse_manifest(&raw, source)
+}
+
+fn install_remote_plugin(
+    manifest: &PluginManifestV1,
+    manifest_source: &str,
+    entrypoint_source: &str,
+    plugins_root: &Path,
+) -> Result<InstalledPluginInfo, PluginManagerError> {
+    validate_manifest_compatibility(manifest)?;
+
+    std::fs::create_dir_all(plugins_root)?;
+    let install_dir = plugins_root.join(&manifest.plugin_id);
+    if install_dir.exists() {
+        return Err(PluginManagerError::AlreadyInstalled(
+            manifest.plugin_id.clone(),
+        ));
+    }
+    std::fs::create_dir_all(&install_dir)?;
+
+    let install_result = (|| -> Result<(), PluginManagerError> {
+        let manifest_raw = serde_json::to_string_pretty(manifest)
+            .map_err(|e| PluginManagerError::InvalidManifest(e.to_string()))?;
+        std::fs::write(install_dir.join("plugin.json"), manifest_raw)
+            .map_err(|e| PluginManagerError::Io(format!("{}: {}", manifest_source, e)))?;
+
+        let binary = fetch_source_bytes(entrypoint_source)?;
+        let entrypoint_path = install_dir.join(&manifest.entrypoint);
+        std::fs::write(&entrypoint_path, binary)
+            .map_err(|e| PluginManagerError::Io(format!("{}: {}", entrypoint_path.display(), e)))?;
+        set_executable_permissions(&entrypoint_path)?;
+        write_enabled_state(&install_dir, true)?;
+        Ok(())
+    })();
+
+    if let Err(error) = install_result {
+        let _ = std::fs::remove_dir_all(&install_dir);
+        return Err(error);
+    }
+
+    Ok(InstalledPluginInfo {
+        manifest: manifest.clone(),
+        enabled: true,
+        install_dir,
+    })
+}
+
+fn fetch_source_text(source: &str) -> Result<String, PluginManagerError> {
+    let bytes = fetch_source_bytes(source)?;
+    String::from_utf8(bytes)
+        .map_err(|_| PluginManagerError::Io(format!("{source}: invalid utf-8 content")))
+}
+
+fn fetch_source_bytes(source: &str) -> Result<Vec<u8>, PluginManagerError> {
+    if let Some(path) = source.strip_prefix("file://") {
+        return std::fs::read(file_url_to_path(path)?)
+            .map_err(|e| PluginManagerError::Io(format!("{source}: {e}")));
+    }
+    if source.starts_with("http://") {
+        return http_get_bytes(source);
+    }
+    if source.starts_with("https://") {
+        return Err(PluginManagerError::UnsupportedSource(
+            "https registry sources are not supported in the embedded transport".to_string(),
+        ));
+    }
+    std::fs::read(source).map_err(|e| PluginManagerError::Io(format!("{source}: {e}")))
+}
+
+fn source_to_local_path(source: &str) -> Result<PathBuf, PluginManagerError> {
+    if let Some(path) = source.strip_prefix("file://") {
+        return file_url_to_path(path);
+    }
+    if source.starts_with("http://") || source.starts_with("https://") {
+        return Err(PluginManagerError::UnsupportedSource(format!(
+            "package_dir must resolve to a local path, got `{source}`"
+        )));
+    }
+    Ok(PathBuf::from(source))
+}
+
+fn resolve_source(base_source: &str, raw: &str) -> Result<String, PluginManagerError> {
+    if is_source_url(raw) {
+        return Ok(raw.to_string());
+    }
+
+    if base_source.starts_with("http://") {
+        return join_http_source(base_source, raw);
+    }
+
+    let base_path = if let Some(path) = base_source.strip_prefix("file://") {
+        file_url_to_path(path)?
+    } else {
+        PathBuf::from(base_source)
+    };
+
+    let resolved = if Path::new(raw).is_absolute() {
+        PathBuf::from(raw)
+    } else {
+        base_path
+            .parent()
+            .map(|parent| parent.join(raw))
+            .unwrap_or_else(|| PathBuf::from(raw))
+    };
+    Ok(resolved.display().to_string())
+}
+
+fn is_source_url(raw: &str) -> bool {
+    raw.starts_with("file://") || raw.starts_with("http://") || raw.starts_with("https://")
+}
+
+fn join_http_source(base_source: &str, raw: &str) -> Result<String, PluginManagerError> {
+    let (authority, base_path) = split_http_source(base_source)?;
+    let resolved_path = if raw.starts_with('/') {
+        raw.to_string()
+    } else {
+        let base_dir = base_path
+            .rsplit_once('/')
+            .map(|(dir, _)| dir)
+            .filter(|dir| !dir.is_empty())
+            .unwrap_or("");
+        if base_dir.is_empty() {
+            format!("/{raw}")
+        } else {
+            format!("{base_dir}/{raw}")
+        }
+    };
+    Ok(format!("http://{authority}{resolved_path}"))
+}
+
+fn split_http_source(source: &str) -> Result<(String, String), PluginManagerError> {
+    let rest = source.strip_prefix("http://").ok_or_else(|| {
+        PluginManagerError::UnsupportedSource(format!("unsupported registry source `{source}`"))
+    })?;
+    let (authority, path) = match rest.split_once('/') {
+        Some((authority, path)) => (authority.to_string(), format!("/{}", path)),
+        None => (rest.to_string(), "/".to_string()),
+    };
+    Ok((authority, path))
+}
+
+fn file_url_to_path(path: &str) -> Result<PathBuf, PluginManagerError> {
+    if let Some(rest) = path.strip_prefix("localhost/") {
+        return Ok(PathBuf::from(format!("/{}", rest)));
+    }
+    if path.starts_with('/') {
+        return Ok(PathBuf::from(path));
+    }
+    Err(PluginManagerError::UnsupportedSource(format!(
+        "unsupported file URL `file://{path}`"
+    )))
+}
+
+fn http_get_bytes(source: &str) -> Result<Vec<u8>, PluginManagerError> {
+    let (authority, path) = split_http_source(source)?;
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, raw_port)) => {
+            let port = raw_port.parse::<u16>().map_err(|_| {
+                PluginManagerError::UnsupportedSource(format!(
+                    "invalid port in registry source `{source}`"
+                ))
+            })?;
+            (host.to_string(), port)
+        }
+        None => (authority.clone(), 80),
+    };
+
+    let mut stream = TcpStream::connect((host.as_str(), port))
+        .map_err(|e| PluginManagerError::Io(format!("{source}: {e}")))?;
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n");
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| PluginManagerError::Io(format!("{source}: {e}")))?;
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .map_err(|e| PluginManagerError::Io(format!("{source}: {e}")))?;
+
+    let header_end = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| PluginManagerError::Io(format!("{source}: malformed HTTP response")))?;
+    let header_text = String::from_utf8_lossy(&response[..header_end]);
+    let status_line = header_text.lines().next().unwrap_or_default().to_string();
+    if !status_line.contains(" 200 ") {
+        return Err(PluginManagerError::Io(format!(
+            "{source}: unexpected HTTP status `{status_line}`"
+        )));
+    }
+    if header_text
+        .lines()
+        .any(|line| line.eq_ignore_ascii_case("transfer-encoding: chunked"))
+    {
+        return Err(PluginManagerError::UnsupportedSource(format!(
+            "{source}: chunked HTTP responses are not supported"
         )));
     }
 
-    Ok(manifest)
+    Ok(response[(header_end + 4)..].to_vec())
+}
+
+fn set_executable_permissions(path: &Path) -> Result<(), PluginManagerError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = std::fs::metadata(path)
+            .map_err(|e| PluginManagerError::Io(format!("{}: {}", path.display(), e)))?
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions)
+            .map_err(|e| PluginManagerError::Io(format!("{}: {}", path.display(), e)))?;
+    }
+
+    Ok(())
 }
 
 fn validate_manifest_compatibility(manifest: &PluginManifestV1) -> Result<(), PluginManagerError> {
@@ -1125,8 +1484,32 @@ pub fn status_registration_payload() -> PluginRegister {
                 ConfirmPolicy::Never,
             ),
             spec(
+                "index.stage_lines",
+                "Stage Lines",
+                Some("repo.is_open"),
+                None,
+                ActionEffects {
+                    writes_index: true,
+                    danger_level: DangerLevel::Low,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::Never,
+            ),
+            spec(
                 "index.unstage_hunk",
                 "Unstage Hunk",
+                Some("repo.is_open"),
+                None,
+                ActionEffects {
+                    writes_index: true,
+                    danger_level: DangerLevel::Low,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "index.unstage_lines",
+                "Unstage Lines",
                 Some("repo.is_open"),
                 None,
                 ActionEffects {
@@ -1177,6 +1560,18 @@ pub fn status_registration_payload() -> PluginRegister {
             spec(
                 "file.discard_hunk",
                 "Discard Hunk",
+                Some("repo.is_open"),
+                Some(DangerLevel::High),
+                ActionEffects {
+                    writes_worktree: true,
+                    danger_level: DangerLevel::High,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::Always,
+            ),
+            spec(
+                "file.discard_lines",
+                "Discard Lines",
                 Some("repo.is_open"),
                 Some(DangerLevel::High),
                 ActionEffects {
@@ -1345,7 +1740,6 @@ pub fn history_registration_payload() -> PluginRegister {
 }
 
 pub fn branches_registration_payload() -> PluginRegister {
-    let rebase_beta = rebase_beta_enabled();
     PluginRegister {
         actions: vec![
             spec(
@@ -1395,7 +1789,7 @@ pub fn branches_registration_payload() -> PluginRegister {
             ),
             spec(
                 "rebase.interactive",
-                "Interactive Rebase (beta)",
+                "Interactive Rebase",
                 Some("repo.is_open"),
                 Some(DangerLevel::High),
                 ActionEffects {
@@ -1414,6 +1808,30 @@ pub fn branches_registration_payload() -> PluginRegister {
                 Some(DangerLevel::Medium),
                 ActionEffects::read_only(),
                 ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "rebase.plan.set_action",
+                "Set Rebase Plan Action",
+                Some("repo.is_open"),
+                Some(DangerLevel::Low),
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "rebase.plan.move",
+                "Reorder Rebase Plan Entry",
+                Some("repo.is_open"),
+                Some(DangerLevel::Low),
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "rebase.plan.clear",
+                "Clear Rebase Plan",
+                Some("repo.is_open"),
+                Some(DangerLevel::Low),
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
             ),
             spec(
                 "rebase.execute",
@@ -1502,6 +1920,14 @@ pub fn branches_registration_payload() -> PluginRegister {
             spec(
                 "conflict.list",
                 "List Conflicts",
+                Some("repo.is_open"),
+                Some(DangerLevel::Low),
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "conflict.focus",
+                "Focus Conflict File",
                 Some("repo.is_open"),
                 Some(DangerLevel::Low),
                 ActionEffects::read_only(),
@@ -1602,16 +2028,7 @@ pub fn branches_registration_payload() -> PluginRegister {
                 },
                 ConfirmPolicy::Always,
             ),
-        ]
-        .into_iter()
-        .filter(|spec| {
-            if spec.action_id == "rebase.interactive" {
-                rebase_beta
-            } else {
-                true
-            }
-        })
-        .collect(),
+        ],
         views: vec![plugin_api::ViewSpec {
             view_id: "branches.panel".to_string(),
             title: "Branches".to_string(),
@@ -1709,6 +2126,38 @@ pub fn diagnostics_registration_payload() -> PluginRegister {
                 ActionEffects::read_only(),
                 ConfirmPolicy::Never,
             ),
+            spec(
+                "diagnostics.lfs_status",
+                "Show LFS Status",
+                Some("repo.is_open"),
+                None,
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "diagnostics.lfs_fetch",
+                "Fetch LFS Objects",
+                Some("repo.is_open"),
+                Some(DangerLevel::Low),
+                ActionEffects {
+                    network: true,
+                    danger_level: DangerLevel::Low,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "diagnostics.lfs_pull",
+                "Pull LFS Objects",
+                Some("repo.is_open"),
+                Some(DangerLevel::Low),
+                ActionEffects {
+                    network: true,
+                    danger_level: DangerLevel::Low,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::Never,
+            ),
         ],
         views: vec![plugin_api::ViewSpec {
             view_id: "diagnostics.panel".to_string(),
@@ -1717,26 +2166,6 @@ pub fn diagnostics_registration_payload() -> PluginRegister {
             when: Some("repo.is_open".to_string()),
         }],
     }
-}
-
-static REBASE_BETA_OVERRIDE: AtomicU8 = AtomicU8::new(2);
-
-fn rebase_beta_enabled() -> bool {
-    match REBASE_BETA_OVERRIDE.load(Ordering::Relaxed) {
-        0 => false,
-        1 => true,
-        _ => matches!(std::env::var("BRANCHFORGE_REBASE_BETA").as_deref(), Ok("1")),
-    }
-}
-
-#[cfg(test)]
-fn set_rebase_beta_override(value: Option<bool>) {
-    let encoded = match value {
-        Some(true) => 1,
-        Some(false) => 0,
-        None => 2,
-    };
-    REBASE_BETA_OVERRIDE.store(encoded, Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -2235,6 +2664,18 @@ mod tests {
             payload
                 .actions
                 .iter()
+                .any(|a| a.action_id == "index.stage_lines")
+        );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "index.unstage_lines")
+        );
+        assert!(
+            payload
+                .actions
+                .iter()
                 .any(|a| a.action_id == "commit.amend")
         );
         assert!(
@@ -2242,6 +2683,12 @@ mod tests {
                 .actions
                 .iter()
                 .any(|a| a.action_id == "file.discard_hunk")
+        );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "file.discard_lines")
         );
         assert!(
             payload
@@ -2345,6 +2792,24 @@ mod tests {
             payload
                 .actions
                 .iter()
+                .any(|a| a.action_id == "rebase.plan.set_action")
+        );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "rebase.plan.move")
+        );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "rebase.plan.clear")
+        );
+        assert!(
+            payload
+                .actions
+                .iter()
                 .any(|a| a.action_id == "rebase.execute")
         );
         assert!(
@@ -2364,6 +2829,12 @@ mod tests {
         assert!(payload.actions.iter().any(|a| a.action_id == "reset.soft"));
         assert!(payload.actions.iter().any(|a| a.action_id == "reset.mixed"));
         assert!(payload.actions.iter().any(|a| a.action_id == "reset.hard"));
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "conflict.focus")
+        );
         assert!(payload.views.iter().any(|v| v.view_id == "branches.panel"));
     }
 
@@ -2407,6 +2878,24 @@ mod tests {
                 .actions
                 .iter()
                 .any(|a| a.action_id == "diagnostics.repo_capabilities")
+        );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "diagnostics.lfs_status")
+        );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "diagnostics.lfs_fetch")
+        );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "diagnostics.lfs_pull")
         );
         assert!(
             payload
@@ -2492,6 +2981,171 @@ mod tests {
     }
 
     #[test]
+    fn plugin_registry_discovery_and_install_flow() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!("branchforge-plugin-registry-{nanos}"));
+        let registry_root = root.join("registry");
+        let package_dir = root.join("packages/sample_external");
+        let plugins_root = root.join("installed");
+        assert!(std::fs::create_dir_all(&registry_root).is_ok());
+        assert!(std::fs::create_dir_all(&package_dir).is_ok());
+
+        let binary = package_dir.join("sample_external_plugin");
+        assert!(std::fs::write(&binary, "#!/usr/bin/env sh\nexit 0\n").is_ok());
+        let manifest = plugin_api::PluginManifestV1 {
+            manifest_version: plugin_api::PLUGIN_MANIFEST_VERSION_V1.to_string(),
+            plugin_id: "sample_external".to_string(),
+            version: "0.1.0".to_string(),
+            protocol_version: plugin_api::HOST_PLUGIN_PROTOCOL_VERSION.to_string(),
+            entrypoint: "sample_external_plugin".to_string(),
+            description: Some("Sample plugin".to_string()),
+            permissions: vec!["read_state".to_string()],
+        };
+        let raw = serde_json::to_string_pretty(&manifest).unwrap_or_else(|_| "{}".to_string());
+        assert!(std::fs::write(package_dir.join("plugin.json"), raw).is_ok());
+        assert!(
+            std::fs::write(
+                registry_root.join("registry.json"),
+                serde_json::json!({
+                    "registry_version": "1",
+                    "plugins": [{
+                        "plugin_id": "sample_external",
+                        "package_dir": "../packages/sample_external",
+                        "summary": "Sample external plugin",
+                        "channel": "stable"
+                    }]
+                })
+                .to_string(),
+            )
+            .is_ok()
+        );
+
+        let discovered = discover_local_plugins(&registry_root).expect("discover");
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].manifest.plugin_id, "sample_external");
+        assert_eq!(discovered[0].channel.as_deref(), Some("stable"));
+
+        let installed = install_registry_plugin(&registry_root, &plugins_root, "sample_external")
+            .expect("install");
+        assert_eq!(installed.manifest.plugin_id, "sample_external");
+        assert!(installed.enabled);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn serve_registry_files(
+        files: std::collections::HashMap<String, Vec<u8>>,
+        request_count: usize,
+    ) -> Option<(String, std::thread::JoinHandle<()>)> {
+        let listener = match std::net::TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => return None,
+            Err(err) => panic!("bind test server: {err}"),
+        };
+        let address = listener.local_addr().expect("server addr");
+        let handle = std::thread::spawn(move || {
+            for _ in 0..request_count {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut buffer = [0u8; 4096];
+                let read = stream.read(&mut buffer).expect("read request");
+                let request = String::from_utf8_lossy(&buffer[..read]);
+                let path = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("/");
+                let body = files.get(path).cloned().unwrap_or_default();
+                let status = if files.contains_key(path) {
+                    "HTTP/1.1 200 OK"
+                } else {
+                    "HTTP/1.1 404 Not Found"
+                };
+                let response = format!(
+                    "{status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .and_then(|_| stream.write_all(&body))
+                    .expect("write response");
+            }
+        });
+
+        Some((format!("http://{}", address), handle))
+    }
+
+    #[test]
+    fn plugin_registry_remote_http_discovery_and_install_flow() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!("branchforge-plugin-remote-registry-{nanos}"));
+        let plugins_root = root.join("installed");
+        let manifest = plugin_api::PluginManifestV1 {
+            manifest_version: plugin_api::PLUGIN_MANIFEST_VERSION_V1.to_string(),
+            plugin_id: "remote_sample".to_string(),
+            version: "0.1.0".to_string(),
+            protocol_version: plugin_api::HOST_PLUGIN_PROTOCOL_VERSION.to_string(),
+            entrypoint: "remote_sample_plugin".to_string(),
+            description: Some("Remote sample plugin".to_string()),
+            permissions: vec!["read_state".to_string()],
+        };
+        let manifest_raw = serde_json::to_vec_pretty(&manifest).expect("manifest json");
+        let registry_raw = serde_json::json!({
+            "registry_version": "1",
+            "plugins": [{
+                "plugin_id": "remote_sample",
+                "manifest_url": "plugin.json",
+                "entrypoint_url": "remote_sample_plugin",
+                "summary": "Remote sample plugin",
+                "channel": "stable"
+            }]
+        })
+        .to_string()
+        .into_bytes();
+
+        let mut files = std::collections::HashMap::new();
+        files.insert("/registry.json".to_string(), registry_raw);
+        files.insert("/plugin.json".to_string(), manifest_raw);
+        files.insert(
+            "/remote_sample_plugin".to_string(),
+            b"#!/usr/bin/env sh\nexit 0\n".to_vec(),
+        );
+        let Some((base_url, server)) = serve_registry_files(files, 5) else {
+            return;
+        };
+        let registry_url = format!("{base_url}/registry.json");
+
+        let discovered =
+            discover_local_plugins(Path::new(&registry_url)).expect("discover remote registry");
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].manifest.plugin_id, "remote_sample");
+        let expected_manifest_url = format!("{base_url}/plugin.json");
+        assert_eq!(
+            discovered[0].manifest_url.as_deref(),
+            Some(expected_manifest_url.as_str())
+        );
+
+        let installed =
+            install_registry_plugin(Path::new(&registry_url), &plugins_root, "remote_sample")
+                .expect("install remote registry plugin");
+        assert_eq!(installed.manifest.plugin_id, "remote_sample");
+        assert!(plugins_root.join("remote_sample/plugin.json").exists());
+        assert!(
+            plugins_root
+                .join("remote_sample/remote_sample_plugin")
+                .exists()
+        );
+
+        server.join().expect("join test server");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn plugin_manager_rejects_incompatible_manifest() {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -2525,17 +3179,7 @@ mod tests {
     }
 
     #[test]
-    fn branches_payload_rebase_gate_respects_env() {
-        set_rebase_beta_override(Some(false));
-        let payload = branches_registration_payload();
-        assert!(
-            !payload
-                .actions
-                .iter()
-                .any(|a| a.action_id == "rebase.interactive")
-        );
-
-        set_rebase_beta_override(Some(true));
+    fn branches_payload_includes_interactive_rebase() {
         let payload = branches_registration_payload();
         assert!(
             payload
@@ -2543,7 +3187,5 @@ mod tests {
                 .iter()
                 .any(|a| a.action_id == "rebase.interactive")
         );
-
-        set_rebase_beta_override(None);
     }
 }

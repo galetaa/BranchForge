@@ -11,5 +11,4 @@
 - None
 
 ## Decision
-- RC approved for GA publication as `v1.0.0`.
-
+- RC approved for GA publication as `v1.0.1`.

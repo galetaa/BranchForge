@@ -1,7 +1,4 @@
-use app_host::{run_rebase_beta_smoke, set_rebase_beta_override};
-use std::sync::Mutex;
-
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+use app_host::run_rebase_beta_smoke;
 
 fn unique_temp_dir(label: &str) -> std::path::PathBuf {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -21,30 +18,14 @@ fn init_repo() -> std::path::PathBuf {
 }
 
 #[test]
-fn rebase_beta_gate_blocks_when_disabled() {
-    let _guard = ENV_LOCK.lock().expect("lock env");
-
-    set_rebase_beta_override(Some(false));
-    let repo_dir = init_repo();
-    let result = run_rebase_beta_smoke(&repo_dir);
-    assert!(result.is_err());
-
-    set_rebase_beta_override(None);
-    let _ = std::fs::remove_dir_all(&repo_dir);
-}
-
-#[test]
-fn rebase_beta_returns_preview_when_enabled() {
-    let _guard = ENV_LOCK.lock().expect("lock env");
-
-    set_rebase_beta_override(Some(true));
+fn rebase_interactive_returns_preview_when_available() {
     let repo_dir = init_repo();
     let result = run_rebase_beta_smoke(&repo_dir);
     assert!(result.is_ok());
     if let Ok(preview) = result {
         assert_eq!(preview.preflight.action_id, "rebase.interactive");
+        assert_eq!(preview.preview.title, "Interactive Rebase");
     }
 
-    set_rebase_beta_override(None);
     let _ = std::fs::remove_dir_all(&repo_dir);
 }

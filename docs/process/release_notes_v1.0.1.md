@@ -1,4 +1,4 @@
-# Branchforge v1.0.0 Release Notes
+# Branchforge v1.0.1 Release Notes
 
 ## Highlights
 - Interactive conflict recovery and continuation flows
@@ -10,12 +10,11 @@
 ## Quality and Hardening
 - Beta diagnostics now include performance aggregates and blocker counters
 - Keyboard and accessibility hints for core status/history actions
-- Packaging smoke flow and release verification scripts for sprint 18-24
+- Packaging smoke flow and runtime release verification entrypoints for sprint 18-24
 
 ## Upgrade Notes
 - Bundled plugins now report the package version from build metadata
 - External plugins should use `plugin.json` manifest v1
 
 ## Verification
-- Use `scripts/verify-sprint-24.sh` for RC/GA local release checklist
-
+- Use `cargo run -p app_host -- --command "run verify.sprint24"` for the RC/GA local release checklist

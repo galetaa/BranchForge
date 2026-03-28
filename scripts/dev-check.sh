@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-./scripts/check-deps.sh
-cargo fmt --all --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$repo_root"
 
+cargo run -p app_host -- --command "run ops.dev_check"
 

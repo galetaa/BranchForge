@@ -1,4 +1,4 @@
-# Changelog v1.0.0
+# Changelog v1.0.1
 
 ## Added
 - Sprint 18: conflict session model and recovery operations
@@ -10,10 +10,10 @@
 - Sprint 24: RC/GA release checklist, final docs and packaging checksums
 
 ## Changed
-- Workspace version frozen to `1.0.0`
+- Workspace version frozen to `1.0.1`
 - Bundled plugin hello version derived from package version
 - Diagnostics panel includes host/protocol version and performance aggregates
+- Operational packaging, verification, and signing flows now run through `app_host` runtime commands instead of shell scripts
 
 ## Fixed
 - Stability fixes across release verify pipelines and regression gates
-

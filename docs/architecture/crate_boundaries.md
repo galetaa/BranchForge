@@ -29,6 +29,5 @@
 - Plugin crates must not depend on `git_service`.
 - Git CLI execution is forbidden outside `git_service`.
 - Cyclic dependencies between workspace crates are not allowed.
-- `scripts/check-deps.sh` is the required automated guard for plugin dependency rules.
-
+- `ops.check_deps` is the required automated guard for plugin dependency rules; `scripts/check-deps.sh` is a compatibility shim over the runtime command.
 

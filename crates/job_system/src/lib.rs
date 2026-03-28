@@ -4,10 +4,10 @@ use std::path::Path;
 use git_service::{GitCommand, GitServiceError, RepoOpenResult, StatusSummary};
 use plugin_api::{ConflictState, RepoSnapshot};
 use state_store::{
-    BranchInfo, CommitDetails, DiffChunk, DiffDescriptor, DiffLoadRequest, DiffSource, DiffState,
-    HistoryCursor, JournalStatus, OperationSessionKind, OperationSessionState, RebaseEntryAction,
-    RebasePlan, RebasePlanEntry, RebaseSessionSnapshot, RefSnapshotSummary, StateStore,
-    StatusSnapshot,
+    BlameLine, BranchInfo, CommitDetails, DiffChunk, DiffDescriptor, DiffLoadRequest, DiffSource,
+    DiffState, HistoryCursor, JournalStatus, OperationSessionKind, OperationSessionState,
+    RebaseEntryAction, RebasePlan, RebasePlanEntry, RebaseSessionSnapshot, RefSnapshotSummary,
+    StateStore, StatusSnapshot,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -242,6 +242,54 @@ pub fn execute_job_op(
                 state_version: store.snapshot().version,
             })
         }
+        "index.stage_lines" => {
+            let path = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "index.stage_lines requires path in request.paths[0]".to_string(),
+                }
+            })?;
+            let hunk_index = request
+                .paths
+                .get(1)
+                .and_then(|value| value.parse::<usize>().ok())
+                .ok_or_else(|| JobExecutionError::InvalidInput {
+                    message: "index.stage_lines requires hunk index in request.paths[1]"
+                        .to_string(),
+                })?;
+            let line_indices = parse_line_indices(request, "index.stage_lines")?;
+            git_service::stage_lines(cwd, path, hunk_index, &line_indices)?;
+            refresh_status(cwd, store)?;
+            refresh_loaded_diff(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "index.unstage_lines" => {
+            let path = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "index.unstage_lines requires path in request.paths[0]".to_string(),
+                }
+            })?;
+            let hunk_index = request
+                .paths
+                .get(1)
+                .and_then(|value| value.parse::<usize>().ok())
+                .ok_or_else(|| JobExecutionError::InvalidInput {
+                    message: "index.unstage_lines requires hunk index in request.paths[1]"
+                        .to_string(),
+                })?;
+            let line_indices = parse_line_indices(request, "index.unstage_lines")?;
+            git_service::unstage_lines(cwd, path, hunk_index, &line_indices)?;
+            refresh_status(cwd, store)?;
+            refresh_loaded_diff(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
         "file.discard_hunk" => {
             let path = request.paths.first().map(String::as_str).ok_or_else(|| {
                 JobExecutionError::InvalidInput {
@@ -257,6 +305,30 @@ pub fn execute_job_op(
                         .to_string(),
                 })?;
             git_service::discard_hunk(cwd, path, hunk_index)?;
+            refresh_status(cwd, store)?;
+            refresh_loaded_diff(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "file.discard_lines" => {
+            let path = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "file.discard_lines requires path in request.paths[0]".to_string(),
+                }
+            })?;
+            let hunk_index = request
+                .paths
+                .get(1)
+                .and_then(|value| value.parse::<usize>().ok())
+                .ok_or_else(|| JobExecutionError::InvalidInput {
+                    message: "file.discard_lines requires hunk index in request.paths[1]"
+                        .to_string(),
+                })?;
+            let line_indices = parse_line_indices(request, "file.discard_lines")?;
+            git_service::discard_lines(cwd, path, hunk_index, &line_indices)?;
             refresh_status(cwd, store)?;
             refresh_loaded_diff(cwd, store)?;
             Ok(JobExecutionResult {
@@ -422,24 +494,17 @@ pub fn execute_job_op(
             })?;
             let rev = request.paths.get(1).map(String::as_str);
             let lines = git_service::file_blame(cwd, path, rev)?;
-            let text = lines
+            let mapped = lines
                 .into_iter()
-                .map(|line| {
-                    let short = line.oid.chars().take(8).collect::<String>();
-                    format!(
-                        "{} {} {} | {}",
-                        line.line_no, short, line.author, line.content
-                    )
+                .map(|line| BlameLine {
+                    line_no: line.line_no,
+                    oid: line.oid,
+                    author: line.author,
+                    content: line.content,
                 })
-                .collect::<Vec<_>>()
-                .join("\n");
-            store.update_diff(build_diff_state(
-                DiffSource::Commit {
-                    oid: format!("blame:{path}"),
-                },
-                text,
-                Vec::new(),
-            ));
+                .collect::<Vec<_>>();
+            store.update_blame(path.to_string(), rev.map(str::to_string), mapped);
+            store.update_diff(DiffState::default());
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -606,6 +671,60 @@ pub fn execute_job_op(
                     oid: "repo:capabilities".to_string(),
                 },
                 text,
+                Vec::new(),
+            ));
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "diagnostics.lfs_status" => {
+            let text = git_service::lfs_status(cwd)?;
+            store.update_diff(build_diff_state(
+                DiffSource::Commit {
+                    oid: "repo:lfs_status".to_string(),
+                },
+                text,
+                Vec::new(),
+            ));
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "diagnostics.lfs_fetch" => {
+            let text = git_service::lfs_fetch(cwd)?;
+            store.update_diff(build_diff_state(
+                DiffSource::Commit {
+                    oid: "repo:lfs_fetch".to_string(),
+                },
+                if text.is_empty() {
+                    "git lfs fetch completed".to_string()
+                } else {
+                    text
+                },
+                Vec::new(),
+            ));
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "diagnostics.lfs_pull" => {
+            let text = git_service::lfs_pull(cwd)?;
+            refresh_repo_and_status(cwd, store)?;
+            store.update_diff(build_diff_state(
+                DiffSource::Commit {
+                    oid: "repo:lfs_pull".to_string(),
+                },
+                if text.is_empty() {
+                    "git lfs pull completed".to_string()
+                } else {
+                    text
+                },
                 Vec::new(),
             ));
             Ok(JobExecutionResult {
@@ -906,6 +1025,89 @@ pub fn execute_job_op(
             })?;
             let plan = git_service::create_rebase_plan(cwd, base_ref)?;
             store.update_rebase_plan(map_rebase_plan(plan));
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "rebase.plan.set_action" => {
+            let entry_index = request
+                .paths
+                .first()
+                .and_then(|value| value.parse::<usize>().ok())
+                .ok_or_else(|| JobExecutionError::InvalidInput {
+                    message: "rebase.plan.set_action requires entry index in request.paths[0]"
+                        .to_string(),
+                })?;
+            let action = request.paths.get(1).map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "rebase.plan.set_action requires action in request.paths[1]"
+                        .to_string(),
+                }
+            })?;
+            let mut plan = store.snapshot().rebase.plan.clone().ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "rebase.plan.set_action requires existing RebasePlan".to_string(),
+                }
+            })?;
+            let Some(entry) = plan.entries.get_mut(entry_index) else {
+                return Err(JobExecutionError::InvalidInput {
+                    message: format!("rebase plan entry index out of range: {entry_index}"),
+                });
+            };
+            entry.action = parse_rebase_entry_action(action)?;
+            refresh_rebase_plan_metadata(&mut plan);
+            store.update_rebase_plan(plan);
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "rebase.plan.move" => {
+            let from_index = request
+                .paths
+                .first()
+                .and_then(|value| value.parse::<usize>().ok())
+                .ok_or_else(|| JobExecutionError::InvalidInput {
+                    message: "rebase.plan.move requires source index in request.paths[0]"
+                        .to_string(),
+                })?;
+            let to_index = request
+                .paths
+                .get(1)
+                .and_then(|value| value.parse::<usize>().ok())
+                .ok_or_else(|| JobExecutionError::InvalidInput {
+                    message: "rebase.plan.move requires target index in request.paths[1]"
+                        .to_string(),
+                })?;
+            let mut plan = store.snapshot().rebase.plan.clone().ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "rebase.plan.move requires existing RebasePlan".to_string(),
+                }
+            })?;
+            if from_index >= plan.entries.len() || to_index >= plan.entries.len() {
+                return Err(JobExecutionError::InvalidInput {
+                    message: format!(
+                        "rebase plan move out of range: from={from_index} to={to_index}"
+                    ),
+                });
+            }
+            if from_index != to_index {
+                let entry = plan.entries.remove(from_index);
+                plan.entries.insert(to_index, entry);
+            }
+            refresh_rebase_plan_metadata(&mut plan);
+            store.update_rebase_plan(plan);
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "rebase.plan.clear" => {
+            store.clear_rebase_plan();
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -1440,17 +1642,9 @@ fn map_rebase_plan(plan: git_service::RebasePlan) -> RebasePlan {
     let rewrite_types = plan
         .entries
         .iter()
-        .map(|entry| match entry.action {
-            git_service::RebaseAction::Pick => "pick",
-            git_service::RebaseAction::Reword => "reword",
-            git_service::RebaseAction::Edit => "edit",
-            git_service::RebaseAction::Squash => "squash",
-            git_service::RebaseAction::Fixup => "fixup",
-            git_service::RebaseAction::Drop => "drop",
+        .map(|entry| {
+            rebase_action_label(&map_rebase_entry_action(entry.action.clone())).to_string()
         })
-        .collect::<Vec<_>>()
-        .into_iter()
-        .map(str::to_string)
         .collect();
 
     RebasePlan {
@@ -1478,6 +1672,53 @@ fn map_rebase_plan(plan: git_service::RebasePlan) -> RebasePlan {
             })
             .collect(),
     }
+}
+
+fn parse_rebase_entry_action(action: &str) -> Result<RebaseEntryAction, JobExecutionError> {
+    match action {
+        "pick" => Ok(RebaseEntryAction::Pick),
+        "reword" => Ok(RebaseEntryAction::Reword),
+        "edit" => Ok(RebaseEntryAction::Edit),
+        "squash" => Ok(RebaseEntryAction::Squash),
+        "fixup" => Ok(RebaseEntryAction::Fixup),
+        "drop" => Ok(RebaseEntryAction::Drop),
+        other => Err(JobExecutionError::InvalidInput {
+            message: format!(
+                "unsupported rebase action `{other}`; expected one of: pick, reword, edit, squash, fixup, drop"
+            ),
+        }),
+    }
+}
+
+fn map_rebase_entry_action(action: git_service::RebaseAction) -> RebaseEntryAction {
+    match action {
+        git_service::RebaseAction::Pick => RebaseEntryAction::Pick,
+        git_service::RebaseAction::Reword => RebaseEntryAction::Reword,
+        git_service::RebaseAction::Edit => RebaseEntryAction::Edit,
+        git_service::RebaseAction::Squash => RebaseEntryAction::Squash,
+        git_service::RebaseAction::Fixup => RebaseEntryAction::Fixup,
+        git_service::RebaseAction::Drop => RebaseEntryAction::Drop,
+    }
+}
+
+fn rebase_action_label(action: &RebaseEntryAction) -> &'static str {
+    match action {
+        RebaseEntryAction::Pick => "pick",
+        RebaseEntryAction::Reword => "reword",
+        RebaseEntryAction::Edit => "edit",
+        RebaseEntryAction::Squash => "squash",
+        RebaseEntryAction::Fixup => "fixup",
+        RebaseEntryAction::Drop => "drop",
+    }
+}
+
+fn refresh_rebase_plan_metadata(plan: &mut RebasePlan) {
+    plan.affected_commit_count = plan.entries.len();
+    plan.rewrite_types = plan
+        .entries
+        .iter()
+        .map(|entry| rebase_action_label(&entry.action).to_string())
+        .collect();
 }
 
 fn map_rebase_plan_to_git(plan: &RebasePlan) -> git_service::RebasePlan {
@@ -1612,6 +1853,27 @@ fn load_history_page(
         success: true,
         state_version: store.snapshot().version,
     })
+}
+
+fn parse_line_indices(request: &JobRequest, op: &str) -> Result<Vec<usize>, JobExecutionError> {
+    if request.paths.len() < 3 {
+        return Err(JobExecutionError::InvalidInput {
+            message: format!("{op} requires at least one line index in request.paths[2..]"),
+        });
+    }
+
+    request
+        .paths
+        .iter()
+        .skip(2)
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .map_err(|_| JobExecutionError::InvalidInput {
+                    message: format!("{op} line index must be usize: {value}"),
+                })
+        })
+        .collect()
 }
 
 fn build_diff_state(
@@ -1757,7 +2019,10 @@ fn is_journaled_op(op: &str) -> bool {
             | "index.unstage_paths"
             | "index.stage_hunk"
             | "index.unstage_hunk"
+            | "index.stage_lines"
+            | "index.unstage_lines"
             | "file.discard_hunk"
+            | "file.discard_lines"
             | "commit.create"
             | "commit.amend"
             | "branch.checkout"
@@ -1771,6 +2036,9 @@ fn is_journaled_op(op: &str) -> bool {
             | "revert.commit"
             | "reset.refs"
             | "rebase.plan.create"
+            | "rebase.plan.set_action"
+            | "rebase.plan.move"
+            | "rebase.plan.clear"
             | "rebase.execute"
             | "rebase.continue"
             | "rebase.skip"
@@ -1796,6 +2064,9 @@ fn is_journaled_op(op: &str) -> bool {
             | "submodule.init_update"
             | "submodule.open"
             | "diagnostics.repo_capabilities"
+            | "diagnostics.lfs_status"
+            | "diagnostics.lfs_fetch"
+            | "diagnostics.lfs_pull"
             | "tag.create"
             | "tag.delete"
             | "tag.checkout"
@@ -1813,6 +2084,7 @@ fn now_millis() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use state_store::SelectionState;
 
     fn unique_temp_dir() -> std::path::PathBuf {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -2059,6 +2331,52 @@ mod tests {
     }
 
     #[test]
+    fn execute_stage_lines_updates_status() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let file = "line_ops.txt".to_string();
+        assert!(std::fs::write(repo_dir.join(&file), "line1\nline2\nline3\nline4\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, std::slice::from_ref(&file)).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "base").is_ok());
+        assert!(
+            std::fs::write(
+                repo_dir.join(&file),
+                "line1-updated\nline2\nline3\nline3-added\nline4\n",
+            )
+            .is_ok()
+        );
+
+        let mut store = StateStore::new();
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "index.stage_lines".to_string(),
+                    lock: JobLock::IndexWrite,
+                    paths: vec![
+                        file.clone(),
+                        "0".to_string(),
+                        "0".to_string(),
+                        "1".to_string(),
+                    ],
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert!(store.snapshot().status.staged.iter().any(|p| p == &file));
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
     fn stage_refresh_matches_git_status() {
         let repo_dir = unique_temp_dir();
         assert!(std::fs::create_dir_all(&repo_dir).is_ok());
@@ -2233,6 +2551,42 @@ mod tests {
             .is_ok()
         );
         assert_eq!(store.snapshot().history.commits.len(), 2);
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn blame_file_updates_typed_blame_state() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let file = "tracked.txt".to_string();
+        assert!(std::fs::write(repo_dir.join(&file), "line\nnext\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, std::slice::from_ref(&file)).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "feat: tracked").is_ok());
+
+        let mut store = StateStore::new();
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "blame.file".to_string(),
+                    lock: JobLock::Read,
+                    paths: vec![file.clone()],
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert_eq!(store.snapshot().blame.path.as_deref(), Some(file.as_str()));
+        assert!(!store.snapshot().blame.lines.is_empty());
+        assert!(store.snapshot().diff.source.is_none());
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }
@@ -2647,6 +3001,97 @@ mod tests {
 
         assert!(store.snapshot().status.unstaged.is_empty());
         assert!(store.snapshot().diff.hunks.is_empty());
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn rebase_plan_edit_ops_update_store_state() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+
+        let mut store = StateStore::new();
+        store.update_rebase_plan(RebasePlan {
+            base_ref: "main".to_string(),
+            base_oid: Some("base".to_string()),
+            entries: vec![
+                RebasePlanEntry {
+                    oid: "1111111".to_string(),
+                    summary: "first".to_string(),
+                    warnings: Vec::new(),
+                    action: RebaseEntryAction::Pick,
+                },
+                RebasePlanEntry {
+                    oid: "2222222".to_string(),
+                    summary: "second".to_string(),
+                    warnings: Vec::new(),
+                    action: RebaseEntryAction::Pick,
+                },
+            ],
+            affected_commit_count: 2,
+            rewrite_types: vec!["pick".to_string(), "pick".to_string()],
+            published_history_warning: None,
+            autosquash_aware: false,
+        });
+
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "rebase.plan.set_action".to_string(),
+                    lock: JobLock::Read,
+                    paths: vec!["1".to_string(), "squash".to_string()],
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            store
+                .snapshot()
+                .rebase
+                .plan
+                .as_ref()
+                .map(|plan| &plan.entries[1].action),
+            Some(&RebaseEntryAction::Squash)
+        );
+
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "rebase.plan.move".to_string(),
+                    lock: JobLock::Read,
+                    paths: vec!["1".to_string(), "0".to_string()],
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        let moved = store.snapshot().rebase.plan.as_ref().expect("plan");
+        assert_eq!(moved.entries[0].oid, "2222222");
+        assert_eq!(moved.entries[1].oid, "1111111");
+        assert_eq!(
+            moved.rewrite_types,
+            vec!["squash".to_string(), "pick".to_string()]
+        );
+
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "rebase.plan.clear".to_string(),
+                    lock: JobLock::Read,
+                    paths: Vec::new(),
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert!(store.snapshot().rebase.plan.is_none());
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }

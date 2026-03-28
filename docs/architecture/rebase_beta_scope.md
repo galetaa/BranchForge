@@ -1,25 +1,23 @@
-# Interactive Rebase Beta Scope
+# Interactive Rebase Support
 
-This document captures the limited beta scope for interactive rebase in Sprint 14.
+This document records the current interactive rebase behavior after the v1 stabilization pass.
 
-## In scope
+## Supported flow
 
-- Beta flag gate (`BRANCHFORGE_REBASE_BETA=1`)
-- Preflight + preview contract integration
-- Basic plan surface (no execution yet)
+1. Request `rebase.interactive` for preflight + preview.
+2. Create an editable plan with `rebase.plan.create`.
+3. Adjust entries with `rebase.plan.set_action`, `rebase.plan.move`, and `rebase.plan.clear`.
+4. Execute with `rebase.execute`.
+5. Recover active sessions with `rebase.continue`, `rebase.skip`, `rebase.abort`, and `conflict.focus`.
 
-## Out of scope
+## Current UX model
 
-- Full interactive rebase UI
-- Conflict resolution UI
-- General availability
-
-## User-facing flow (beta)
-
-1. Enable beta flag.
-2. Request `rebase.interactive` action.
-3. Host runs preflight and returns preview summary.
+- host-side console flow with typed rebase plan/session state
+- plan execution with autosquash awareness
+- restart/session recovery from Git rebase state
+- conflict routing through `conflict.list`, `conflict.focus`, resolve/mark/continue/abort actions
 
 ## Notes
 
-This beta is intended for controlled testing only.
+- `rebase.interactive` is no longer beta-gated.
+- The current product surface is console-first rather than a separate full-screen visual editor.

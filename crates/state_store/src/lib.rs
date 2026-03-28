@@ -54,6 +54,23 @@ pub struct HistoryState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlameLine {
+    pub line_no: usize,
+    pub oid: String,
+    pub author: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BlameState {
+    pub path: Option<String>,
+    pub rev: Option<String>,
+    pub lines: Vec<BlameLine>,
+    pub loading: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiffSource {
     Worktree { paths: Vec<String> },
     Index { paths: Vec<String> },
@@ -266,6 +283,7 @@ pub struct StoreSnapshot {
     pub status: StatusSnapshot,
     pub selection: SelectionState,
     pub history: HistoryState,
+    pub blame: BlameState,
     pub commit_cache: HashMap<String, CommitDetails>,
     pub diff: DiffState,
     pub compare: CompareState,
@@ -405,6 +423,7 @@ impl StateStore {
 
     pub fn clear_history(&mut self) {
         self.snapshot.history = HistoryState::default();
+        self.snapshot.blame = BlameState::default();
         self.snapshot.commit_cache.clear();
         self.bump_version();
     }
@@ -562,6 +581,22 @@ impl StateStore {
 
     pub fn commit_details(&self, oid: &str) -> Option<&CommitDetails> {
         self.snapshot.commit_cache.get(oid)
+    }
+
+    pub fn update_blame(&mut self, path: String, rev: Option<String>, lines: Vec<BlameLine>) {
+        self.snapshot.blame = BlameState {
+            path: Some(path),
+            rev,
+            lines,
+            loading: false,
+            error: None,
+        };
+        self.bump_version();
+    }
+
+    pub fn clear_blame(&mut self) {
+        self.snapshot.blame = BlameState::default();
+        self.bump_version();
     }
 
     pub fn update_diff(&mut self, diff: DiffState) {
@@ -1188,5 +1223,28 @@ mod tests {
 
         let events = store.poll_events(999);
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn blame_state_tracks_selected_file_lines() {
+        let mut store = StateStore::new();
+        store.update_blame(
+            "src/lib.rs".to_string(),
+            Some("HEAD".to_string()),
+            vec![BlameLine {
+                line_no: 1,
+                oid: "abc123".to_string(),
+                author: "Dev".to_string(),
+                content: "fn demo() {}".to_string(),
+            }],
+        );
+
+        assert_eq!(store.snapshot().blame.path.as_deref(), Some("src/lib.rs"));
+        assert_eq!(store.snapshot().blame.rev.as_deref(), Some("HEAD"));
+        assert_eq!(store.snapshot().blame.lines.len(), 1);
+
+        store.clear_blame();
+        assert!(store.snapshot().blame.path.is_none());
+        assert!(store.snapshot().blame.lines.is_empty());
     }
 }

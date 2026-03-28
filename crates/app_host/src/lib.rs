@@ -17,15 +17,16 @@ use state_store::{
 
 pub mod console_runner;
 pub mod errors;
+pub mod operations;
 pub mod recent_repos;
 
 pub use console_runner::{
-    ConsoleRunnerConfig, ConsoleSessionOutput, run_console_app, run_console_session,
+    ConsoleRunnerConfig, ConsoleSessionOutput, run_console_app, run_console_command,
+    run_console_session,
 };
 
 use errors::{UserFacingError, translate_job_error};
 use plugin_api::{ActionPreflightResult, ActionPreview};
-use std::sync::atomic::{AtomicU8, Ordering};
 
 pub fn run_action_roundtrip(action_id: &str) -> Result<String, InvokeError> {
     let mut session = RuntimeSession::new("status");
@@ -698,10 +699,6 @@ pub struct RebaseBetaPreview {
 }
 
 pub fn run_rebase_beta_smoke(repo_dir: &std::path::Path) -> Result<RebaseBetaPreview, String> {
-    if !rebase_beta_enabled() {
-        return Err("Rebase beta disabled.".to_string());
-    }
-
     let conflict = git_service::detect_conflict_state(repo_dir)
         .map_err(|err| format!("conflict state check failed: {err:?}"))?;
     let (ok, warnings, summary) = match conflict {
@@ -731,7 +728,7 @@ pub fn run_rebase_beta_smoke(repo_dir: &std::path::Path) -> Result<RebaseBetaPre
     };
     let preview = ActionPreview {
         action_id: "rebase.interactive".to_string(),
-        title: "Interactive Rebase (beta)".to_string(),
+        title: "Interactive Rebase".to_string(),
         summary,
         warnings,
     };
@@ -788,26 +785,6 @@ pub fn sync_plugin_runtime_health(
     );
 
     Ok(health)
-}
-
-static REBASE_BETA_OVERRIDE: AtomicU8 = AtomicU8::new(2);
-
-fn rebase_beta_enabled() -> bool {
-    match REBASE_BETA_OVERRIDE.load(Ordering::Relaxed) {
-        0 => false,
-        1 => true,
-        _ => matches!(std::env::var("BRANCHFORGE_REBASE_BETA").as_deref(), Ok("1")),
-    }
-}
-
-#[allow(dead_code)]
-pub fn set_rebase_beta_override(value: Option<bool>) {
-    let encoded = match value {
-        Some(true) => 1,
-        Some(false) => 0,
-        None => 2,
-    };
-    REBASE_BETA_OVERRIDE.store(encoded, Ordering::Relaxed);
 }
 
 fn validate_commit_message(message: &str) -> Option<String> {

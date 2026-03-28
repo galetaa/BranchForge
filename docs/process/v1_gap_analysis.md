@@ -1,31 +1,19 @@
 # v1.0 Gap Analysis
 
-## Quality gaps
+## Closed Repo-Owned Gaps
 
-- End-to-end UX polish and error coverage
-- Conflict handling UX (merge/rebase)
-- Advanced diff interactions (line staging, conflict focus)
+- [x] Conflict handling UX: `conflict.list`, `conflict.focus`, resolve/mark/continue/abort flows
+- [x] Advanced diff interactions: `index.stage_lines`, `index.unstage_lines`, `file.discard_lines`
+- [x] Editable interactive rebase plan: `rebase.plan.create`, `rebase.plan.set_action`, `rebase.plan.move`, `rebase.plan.clear`, `rebase.execute`
+- [x] Local plugin registry/discovery: `plugin.discover`, `plugin.install_registry`, `plugin_registry/registry.json`
+- [x] Packaging/update/rollback/signing automation: `release.package_local`, `release.package`, `release.notes`, `release.sign`
+- [x] Documentation backlog: external plugin guide, troubleshooting/recovery guide, compatibility matrix, SDK stabilization guidance
 
-## Packaging gaps
+## Runtime Prerequisites
 
-- Installer packaging for target OS
-- Update channels and rollback workflow
-- Signed artifacts for releases
+- `git-lfs` binary must be installed to use `diagnostics.lfs_status`, `diagnostics.lfs_fetch`, and `diagnostics.lfs_pull`.
+- Production signing should provide `BRANCHFORGE_SIGNING_KEY`; local packaging falls back to an ephemeral dev signature so verification still works in CI/local smoke flows.
 
-## Documentation gaps
+## Status
 
-- External plugin developer guide
-- Troubleshooting and recovery guide
-- Release notes automation
-
-## Plugin ecosystem gaps
-
-- Plugin registry or discovery mechanism
-- Compatibility policy and versioning matrix
-- SDK stabilization guidelines
-
-## Backlog cut (draft)
-
-- Defer full interactive rebase UI to v1.1
-- Defer plugin registry to post v1.0
-- Keep merge conflict UI minimal for v1.0
+There are no remaining repo-owned v1 backlog items in this document. Historical deferred items have either been implemented or replaced by documented runtime prerequisites.

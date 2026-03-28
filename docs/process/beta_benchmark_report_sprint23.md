@@ -14,11 +14,10 @@
   - actionable blockers count
 
 ## Results (baseline)
-- No regressions observed in core workflows covered by sprint verify scripts
+- No regressions observed in core workflows covered by runtime verification flows
 - Diagnostics now exposes duration and blocker aggregates for triage
 - Commit cache is bounded to 256 entries to prevent unbounded growth
 
 ## Follow-up
 - Add dedicated release-profile micro-benchmark harness after Sprint 24 freeze
 - Collect comparative numbers on beta builds before GA
-

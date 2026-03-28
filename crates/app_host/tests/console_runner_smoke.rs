@@ -58,3 +58,33 @@ fn console_runner_supports_open_actions_run_show_and_quit() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn console_runner_supports_one_shot_command_mode() {
+    let root = unique_temp_dir("one-shot");
+    let plugins_root = root.join("plugins");
+    let out_file = root.join("release_notes.md");
+
+    assert!(std::fs::create_dir_all(&root).is_ok());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_app_host"))
+        .env("BRANCHFORGE_PLUGINS_ROOT", &plugins_root)
+        .args([
+            "--command",
+            &format!("run release.notes {} stable", out_file.to_string_lossy()),
+        ])
+        .output()
+        .expect("run one-shot app_host");
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    assert!(stdout.contains("release notes generated at"));
+    assert!(!stdout.contains("bf> "));
+    assert!(out_file.is_file());
+
+    let rendered = std::fs::read_to_string(&out_file).unwrap_or_default();
+    assert!(rendered.contains("Channel: stable"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}

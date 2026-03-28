@@ -6,13 +6,15 @@ use job_system::{JobExecutionResult, JobLock, JobRequest, execute_job_op};
 use plugin_api::{ActionEffects, ActionSpec, ConfirmPolicy, DangerLevel};
 use plugin_host::{
     PluginManagerError, branches_registration_payload, compare_registration_payload,
-    diagnostics_registration_payload, history_registration_payload, install_local_plugin,
-    list_installed_plugins, remove_local_plugin, repo_manager_registration_payload,
-    set_plugin_enabled, status_registration_payload, tags_registration_payload,
+    diagnostics_registration_payload, discover_local_plugins, history_registration_payload,
+    install_local_plugin, install_registry_plugin, list_installed_plugins, remove_local_plugin,
+    repo_manager_registration_payload, set_plugin_enabled, status_registration_payload,
+    tags_registration_payload,
 };
 use state_store::{DiffSource, DiffState, InstalledPluginRecord, StateStore};
 
 use crate::errors::{ErrorCategory, UserFacingError, translate_job_error};
+use crate::operations;
 use crate::recent_repos::persist_recent_repo;
 use crate::run_rebase_beta_smoke;
 
@@ -143,10 +145,25 @@ impl PanelKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PluginOp {
     List,
-    Install { package_dir: String },
-    Enable { plugin_id: Option<String> },
-    Disable { plugin_id: Option<String> },
-    Remove { plugin_id: Option<String> },
+    Discover {
+        registry_path: Option<String>,
+    },
+    Install {
+        package_dir: String,
+    },
+    InstallRegistry {
+        plugin_id: String,
+        registry_path: Option<String>,
+    },
+    Enable {
+        plugin_id: Option<String>,
+    },
+    Disable {
+        plugin_id: Option<String>,
+    },
+    Remove {
+        plugin_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -244,6 +261,47 @@ pub fn run_console_session<R: BufRead, W: Write, E: Write>(
     }
 
     Ok(())
+}
+
+pub fn run_console_command(
+    command_line: &str,
+    config: ConsoleRunnerConfig,
+    render_result: bool,
+) -> Result<ConsoleSessionOutput, String> {
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut runner = ConsoleRunner::new(config);
+
+    let command = match parse_command_line(command_line) {
+        Ok(command) => command,
+        Err(message) => {
+            let error = invalid_input_error(&message);
+            write_user_error(&mut stdout, &mut stderr, &error).map_err(|err| err.to_string())?;
+            return Ok(ConsoleSessionOutput {
+                stdout: String::from_utf8(stdout).map_err(|err| err.to_string())?,
+                stderr: String::from_utf8(stderr).map_err(|err| err.to_string())?,
+            });
+        }
+    };
+
+    match runner.execute(command) {
+        Ok(result) => {
+            if let Some(message) = result.message.as_deref() {
+                writeln!(stdout, "{message}").map_err(|err| err.to_string())?;
+            }
+            if render_result && result.render {
+                writeln!(stdout, "{}", runner.render_screen()).map_err(|err| err.to_string())?;
+            }
+        }
+        Err(error) => {
+            write_user_error(&mut stdout, &mut stderr, &error).map_err(|err| err.to_string())?;
+        }
+    }
+
+    Ok(ConsoleSessionOutput {
+        stdout: String::from_utf8(stdout).map_err(|err| err.to_string())?,
+        stderr: String::from_utf8(stderr).map_err(|err| err.to_string())?,
+    })
 }
 
 #[cfg(test)]
@@ -471,7 +529,8 @@ impl ConsoleRunner {
                     return (false, Some("no selected files".to_string()));
                 }
             }
-            "index.stage_hunk" | "file.discard_hunk" => {
+            "index.stage_hunk" | "index.stage_lines" | "file.discard_hunk"
+            | "file.discard_lines" => {
                 if self.store.snapshot().diff.hunks.is_empty()
                     || !matches!(
                         self.store.snapshot().diff.source,
@@ -484,7 +543,7 @@ impl ConsoleRunner {
                     );
                 }
             }
-            "index.unstage_hunk" => {
+            "index.unstage_hunk" | "index.unstage_lines" => {
                 if self.store.snapshot().diff.hunks.is_empty()
                     || !matches!(
                         self.store.snapshot().diff.source,
@@ -533,9 +592,19 @@ impl ConsoleRunner {
                     return (false, Some("no rebase plan".to_string()));
                 }
             }
+            "rebase.plan.set_action" | "rebase.plan.move" | "rebase.plan.clear" => {
+                if self.store.snapshot().rebase.plan.is_none() {
+                    return (false, Some("no rebase plan".to_string()));
+                }
+            }
             "rebase.continue" | "rebase.skip" | "rebase.abort" => {
                 if self.store.snapshot().rebase.session.is_none() {
                     return (false, Some("no active rebase session".to_string()));
+                }
+            }
+            "conflict.focus" => {
+                if self.store.snapshot().selection.selected_paths.is_empty() {
+                    return (false, Some("no selected conflict files".to_string()));
                 }
             }
             "conflict.resolve.ours" | "conflict.resolve.theirs" | "conflict.mark_resolved" => {
@@ -604,22 +673,21 @@ impl ConsoleRunner {
                             .as_ref()
                             .and_then(|repo| repo.head.as_ref())
                             .is_some()
-                    {
-                        if let Err(error) = self.execute_in_open_repo(
+                        && let Err(error) = self.execute_in_open_repo(
                             "history.page",
                             vec!["0".to_string(), "20".to_string()],
                             true,
-                        ) {
-                            let detail = error.detail.as_deref().unwrap_or_default();
-                            let empty_history = detail.contains("does not have any commits yet")
-                                || detail.contains("ambiguous argument 'HEAD'")
-                                || detail.contains("bad revision 'HEAD'");
-                            if empty_history {
-                                self.store.clear_history();
-                                self.last_replayable = None;
-                            } else {
-                                return Err(error);
-                            }
+                        )
+                    {
+                        let detail = error.detail.as_deref().unwrap_or_default();
+                        let empty_history = detail.contains("does not have any commits yet")
+                            || detail.contains("ambiguous argument 'HEAD'")
+                            || detail.contains("bad revision 'HEAD'");
+                        if empty_history {
+                            self.store.clear_history();
+                            self.last_replayable = None;
+                        } else {
+                            return Err(error);
                         }
                     }
                 }
@@ -661,15 +729,6 @@ impl ConsoleRunner {
 
         self.ensure_confirmation(target, args, confirmed)?;
 
-        if target == "rebase.interactive" && self.find_action(target).is_none() {
-            return Err(UserFacingError::with_category(
-                "Feature disabled",
-                "Interactive rebase beta is disabled. Set BRANCHFORGE_REBASE_BETA=1 and restart the runner.",
-                None,
-                ErrorCategory::Validation,
-            ));
-        }
-
         match target {
             "repo.open" => {
                 let path = args.first().ok_or_else(|| {
@@ -705,12 +764,50 @@ impl ConsoleRunner {
                 self.show_journal_summary();
                 Ok("updated diagnostics journal summary".to_string())
             }
+            "conflict.focus" => {
+                let repo_dir = self.require_repo_dir()?;
+                let path = if let Some(raw) = args.first() {
+                    normalize_repo_path(&repo_dir, raw)
+                } else {
+                    self.selected_file()?
+                };
+                self.store.update_selected_paths(vec![path.clone()]);
+                self.execute_job(
+                    &repo_dir,
+                    "diff.worktree",
+                    JobLock::Read,
+                    vec![path.clone()],
+                    true,
+                )?;
+                self.store
+                    .set_active_view(Some(PanelKind::Branches.view_id().to_string()));
+                Ok(format!("focused conflict file {path}"))
+            }
             "plugin.list" => self.run_plugin_op(PluginOp::List, confirmed),
+            "plugin.discover" => {
+                let registry_path = args.first().cloned();
+                self.run_plugin_op(PluginOp::Discover { registry_path }, confirmed)
+            }
             "plugin.install" => {
                 let package_dir = args.first().cloned().ok_or_else(|| {
                     invalid_input_error("plugin.install requires package directory")
                 })?;
                 self.run_plugin_op(PluginOp::Install { package_dir }, confirmed)
+            }
+            "plugin.install_registry" => {
+                let plugin_id = args.first().cloned().ok_or_else(|| {
+                    invalid_input_error(
+                        "plugin.install_registry requires plugin id: `run plugin.install_registry <plugin_id> [registry_path]`",
+                    )
+                })?;
+                let registry_path = args.get(1).cloned();
+                self.run_plugin_op(
+                    PluginOp::InstallRegistry {
+                        plugin_id,
+                        registry_path,
+                    },
+                    confirmed,
+                )
             }
             "plugin.enable" => {
                 let plugin_id = args.first().cloned();
@@ -730,6 +827,16 @@ impl ConsoleRunner {
                     .set_active_view(Some(PanelKind::Diagnostics.view_id().to_string()));
                 Ok("updated diagnostics repo capabilities".to_string())
             }
+            "ops.check_deps"
+            | "ops.dev_check"
+            | "release.notes"
+            | "release.sign"
+            | "release.package_local"
+            | "release.package"
+            | "release.verify"
+            | "verify.sprint22"
+            | "verify.sprint23"
+            | "verify.sprint24" => self.run_operational_op(target, args),
             _ if self.find_action(target).is_some() || is_supported_direct_op(target) => {
                 let resolved_args = self.resolve_run_args(target, args)?;
                 self.execute_in_open_repo(target, resolved_args, true)?;
@@ -883,10 +990,138 @@ impl ConsoleRunner {
         Ok("refreshed current context".to_string())
     }
 
+    fn run_operational_op(
+        &mut self,
+        target: &str,
+        args: &[String],
+    ) -> Result<String, UserFacingError> {
+        let repo_root = operations::workspace_root();
+        let detail = match target {
+            "ops.check_deps" => operations::check_dependency_guards(&repo_root),
+            "ops.dev_check" => operations::run_dev_check(&repo_root),
+            "release.notes" => {
+                let out_file = args
+                    .first()
+                    .map(|raw| resolve_path(&repo_root, raw))
+                    .unwrap_or_else(|| repo_root.join("target/tmp/release-notes.md"));
+                let channel = args.get(1).map(String::as_str).unwrap_or("local");
+                operations::generate_release_notes(&repo_root, &out_file, channel)
+            }
+            "release.sign" => {
+                let artifact_dir = args
+                    .first()
+                    .map(|raw| resolve_path(&repo_root, raw))
+                    .unwrap_or_else(|| repo_root.join("target/tmp/local-package"));
+                operations::sign_artifacts(&artifact_dir)
+            }
+            "release.package_local" => {
+                let out_dir = args
+                    .first()
+                    .map(|raw| resolve_path(&repo_root, raw))
+                    .unwrap_or_else(|| repo_root.join("target/tmp/local-package"));
+                let channel = args.get(1).cloned().unwrap_or_else(|| "local".to_string());
+                let rollback_from = args
+                    .get(2)
+                    .cloned()
+                    .unwrap_or_else(|| "last-stable".to_string());
+                operations::package_local(
+                    &repo_root,
+                    &operations::LocalPackageOptions {
+                        out_dir,
+                        channel,
+                        rollback_from,
+                    },
+                )
+            }
+            "release.package" => {
+                let out_dir = args
+                    .first()
+                    .map(|raw| resolve_path(&repo_root, raw))
+                    .unwrap_or_else(|| repo_root.join("target/tmp/release-package"));
+                let channel = args.get(1).cloned().unwrap_or_else(|| "stable".to_string());
+                let rollback_from = args
+                    .get(2)
+                    .cloned()
+                    .unwrap_or_else(|| "last-stable".to_string());
+                operations::package_release(
+                    &repo_root,
+                    &operations::ReleasePackageOptions {
+                        out_dir,
+                        channel,
+                        rollback_from,
+                    },
+                )
+                .map(|result| {
+                    format!(
+                        "release package directory: {}\nrelease archive: {}",
+                        result.out_dir.display(),
+                        result.archive_path.display()
+                    )
+                })
+            }
+            "release.verify" => {
+                let out_dir = args
+                    .first()
+                    .map(|raw| resolve_path(&repo_root, raw))
+                    .unwrap_or_else(|| repo_root.join("target/tmp/sprint24-package"));
+                let channel = args.get(1).cloned().unwrap_or_else(|| "stable".to_string());
+                let rollback_from = args
+                    .get(2)
+                    .cloned()
+                    .unwrap_or_else(|| "last-stable".to_string());
+                operations::verify_release(
+                    &repo_root,
+                    &operations::ReleasePackageOptions {
+                        out_dir,
+                        channel,
+                        rollback_from,
+                    },
+                )
+            }
+            "verify.sprint22" => operations::verify_sprint22(&repo_root),
+            "verify.sprint23" => {
+                let out_dir = args
+                    .first()
+                    .map(|raw| resolve_path(&repo_root, raw))
+                    .unwrap_or_else(|| repo_root.join("target/tmp/sprint23-package-check"));
+                operations::verify_sprint23(&repo_root, &out_dir)
+            }
+            "verify.sprint24" => {
+                let out_dir = args
+                    .first()
+                    .map(|raw| resolve_path(&repo_root, raw))
+                    .unwrap_or_else(|| repo_root.join("target/tmp/sprint24-package"));
+                let channel = args.get(1).cloned().unwrap_or_else(|| "stable".to_string());
+                let rollback_from = args
+                    .get(2)
+                    .cloned()
+                    .unwrap_or_else(|| "last-stable".to_string());
+                operations::verify_sprint24(
+                    &repo_root,
+                    &operations::ReleasePackageOptions {
+                        out_dir,
+                        channel,
+                        rollback_from,
+                    },
+                )
+            }
+            _ => Err(format!("unsupported operational op `{target}`")),
+        }
+        .map_err(translate_operational_error)?;
+
+        self.store
+            .set_active_view(Some(PanelKind::Diagnostics.view_id().to_string()));
+        self.store
+            .update_diff(render_text_diff(&format!("ops:{target}"), detail.clone()));
+        Ok(detail.lines().next().unwrap_or(target).to_string())
+    }
+
     fn run_plugin_op(&mut self, op: PluginOp, confirmed: bool) -> Result<String, UserFacingError> {
         let action_id = match &op {
             PluginOp::List => "plugin.list",
+            PluginOp::Discover { .. } => "plugin.discover",
             PluginOp::Install { .. } => "plugin.install",
+            PluginOp::InstallRegistry { .. } => "plugin.install_registry",
             PluginOp::Enable { .. } => "plugin.enable",
             PluginOp::Disable { .. } => "plugin.disable",
             PluginOp::Remove { .. } => "plugin.remove",
@@ -910,6 +1145,22 @@ impl ConsoleRunner {
                     "listed plugins from {}",
                     self.config.plugins_root.display()
                 ))
+            }
+            PluginOp::Discover { registry_path } => {
+                let registry = self.resolve_plugin_registry_path(registry_path.as_deref());
+                let discovered =
+                    discover_local_plugins(&registry).map_err(translate_plugin_manager_error)?;
+                self.store
+                    .set_active_view(Some("diagnostics.panel".to_string()));
+                self.store.update_diff(render_text_diff(
+                    "plugin:discover",
+                    render_discovered_plugin_list(&discovered, &registry),
+                ));
+                self.last_replayable = Some(ReplayableRun::Run {
+                    target: "plugin.discover".to_string(),
+                    args: registry_path.into_iter().collect(),
+                });
+                Ok(format!("discovered plugins from {}", registry.display()))
             }
             PluginOp::Install { package_dir } => {
                 let path = resolve_path(&self.config.cwd, &package_dir);
@@ -935,6 +1186,38 @@ impl ConsoleRunner {
                     args: Vec::new(),
                 });
                 Ok(format!("installed plugin {}", installed.manifest.plugin_id))
+            }
+            PluginOp::InstallRegistry {
+                plugin_id,
+                registry_path,
+            } => {
+                let registry = self.resolve_plugin_registry_path(registry_path.as_deref());
+                let installed =
+                    install_registry_plugin(&registry, &self.config.plugins_root, &plugin_id)
+                        .map_err(translate_plugin_manager_error)?;
+                self.store
+                    .update_selected_plugin(Some(installed.manifest.plugin_id.clone()));
+                self.sync_plugin_inventory()?;
+                self.store
+                    .set_active_view(Some("diagnostics.panel".to_string()));
+                self.store.update_diff(render_text_diff(
+                    "plugin:install_registry",
+                    format!(
+                        "installed registry plugin {}\nversion: {}\nregistry: {}\nenabled: {}",
+                        installed.manifest.plugin_id,
+                        installed.manifest.version,
+                        registry.display(),
+                        installed.enabled
+                    ),
+                ));
+                self.last_replayable = Some(ReplayableRun::Run {
+                    target: "plugin.list".to_string(),
+                    args: Vec::new(),
+                });
+                Ok(format!(
+                    "installed registry plugin {}",
+                    installed.manifest.plugin_id
+                ))
             }
             PluginOp::Enable { plugin_id } => {
                 self.sync_plugin_inventory()?;
@@ -1034,6 +1317,17 @@ impl ConsoleRunner {
         Ok(installed)
     }
 
+    fn resolve_plugin_registry_path(&self, raw: Option<&str>) -> PathBuf {
+        raw.map(|value| {
+            if value.contains("://") {
+                PathBuf::from(value)
+            } else {
+                resolve_path(&self.config.cwd, value)
+            }
+        })
+        .unwrap_or_else(|| self.config.cwd.join("plugin_registry/registry.json"))
+    }
+
     fn resolve_run_args(
         &self,
         target: &str,
@@ -1124,9 +1418,12 @@ impl ConsoleRunner {
             | "index.stage_paths"
             | "index.unstage_paths"
             | "index.stage_hunk"
+            | "index.stage_lines"
             | "index.unstage_hunk"
+            | "index.unstage_lines"
             | "file.discard"
             | "file.discard_hunk"
+            | "file.discard_lines"
             | "commit.create"
             | "commit.amend"
             | "stash.create"
@@ -1150,6 +1447,9 @@ impl ConsoleRunner {
             | "branch.rename"
             | "branch.delete"
             | "rebase.plan.create"
+            | "rebase.plan.set_action"
+            | "rebase.plan.move"
+            | "rebase.plan.clear"
             | "rebase.execute"
             | "rebase.continue"
             | "rebase.skip"
@@ -1157,6 +1457,7 @@ impl ConsoleRunner {
             | "merge.execute"
             | "merge.abort"
             | "reset.refs"
+            | "conflict.focus"
             | "conflict.list"
             | "conflict.resolve.ours"
             | "conflict.resolve.theirs"
@@ -1165,9 +1466,11 @@ impl ConsoleRunner {
             | "conflict.abort" => Some(PanelKind::Branches.view_id()),
             "tag.create" | "tag.delete" | "tag.checkout" => Some(PanelKind::Tags.view_id()),
             "compare.refs" => Some(PanelKind::Compare.view_id()),
-            "diagnostics.repo_capabilities" | "diagnostics.journal_summary" => {
-                Some(PanelKind::Diagnostics.view_id())
-            }
+            "diagnostics.repo_capabilities"
+            | "diagnostics.journal_summary"
+            | "diagnostics.lfs_status"
+            | "diagnostics.lfs_fetch"
+            | "diagnostics.lfs_pull" => Some(PanelKind::Diagnostics.view_id()),
             _ => None,
         };
 
@@ -1271,9 +1574,7 @@ impl ConsoleRunner {
     fn run_replayable(&mut self, replayable: ReplayableRun) -> Result<(), UserFacingError> {
         match replayable {
             ReplayableRun::Run { target, args } => {
-                if target.starts_with("plugin.") {
-                    let _ = self.run_target(&target, &args, true)?;
-                } else if target == "diagnostics.journal_summary" {
+                if target.starts_with("plugin.") || target == "diagnostics.journal_summary" {
                     let _ = self.run_target(&target, &args, true)?;
                 } else {
                     self.execute_in_open_repo(&target, args, true)?;
@@ -1452,6 +1753,122 @@ fn host_action_spec(
 fn host_plugin_action_specs() -> Vec<ActionSpec> {
     vec![
         host_action_spec(
+            "ops.check_deps",
+            "Check Dependency Guards",
+            Some("always"),
+            None,
+            ActionEffects::read_only(),
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "ops.dev_check",
+            "Run Dev Check",
+            Some("always"),
+            Some(DangerLevel::Low),
+            ActionEffects {
+                writes_worktree: true,
+                danger_level: DangerLevel::Low,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "release.notes",
+            "Generate Release Notes",
+            Some("always"),
+            Some(DangerLevel::Low),
+            ActionEffects {
+                writes_worktree: true,
+                danger_level: DangerLevel::Low,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "release.sign",
+            "Sign Artifacts",
+            Some("always"),
+            Some(DangerLevel::Low),
+            ActionEffects {
+                writes_worktree: true,
+                danger_level: DangerLevel::Low,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "release.package_local",
+            "Create Local Package",
+            Some("always"),
+            Some(DangerLevel::Low),
+            ActionEffects {
+                writes_worktree: true,
+                danger_level: DangerLevel::Low,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "release.package",
+            "Create Release Package",
+            Some("always"),
+            Some(DangerLevel::Low),
+            ActionEffects {
+                writes_worktree: true,
+                danger_level: DangerLevel::Low,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "release.verify",
+            "Verify Release Package",
+            Some("always"),
+            Some(DangerLevel::Low),
+            ActionEffects {
+                writes_worktree: true,
+                danger_level: DangerLevel::Low,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "verify.sprint22",
+            "Verify Sprint 22",
+            Some("always"),
+            Some(DangerLevel::Low),
+            ActionEffects {
+                writes_worktree: true,
+                danger_level: DangerLevel::Low,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "verify.sprint23",
+            "Verify Sprint 23",
+            Some("always"),
+            Some(DangerLevel::Low),
+            ActionEffects {
+                writes_worktree: true,
+                danger_level: DangerLevel::Low,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "verify.sprint24",
+            "Verify Sprint 24",
+            Some("always"),
+            Some(DangerLevel::Low),
+            ActionEffects {
+                writes_worktree: true,
+                danger_level: DangerLevel::Low,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
             "plugin.list",
             "List Plugins",
             Some("always"),
@@ -1460,8 +1877,28 @@ fn host_plugin_action_specs() -> Vec<ActionSpec> {
             ConfirmPolicy::Never,
         ),
         host_action_spec(
+            "plugin.discover",
+            "Discover Registry Plugins",
+            Some("always"),
+            None,
+            ActionEffects::read_only(),
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
             "plugin.install",
             "Install Plugin",
+            Some("always"),
+            Some(DangerLevel::Low),
+            ActionEffects {
+                writes_worktree: true,
+                danger_level: DangerLevel::Low,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "plugin.install_registry",
+            "Install Registry Plugin",
             Some("always"),
             Some(DangerLevel::Low),
             ActionEffects {
@@ -1564,12 +2001,22 @@ fn parse_command_line(line: &str) -> Result<ConsoleCommand, String> {
         "plugin" => {
             let (plugin_tokens, confirmed) = extract_confirm_flags(&tokens[1..]);
             let subcommand = plugin_tokens.first().map(String::as_str).ok_or_else(|| {
-                "usage: plugin <list|install|enable|disable|remove> ...".to_string()
+                "usage: plugin <list|discover|install|install-registry|enable|disable|remove> ..."
+                    .to_string()
             })?;
             let op = match subcommand {
                 "list" => PluginOp::List,
+                "discover" => PluginOp::Discover {
+                    registry_path: join_tail_optional(&plugin_tokens, 1),
+                },
                 "install" => PluginOp::Install {
                     package_dir: join_tail(&plugin_tokens, 1)?,
+                },
+                "install-registry" => PluginOp::InstallRegistry {
+                    plugin_id: plugin_tokens.get(1).cloned().ok_or_else(|| {
+                        "usage: plugin install-registry <plugin_id> [registry_path]".to_string()
+                    })?,
+                    registry_path: join_tail_optional(&plugin_tokens, 2),
                 },
                 "enable" => PluginOp::Enable {
                     plugin_id: join_tail_optional(&plugin_tokens, 1),
@@ -1581,9 +2028,7 @@ fn parse_command_line(line: &str) -> Result<ConsoleCommand, String> {
                     plugin_id: join_tail_optional(&plugin_tokens, 1),
                 },
                 _ => {
-                    return Err(
-                        "plugin must be one of: list, install, enable, disable, remove".to_string(),
-                    );
+                    return Err("plugin must be one of: list, discover, install, install-registry, enable, disable, remove".to_string());
                 }
             };
             Ok(ConsoleCommand::Plugin { op, confirmed })
@@ -1697,7 +2142,7 @@ fn help_text() -> String {
         "select branch <name>",
         "select plugin <id>",
         "refresh",
-        "plugin <list|install|enable|disable|remove> ...",
+        "plugin <list|discover|install|install-registry|enable|disable|remove> ...",
         "quit",
         "",
         "Notes",
@@ -1757,9 +2202,12 @@ fn ops_text() -> String {
         "index.stage_paths <path...>",
         "index.unstage_paths <path...>",
         "index.stage_hunk <path> <hunk_index>",
+        "index.stage_lines <path> <hunk_index> <line_index...>",
         "index.unstage_hunk <path> <hunk_index>",
+        "index.unstage_lines <path> <hunk_index> <line_index...>",
         "file.discard <path...>",
         "file.discard_hunk <path> <hunk_index>",
+        "file.discard_lines <path> <hunk_index> <line_index...>",
         "commit.create <message>",
         "commit.amend <message>",
         "",
@@ -1796,6 +2244,9 @@ fn ops_text() -> String {
         "revert.commit <oid>",
         "reset.refs <soft|mixed|hard> [target]",
         "rebase.plan.create <base_ref>",
+        "rebase.plan.set_action <entry_index> <pick|reword|edit|squash|fixup|drop>",
+        "rebase.plan.move <from_index> <to_index>",
+        "rebase.plan.clear",
         "rebase.execute [autosquash]",
         "rebase.continue",
         "rebase.skip",
@@ -1803,6 +2254,7 @@ fn ops_text() -> String {
         "",
         "[conflicts]",
         "conflict.list",
+        "conflict.focus <path>",
         "conflict.resolve.ours <path...>",
         "conflict.resolve.theirs <path...>",
         "conflict.mark_resolved <path...>",
@@ -1811,10 +2263,27 @@ fn ops_text() -> String {
         "",
         "[diagnostics]",
         "diagnostics.repo_capabilities",
+        "diagnostics.lfs_status",
+        "diagnostics.lfs_fetch",
+        "diagnostics.lfs_pull",
+        "",
+        "[operations]",
+        "ops.check_deps",
+        "ops.dev_check",
+        "release.notes [out_file] [channel]",
+        "release.sign [artifact_dir]",
+        "release.package_local [out_dir] [channel] [rollback_from]",
+        "release.package [out_dir] [channel] [rollback_from]",
+        "release.verify [out_dir] [channel] [rollback_from]",
+        "verify.sprint22",
+        "verify.sprint23 [out_dir]",
+        "verify.sprint24 [out_dir] [channel] [rollback_from]",
         "",
         "[plugins]",
         "plugin.list",
+        "plugin.discover [registry_path]",
         "plugin.install <package_dir>",
+        "plugin.install_registry <plugin_id> [registry_path]",
         "plugin.enable [plugin_id]",
         "plugin.disable [plugin_id]",
         "plugin.remove [plugin_id]",
@@ -1860,6 +2329,18 @@ fn translate_plugin_manager_error(error: PluginManagerError) -> UserFacingError 
             Some(detail),
             ErrorCategory::Validation,
         ),
+        PluginManagerError::InvalidRegistry(detail) => UserFacingError::with_category(
+            "Invalid plugin registry",
+            "Plugin registry index is invalid.",
+            Some(detail),
+            ErrorCategory::Validation,
+        ),
+        PluginManagerError::UnsupportedSource(detail) => UserFacingError::with_category(
+            "Unsupported plugin source",
+            "Registry or package source is not supported by this host build.",
+            Some(detail),
+            ErrorCategory::Validation,
+        ),
         PluginManagerError::IncompatiblePlugin {
             plugin_id,
             required_protocol,
@@ -1884,7 +2365,22 @@ fn translate_plugin_manager_error(error: PluginManagerError) -> UserFacingError 
             None,
             ErrorCategory::Validation,
         ),
+        PluginManagerError::RegistryPluginNotFound(plugin_id) => UserFacingError::with_category(
+            "Registry plugin not found",
+            &format!("Plugin `{plugin_id}` is not present in the selected registry."),
+            None,
+            ErrorCategory::Validation,
+        ),
     }
+}
+
+fn translate_operational_error(detail: String) -> UserFacingError {
+    UserFacingError::with_category(
+        "Operational command failed",
+        "Runtime operational command failed.",
+        Some(detail),
+        ErrorCategory::System,
+    )
 }
 
 fn write_user_error<W: Write, E: Write>(
@@ -1911,7 +2407,7 @@ fn write_user_error<W: Write, E: Write>(
     Ok(())
 }
 
-fn lock_for_op(op: &str, args: &[String]) -> Result<JobLock, UserFacingError> {
+fn lock_for_op(op: &str, _args: &[String]) -> Result<JobLock, UserFacingError> {
     let lock = match op {
         "repo.open"
         | "status.refresh"
@@ -1930,16 +2426,22 @@ fn lock_for_op(op: &str, args: &[String]) -> Result<JobLock, UserFacingError> {
         | "submodule.list"
         | "submodule.open"
         | "diagnostics.repo_capabilities"
+        | "diagnostics.lfs_status"
         | "diff.worktree"
         | "diff.index"
         | "diff.commit"
         | "compare.refs"
-        | "conflict.list" => JobLock::Read,
+        | "conflict.list"
+        | "conflict.focus" => JobLock::Read,
+        "rebase.plan.set_action" | "rebase.plan.move" | "rebase.plan.clear" => JobLock::Read,
         "index.stage_paths"
         | "index.unstage_paths"
         | "index.stage_hunk"
+        | "index.stage_lines"
         | "index.unstage_hunk"
+        | "index.unstage_lines"
         | "file.discard_hunk"
+        | "file.discard_lines"
         | "stash.create"
         | "stash.apply"
         | "stash.pop"
@@ -1947,20 +2449,14 @@ fn lock_for_op(op: &str, args: &[String]) -> Result<JobLock, UserFacingError> {
         | "conflict.resolve.ours"
         | "conflict.resolve.theirs"
         | "conflict.mark_resolved" => JobLock::IndexWrite,
+        "diagnostics.lfs_fetch" | "diagnostics.lfs_pull" => JobLock::Network,
         "commit.create" | "commit.amend" | "worktree.create" | "worktree.remove" | "stash.drop"
         | "merge.execute" | "merge.abort" | "cherry_pick.commit" | "cherry_pick.abort"
         | "revert.commit" | "rebase.plan.create" | "rebase.execute" | "rebase.continue"
         | "rebase.skip" | "rebase.abort" | "branch.checkout" | "branch.create"
         | "branch.rename" | "branch.delete" | "tag.create" | "tag.delete" | "tag.checkout"
         | "file.discard" | "conflict.continue" | "conflict.abort" => JobLock::RefsWrite,
-        "reset.refs" => {
-            let mode = args.first().map(String::as_str).unwrap_or("mixed");
-            if mode == "soft" {
-                JobLock::RefsWrite
-            } else {
-                JobLock::RefsWrite
-            }
-        }
+        "reset.refs" => JobLock::RefsWrite,
         _ => {
             return Err(UserFacingError::with_category(
                 "Unsupported operation",
@@ -1990,9 +2486,12 @@ fn is_supported_direct_op(op: &str) -> bool {
             | "index.stage_paths"
             | "index.unstage_paths"
             | "index.stage_hunk"
+            | "index.stage_lines"
             | "index.unstage_hunk"
+            | "index.unstage_lines"
             | "file.discard"
             | "file.discard_hunk"
+            | "file.discard_lines"
             | "commit.create"
             | "commit.amend"
             | "stash.create"
@@ -2008,10 +2507,14 @@ fn is_supported_direct_op(op: &str) -> bool {
             | "submodule.init_update"
             | "submodule.open"
             | "diagnostics.repo_capabilities"
+            | "diagnostics.lfs_status"
+            | "diagnostics.lfs_fetch"
+            | "diagnostics.lfs_pull"
             | "diff.worktree"
             | "diff.index"
             | "diff.commit"
             | "compare.refs"
+            | "conflict.focus"
             | "merge.execute"
             | "merge.abort"
             | "cherry_pick.commit"
@@ -2019,6 +2522,9 @@ fn is_supported_direct_op(op: &str) -> bool {
             | "revert.commit"
             | "reset.refs"
             | "rebase.plan.create"
+            | "rebase.plan.set_action"
+            | "rebase.plan.move"
+            | "rebase.plan.clear"
             | "rebase.execute"
             | "rebase.continue"
             | "rebase.skip"
@@ -2037,7 +2543,9 @@ fn is_supported_direct_op(op: &str) -> bool {
             | "tag.delete"
             | "tag.checkout"
             | "plugin.list"
+            | "plugin.discover"
             | "plugin.install"
+            | "plugin.install_registry"
             | "plugin.enable"
             | "plugin.disable"
             | "plugin.remove"
@@ -2099,6 +2607,40 @@ fn render_plugin_list(
             plugin.manifest.protocol_version,
             plugin.manifest.permissions.join(", ")
         ));
+    }
+    lines.join("\n")
+}
+
+fn render_discovered_plugin_list(
+    discovered: &[plugin_host::DiscoverablePluginInfo],
+    registry_path: &Path,
+) -> String {
+    if discovered.is_empty() {
+        return format!("registry: {}\nplugins: <empty>", registry_path.display());
+    }
+
+    let mut lines = vec![format!("registry: {}", registry_path.display())];
+    for plugin in discovered {
+        let package_label = if let Some(manifest_url) = plugin.manifest_url.as_deref() {
+            let entrypoint_url = plugin.entrypoint_url.as_deref().unwrap_or("<missing>");
+            format!(
+                "remote manifest={} entrypoint={}",
+                manifest_url, entrypoint_url
+            )
+        } else {
+            format!("package={}", plugin.package_dir.display())
+        };
+        lines.push(format!(
+            "{} v{} channel={} {} perms={}",
+            plugin.manifest.plugin_id,
+            plugin.manifest.version,
+            plugin.channel.as_deref().unwrap_or("stable"),
+            package_label,
+            plugin.manifest.permissions.join(", ")
+        ));
+        if let Some(summary) = plugin.summary.as_deref() {
+            lines.push(format!("  summary: {summary}"));
+        }
     }
     lines.join("\n")
 }
@@ -2235,6 +2777,96 @@ mod tests {
         repo_dir
     }
 
+    fn git_lfs_available() -> bool {
+        std::process::Command::new("git")
+            .args(["lfs", "version"])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    }
+
+    fn init_lfs_runtime_repo(label: &str) -> Option<(PathBuf, String)> {
+        if !git_lfs_available() {
+            return None;
+        }
+
+        let root = unique_temp_dir(label);
+        let origin = root.join("origin.git");
+        let source = root.join("source");
+        let clone = root.join("clone");
+        let payload = "branchforge-lfs-runtime\n".repeat(64);
+
+        assert!(std::fs::create_dir_all(&source).is_ok());
+        assert!(git_service::run_git(&source, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&source, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&source, &["config", "user.name", "Dev User"]).is_ok());
+        assert!(git_service::run_git(&source, &["lfs", "install", "--local"]).is_ok());
+        assert!(git_service::run_git(&source, &["lfs", "track", "*.bin"]).is_ok());
+        assert!(std::fs::write(source.join("payload.bin"), &payload).is_ok());
+        assert!(
+            git_service::stage_paths(
+                &source,
+                &[".gitattributes".to_string(), "payload.bin".to_string()],
+            )
+            .is_ok()
+        );
+        assert!(git_service::commit_create(&source, "add lfs payload").is_ok());
+
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "--bare", origin.to_string_lossy().as_ref()])
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false)
+        );
+        assert!(
+            git_service::run_git(
+                &source,
+                &["remote", "add", "origin", origin.to_string_lossy().as_ref()],
+            )
+            .is_ok()
+        );
+        assert!(git_service::run_git(&source, &["push", "-u", "origin", "HEAD"]).is_ok());
+
+        let branch = git_service::run_git(&source, &["branch", "--show-current"])
+            .ok()
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .map(|text| text.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "master".to_string());
+        assert!(
+            std::process::Command::new("git")
+                .args([
+                    "--git-dir",
+                    origin.to_string_lossy().as_ref(),
+                    "symbolic-ref",
+                    "HEAD",
+                    &format!("refs/heads/{branch}"),
+                ])
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false)
+        );
+
+        assert!(
+            std::process::Command::new("git")
+                .env("GIT_LFS_SKIP_SMUDGE", "1")
+                .args([
+                    "clone",
+                    origin.to_string_lossy().as_ref(),
+                    clone.to_string_lossy().as_ref(),
+                ])
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false)
+        );
+        assert!(git_service::run_git(&clone, &["lfs", "install", "--local"]).is_ok());
+
+        Some((clone, payload))
+    }
+
     fn create_plugin_package(root: &Path, plugin_id: &str) -> PathBuf {
         let package_dir = root.join(format!("pkg-{plugin_id}"));
         assert!(std::fs::create_dir_all(&package_dir).is_ok());
@@ -2257,6 +2889,33 @@ mod tests {
         let raw = serde_json::to_string_pretty(&manifest).unwrap_or_else(|_| "{}".to_string());
         assert!(std::fs::write(package_dir.join("plugin.json"), raw).is_ok());
         package_dir
+    }
+
+    fn create_plugin_registry(root: &Path, plugin_id: &str, package_dir: &Path) -> PathBuf {
+        let registry_dir = root.join("plugin_registry");
+        assert!(std::fs::create_dir_all(&registry_dir).is_ok());
+        let relative_package = package_dir
+            .strip_prefix(root)
+            .unwrap_or(package_dir)
+            .to_string_lossy()
+            .to_string();
+        assert!(
+            std::fs::write(
+                registry_dir.join("registry.json"),
+                serde_json::json!({
+                    "registry_version": "1",
+                    "plugins": [{
+                        "plugin_id": plugin_id,
+                        "package_dir": format!("../{relative_package}"),
+                        "summary": format!("{plugin_id} registry plugin"),
+                        "channel": "stable"
+                    }]
+                })
+                .to_string(),
+            )
+            .is_ok()
+        );
+        registry_dir
     }
 
     #[test]
@@ -2326,6 +2985,52 @@ mod tests {
     }
 
     #[test]
+    fn parses_plugin_discover_command() {
+        let command = parse_command_line("plugin discover plugin_registry").expect("parse");
+        assert_eq!(
+            command,
+            ConsoleCommand::Plugin {
+                op: PluginOp::Discover {
+                    registry_path: Some("plugin_registry".to_string()),
+                },
+                confirmed: false,
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_plugin_registry_path_preserves_url_sources() {
+        let root = unique_temp_dir("plugin-registry-url");
+        assert!(std::fs::create_dir_all(&root).is_ok());
+        let runner = ConsoleRunner::new(test_config(&root));
+
+        let resolved =
+            runner.resolve_plugin_registry_path(Some("http://127.0.0.1:3000/registry.json"));
+        assert_eq!(
+            resolved,
+            PathBuf::from("http://127.0.0.1:3000/registry.json")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn parses_plugin_install_registry_command() {
+        let command = parse_command_line("plugin install-registry sample_status plugin_registry")
+            .expect("parse");
+        assert_eq!(
+            command,
+            ConsoleCommand::Plugin {
+                op: PluginOp::InstallRegistry {
+                    plugin_id: "sample_status".to_string(),
+                    registry_path: Some("plugin_registry".to_string()),
+                },
+                confirmed: false,
+            }
+        );
+    }
+
+    #[test]
     fn parses_plugin_disable_without_id() {
         let command = parse_command_line("plugin disable").expect("parse");
         assert_eq!(
@@ -2360,9 +3065,50 @@ mod tests {
         assert!(ops.contains("worktree.create <path> <branch>"));
         assert!(ops.contains("submodule.init_update [path...]"));
         assert!(ops.contains("merge.execute <source_ref> [ff|fast-forward|no-ff|squash]"));
+        assert!(ops.contains("index.stage_lines <path> <hunk_index> <line_index...>"));
+        assert!(ops.contains("index.unstage_lines <path> <hunk_index> <line_index...>"));
+        assert!(ops.contains("file.discard_lines <path> <hunk_index> <line_index...>"));
         assert!(ops.contains("rebase.plan.create <base_ref>"));
+        assert!(
+            ops.contains(
+                "rebase.plan.set_action <entry_index> <pick|reword|edit|squash|fixup|drop>"
+            )
+        );
+        assert!(ops.contains("rebase.plan.move <from_index> <to_index>"));
+        assert!(ops.contains("rebase.plan.clear"));
+        assert!(ops.contains("conflict.focus <path>"));
         assert!(ops.contains("conflict.resolve.ours <path...>"));
+        assert!(ops.contains("diagnostics.lfs_status"));
+        assert!(ops.contains("diagnostics.lfs_fetch"));
+        assert!(ops.contains("diagnostics.lfs_pull"));
+        assert!(ops.contains("plugin.discover [registry_path]"));
+        assert!(ops.contains("plugin.install_registry <plugin_id> [registry_path]"));
         assert!(ops.contains("plugin.remove [plugin_id]"));
+        assert!(ops.contains("verify.sprint22"));
+        assert!(ops.contains("verify.sprint23 [out_dir]"));
+        assert!(ops.contains("verify.sprint24 [out_dir] [channel] [rollback_from]"));
+    }
+
+    #[test]
+    fn one_shot_console_command_runs_release_notes_runtime_flow() {
+        let root = unique_temp_dir("one-shot-release-notes");
+        assert!(std::fs::create_dir_all(&root).is_ok());
+        let out_file = root.join("release_notes.md");
+
+        let output = run_console_command(
+            &format!("run release.notes {} stable", out_file.to_string_lossy()),
+            test_config(&root),
+            false,
+        )
+        .expect("one-shot command");
+
+        assert!(output.stderr.is_empty());
+        assert!(output.stdout.contains("release notes generated at"));
+        let rendered = std::fs::read_to_string(&out_file).unwrap_or_default();
+        assert!(rendered.contains("Branchforge"));
+        assert!(rendered.contains("Channel: stable"));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -2632,6 +3378,122 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plugin_discover_and_install_registry_flow_updates_diagnostics_state() {
+        let root = unique_temp_dir("plugin-registry-runner");
+        assert!(std::fs::create_dir_all(&root).is_ok());
+        let package_dir = create_plugin_package(&root, "sample_status");
+        let registry_dir = create_plugin_registry(&root, "sample_status", &package_dir);
+        let mut runner = ConsoleRunner::new(test_config(&root));
+
+        assert!(
+            runner
+                .execute(ConsoleCommand::Plugin {
+                    op: PluginOp::Discover {
+                        registry_path: Some(registry_dir.display().to_string()),
+                    },
+                    confirmed: false,
+                })
+                .is_ok()
+        );
+        let discover_diff = runner
+            .store
+            .snapshot()
+            .diff
+            .content
+            .clone()
+            .unwrap_or_default();
+        assert!(discover_diff.contains("registry:"));
+        assert!(discover_diff.contains("sample_status v0.1.0"));
+
+        assert!(
+            runner
+                .execute(ConsoleCommand::Plugin {
+                    op: PluginOp::InstallRegistry {
+                        plugin_id: "sample_status".to_string(),
+                        registry_path: Some(registry_dir.display().to_string()),
+                    },
+                    confirmed: false,
+                })
+                .is_ok()
+        );
+        assert_eq!(runner.store.snapshot().installed_plugins.len(), 1);
+        assert_eq!(
+            runner
+                .store
+                .snapshot()
+                .selection
+                .selected_plugin_id
+                .as_deref(),
+            Some("sample_status")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn diagnostics_lfs_ops_work_through_console_runtime() {
+        let Some((repo_dir, payload)) = init_lfs_runtime_repo("lfs-console") else {
+            return;
+        };
+        let mut runner = ConsoleRunner::new(test_config(&repo_dir));
+
+        assert!(
+            runner
+                .execute(ConsoleCommand::Open {
+                    path: repo_dir.to_string_lossy().to_string(),
+                })
+                .is_ok()
+        );
+
+        assert!(
+            runner
+                .execute(ConsoleCommand::Run {
+                    target: "diagnostics.lfs_status".to_string(),
+                    args: Vec::new(),
+                    confirmed: false,
+                })
+                .is_ok()
+        );
+        assert_eq!(
+            runner.store.snapshot().active_view.as_deref(),
+            Some("diagnostics.panel")
+        );
+
+        let pointer_before =
+            std::fs::read_to_string(repo_dir.join("payload.bin")).unwrap_or_default();
+        assert!(pointer_before.contains("git-lfs.github.com/spec/v1"));
+
+        assert!(
+            runner
+                .execute(ConsoleCommand::Run {
+                    target: "diagnostics.lfs_fetch".to_string(),
+                    args: Vec::new(),
+                    confirmed: false,
+                })
+                .is_ok()
+        );
+        let pointer_after_fetch =
+            std::fs::read_to_string(repo_dir.join("payload.bin")).unwrap_or_default();
+        assert!(pointer_after_fetch.contains("git-lfs.github.com/spec/v1"));
+
+        assert!(
+            runner
+                .execute(ConsoleCommand::Run {
+                    target: "diagnostics.lfs_pull".to_string(),
+                    args: Vec::new(),
+                    confirmed: false,
+                })
+                .is_ok()
+        );
+        let content_after_pull =
+            std::fs::read_to_string(repo_dir.join("payload.bin")).unwrap_or_default();
+        assert_eq!(content_after_pull, payload);
+
+        let _ =
+            std::fs::remove_dir_all(repo_dir.parent().map(Path::to_path_buf).unwrap_or(repo_dir));
     }
 
     #[test]

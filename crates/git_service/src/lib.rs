@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Command;
 use std::process::Stdio;
@@ -326,6 +327,25 @@ pub fn repo_capabilities(cwd: &Path) -> Result<RepoCapabilities, GitServiceError
         has_submodules: !submodules.is_empty(),
         lfs_detected,
     })
+}
+
+pub fn lfs_status(cwd: &Path) -> Result<String, GitServiceError> {
+    let out = run_git(cwd, &["lfs", "status"])?;
+    String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)
+}
+
+pub fn lfs_fetch(cwd: &Path) -> Result<String, GitServiceError> {
+    let out = run_git(cwd, &["lfs", "fetch"])?;
+    let stdout = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+    let stderr = String::from_utf8(out.stderr).map_err(|_| GitServiceError::Utf8Decode)?;
+    Ok(format!("{}{}", stdout, stderr).trim().to_string())
+}
+
+pub fn lfs_pull(cwd: &Path) -> Result<String, GitServiceError> {
+    let out = run_git(cwd, &["lfs", "pull"])?;
+    let stdout = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+    let stderr = String::from_utf8(out.stderr).map_err(|_| GitServiceError::Utf8Decode)?;
+    Ok(format!("{}{}", stdout, stderr).trim().to_string())
 }
 
 pub fn list_worktrees(cwd: &Path) -> Result<Vec<WorktreeEntry>, GitServiceError> {
@@ -1170,6 +1190,337 @@ pub fn discard_hunk(cwd: &Path, path: &str, hunk_index: usize) -> Result<(), Git
     apply_patch(cwd, &hunk.patch, false, true)
 }
 
+pub fn stage_lines(
+    cwd: &Path,
+    path: &str,
+    hunk_index: usize,
+    line_indices: &[usize],
+) -> Result<(), GitServiceError> {
+    let hunk = diff_worktree_raw(cwd, &[path.to_string()])
+        .map(|text| parse_unified_diff_hunks(&text))?
+        .into_iter()
+        .find(|item| item.file_path == path && item.hunk_index == hunk_index)
+        .ok_or_else(|| GitServiceError::ParseError("hunk not found".to_string()))?;
+    let index_text = load_index_file_text(cwd, path)?;
+    let worktree_text = load_worktree_file_text(cwd, path)?;
+    let target = build_partial_hunk_target(
+        &index_text,
+        &worktree_text,
+        &hunk,
+        line_indices,
+        PartialHunkMode::ApplySelected,
+    )?;
+    if let Some(patch) = render_file_patch(path, &index_text, &target)? {
+        apply_patch(cwd, &patch, true, false)?;
+    }
+    Ok(())
+}
+
+pub fn unstage_lines(
+    cwd: &Path,
+    path: &str,
+    hunk_index: usize,
+    line_indices: &[usize],
+) -> Result<(), GitServiceError> {
+    let hunk = diff_index_raw(cwd, &[path.to_string()])
+        .map(|text| parse_unified_diff_hunks(&text))?
+        .into_iter()
+        .find(|item| item.file_path == path && item.hunk_index == hunk_index)
+        .ok_or_else(|| GitServiceError::ParseError("hunk not found".to_string()))?;
+    let head_text = load_head_file_text(cwd, path)?;
+    let index_text = load_index_file_text(cwd, path)?;
+    let target = build_partial_hunk_target(
+        &head_text,
+        &index_text,
+        &hunk,
+        line_indices,
+        PartialHunkMode::ApplyUnselected,
+    )?;
+    if let Some(patch) = render_file_patch(path, &index_text, &target)? {
+        apply_patch(cwd, &patch, true, false)?;
+    }
+    Ok(())
+}
+
+pub fn discard_lines(
+    cwd: &Path,
+    path: &str,
+    hunk_index: usize,
+    line_indices: &[usize],
+) -> Result<(), GitServiceError> {
+    let hunk = diff_worktree_raw(cwd, &[path.to_string()])
+        .map(|text| parse_unified_diff_hunks(&text))?
+        .into_iter()
+        .find(|item| item.file_path == path && item.hunk_index == hunk_index)
+        .ok_or_else(|| GitServiceError::ParseError("hunk not found".to_string()))?;
+    let index_text = load_index_file_text(cwd, path)?;
+    let worktree_text = load_worktree_file_text(cwd, path)?;
+    let target = build_partial_hunk_target(
+        &index_text,
+        &worktree_text,
+        &hunk,
+        line_indices,
+        PartialHunkMode::ApplyUnselected,
+    )?;
+    if let Some(patch) = render_file_patch(path, &worktree_text, &target)? {
+        apply_patch(cwd, &patch, false, false)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PartialHunkMode {
+    ApplySelected,
+    ApplyUnselected,
+}
+
+fn build_partial_hunk_target(
+    old_text: &str,
+    new_text: &str,
+    hunk: &DiffHunk,
+    line_indices: &[usize],
+    mode: PartialHunkMode,
+) -> Result<String, GitServiceError> {
+    let old_lines = split_lines_preserving_endings(old_text);
+    let new_lines = split_lines_preserving_endings(new_text);
+    let (old_start, old_count, new_start, new_count) = parse_hunk_header(&hunk.header)?;
+    let old_start_idx = old_start.saturating_sub(1);
+    let new_start_idx = new_start.saturating_sub(1);
+    let old_end_idx = old_start_idx
+        .checked_add(old_count)
+        .ok_or_else(|| GitServiceError::ParseError("hunk old range overflow".to_string()))?;
+    let new_end_idx = new_start_idx
+        .checked_add(new_count)
+        .ok_or_else(|| GitServiceError::ParseError("hunk new range overflow".to_string()))?;
+    if old_end_idx > old_lines.len() || new_end_idx > new_lines.len() {
+        return Err(GitServiceError::ParseError(
+            "hunk range exceeds file content".to_string(),
+        ));
+    }
+
+    let selected = line_indices.iter().copied().collect::<BTreeSet<_>>();
+    let mut target = old_lines[..old_start_idx].to_vec();
+    let mut old_cursor = old_start_idx;
+    let mut new_cursor = new_start_idx;
+    let mut change_count = 0usize;
+
+    for line in hunk.lines.iter().skip(1) {
+        if line == "\\ No newline at end of file" {
+            continue;
+        }
+        let marker = line
+            .chars()
+            .next()
+            .ok_or_else(|| GitServiceError::ParseError("empty hunk line".to_string()))?;
+        match marker {
+            ' ' => {
+                let old_line = old_lines.get(old_cursor).ok_or_else(|| {
+                    GitServiceError::ParseError("old hunk cursor out of range".to_string())
+                })?;
+                let new_line = new_lines.get(new_cursor).ok_or_else(|| {
+                    GitServiceError::ParseError("new hunk cursor out of range".to_string())
+                })?;
+                if old_line != new_line {
+                    return Err(GitServiceError::ParseError(
+                        "context lines diverged while building partial hunk".to_string(),
+                    ));
+                }
+                target.push(new_line.clone());
+                old_cursor += 1;
+                new_cursor += 1;
+            }
+            '-' => {
+                let apply_change = should_apply_partial_change(&selected, change_count, mode);
+                let old_line = old_lines.get(old_cursor).ok_or_else(|| {
+                    GitServiceError::ParseError("old deletion cursor out of range".to_string())
+                })?;
+                if apply_change {
+                    old_cursor += 1;
+                } else {
+                    target.push(old_line.clone());
+                    old_cursor += 1;
+                }
+                change_count += 1;
+            }
+            '+' => {
+                let apply_change = should_apply_partial_change(&selected, change_count, mode);
+                let new_line = new_lines.get(new_cursor).ok_or_else(|| {
+                    GitServiceError::ParseError("new addition cursor out of range".to_string())
+                })?;
+                if apply_change {
+                    target.push(new_line.clone());
+                }
+                new_cursor += 1;
+                change_count += 1;
+            }
+            other => {
+                return Err(GitServiceError::ParseError(format!(
+                    "unsupported hunk line marker: {other}"
+                )));
+            }
+        }
+    }
+
+    if old_cursor != old_end_idx || new_cursor != new_end_idx {
+        return Err(GitServiceError::ParseError(
+            "partial hunk cursors did not consume expected range".to_string(),
+        ));
+    }
+    if change_count == 0 {
+        return Err(GitServiceError::ParseError(
+            "hunk does not contain changed lines".to_string(),
+        ));
+    }
+    if selected.is_empty() {
+        return Err(GitServiceError::ParseError(
+            "line selection cannot be empty".to_string(),
+        ));
+    }
+    if let Some(out_of_range) = selected.iter().find(|index| **index >= change_count) {
+        return Err(GitServiceError::ParseError(format!(
+            "selected line index out of range: {out_of_range}"
+        )));
+    }
+
+    target.extend_from_slice(&old_lines[old_end_idx..]);
+    Ok(target.concat())
+}
+
+fn should_apply_partial_change(
+    selected: &BTreeSet<usize>,
+    change_index: usize,
+    mode: PartialHunkMode,
+) -> bool {
+    let explicitly_selected = selected.contains(&change_index);
+    match mode {
+        PartialHunkMode::ApplySelected => explicitly_selected,
+        PartialHunkMode::ApplyUnselected => !explicitly_selected,
+    }
+}
+
+fn split_lines_preserving_endings(text: &str) -> Vec<String> {
+    if text.is_empty() {
+        Vec::new()
+    } else {
+        text.split_inclusive('\n').map(str::to_string).collect()
+    }
+}
+
+fn parse_hunk_header(header: &str) -> Result<(usize, usize, usize, usize), GitServiceError> {
+    let parts = header.split_whitespace().collect::<Vec<_>>();
+    if parts.len() < 3 || parts[0] != "@@" {
+        return Err(GitServiceError::ParseError(format!(
+            "invalid hunk header: {header}"
+        )));
+    }
+    let (old_start, old_count) = parse_hunk_range(parts[1], '-')?;
+    let (new_start, new_count) = parse_hunk_range(parts[2], '+')?;
+    Ok((old_start, old_count, new_start, new_count))
+}
+
+fn parse_hunk_range(raw: &str, prefix: char) -> Result<(usize, usize), GitServiceError> {
+    let body = raw
+        .strip_prefix(prefix)
+        .ok_or_else(|| GitServiceError::ParseError(format!("invalid hunk range: {raw}")))?;
+    let (start, count) = match body.split_once(',') {
+        Some((start, count)) => (start, count),
+        None => (body, "1"),
+    };
+    let start = start
+        .parse::<usize>()
+        .map_err(|_| GitServiceError::ParseError(format!("invalid hunk start: {raw}")))?;
+    let count = count
+        .parse::<usize>()
+        .map_err(|_| GitServiceError::ParseError(format!("invalid hunk count: {raw}")))?;
+    Ok((start, count))
+}
+
+fn load_worktree_file_text(cwd: &Path, path: &str) -> Result<String, GitServiceError> {
+    let full_path = cwd.join(path);
+    match std::fs::read(&full_path) {
+        Ok(bytes) => String::from_utf8(bytes).map_err(|_| GitServiceError::Utf8Decode),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(err) => Err(GitServiceError::ProcessLaunch(err.to_string())),
+    }
+}
+
+fn load_index_file_text(cwd: &Path, path: &str) -> Result<String, GitServiceError> {
+    load_git_object_text(cwd, &format!(":{path}"))
+}
+
+fn load_head_file_text(cwd: &Path, path: &str) -> Result<String, GitServiceError> {
+    load_git_object_text(cwd, &format!("HEAD:{path}"))
+}
+
+fn load_git_object_text(cwd: &Path, spec: &str) -> Result<String, GitServiceError> {
+    let exists = Command::new("git")
+        .args(["cat-file", "-e", spec])
+        .current_dir(cwd)
+        .output()
+        .map_err(|err| GitServiceError::ProcessLaunch(err.to_string()))?;
+    let exit_code = exists.status.code().unwrap_or(-1);
+    if exit_code != 0 {
+        if exit_code == 128 {
+            return Ok(String::new());
+        }
+        let stderr =
+            String::from_utf8(exists.stderr).unwrap_or_else(|_| "<non-utf8 stderr>".to_string());
+        return Err(GitServiceError::GitError { exit_code, stderr });
+    }
+    let out = run_git(cwd, &["show", spec])?;
+    String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)
+}
+
+fn render_file_patch(
+    path: &str,
+    before: &str,
+    after: &str,
+) -> Result<Option<String>, GitServiceError> {
+    if before == after {
+        return Ok(None);
+    }
+
+    let before_path = unique_temp_file("branchforge-before", "txt");
+    let after_path = unique_temp_file("branchforge-after", "txt");
+    std::fs::write(&before_path, before)
+        .map_err(|err| GitServiceError::ProcessLaunch(err.to_string()))?;
+    std::fs::write(&after_path, after)
+        .map_err(|err| GitServiceError::ProcessLaunch(err.to_string()))?;
+
+    let output = Command::new("git")
+        .args([
+            "diff",
+            "--no-index",
+            "--text",
+            "--unified=3",
+            "--",
+            before_path.to_string_lossy().as_ref(),
+            after_path.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .map_err(|err| GitServiceError::ProcessLaunch(err.to_string()))?;
+
+    let _ = std::fs::remove_file(&before_path);
+    let _ = std::fs::remove_file(&after_path);
+
+    let exit_code = output.status.code().unwrap_or(-1);
+    if exit_code != 0 && exit_code != 1 {
+        let stderr =
+            String::from_utf8(output.stderr).unwrap_or_else(|_| "<non-utf8 stderr>".to_string());
+        return Err(GitServiceError::GitError { exit_code, stderr });
+    }
+
+    let before_ref = format!("a{}", before_path.to_string_lossy());
+    let after_ref = format!("b{}", after_path.to_string_lossy());
+    let mut patch = String::from_utf8(output.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+    if patch.trim().is_empty() {
+        return Ok(None);
+    }
+    patch = patch.replace(&before_ref, &format!("a/{path}"));
+    patch = patch.replace(&after_ref, &format!("b/{path}"));
+    Ok(Some(patch))
+}
+
 fn apply_patch(
     cwd: &Path,
     patch: &str,
@@ -1715,6 +2066,96 @@ mod tests {
         std::env::temp_dir().join(format!("branchforge-git-service-{nanos}-{seq}"))
     }
 
+    fn git_lfs_available() -> bool {
+        std::process::Command::new("git")
+            .args(["lfs", "version"])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    }
+
+    fn init_lfs_clone_pair(label: &str) -> Option<(std::path::PathBuf, String)> {
+        if !git_lfs_available() {
+            return None;
+        }
+
+        let root = unique_temp_dir();
+        let origin = root.join(format!("{label}-origin.git"));
+        let source = root.join(format!("{label}-source"));
+        let clone = root.join(format!("{label}-clone"));
+        let file_name = "payload.bin";
+        let payload = "branchforge-lfs-payload\n".repeat(64);
+
+        assert!(std::fs::create_dir_all(&source).is_ok());
+        assert!(run_git(&source, &["init"]).is_ok());
+        assert!(run_git(&source, &["config", "user.email", "dev@example.com"]).is_ok());
+        assert!(run_git(&source, &["config", "user.name", "Dev User"]).is_ok());
+        assert!(run_git(&source, &["lfs", "install", "--local"]).is_ok());
+        assert!(run_git(&source, &["lfs", "track", "*.bin"]).is_ok());
+        assert!(std::fs::write(source.join(file_name), &payload).is_ok());
+        assert!(
+            stage_paths(
+                &source,
+                &[".gitattributes".to_string(), file_name.to_string()]
+            )
+            .is_ok()
+        );
+        assert!(commit_create(&source, "add lfs payload").is_ok());
+
+        assert!(std::fs::create_dir_all(&origin).is_ok());
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "--bare", origin.to_string_lossy().as_ref()])
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false)
+        );
+        assert!(
+            run_git(
+                &source,
+                &["remote", "add", "origin", origin.to_string_lossy().as_ref()]
+            )
+            .is_ok()
+        );
+        assert!(run_git(&source, &["push", "-u", "origin", "HEAD"]).is_ok());
+
+        let branch = run_git(&source, &["branch", "--show-current"])
+            .ok()
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .map(|text| text.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "master".to_string());
+        assert!(
+            std::process::Command::new("git")
+                .args([
+                    "--git-dir",
+                    origin.to_string_lossy().as_ref(),
+                    "symbolic-ref",
+                    "HEAD",
+                    &format!("refs/heads/{branch}"),
+                ])
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false)
+        );
+
+        assert!(
+            std::process::Command::new("git")
+                .env("GIT_LFS_SKIP_SMUDGE", "1")
+                .args([
+                    "clone",
+                    origin.to_string_lossy().as_ref(),
+                    clone.to_string_lossy().as_ref(),
+                ])
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false)
+        );
+        assert!(run_git(&clone, &["lfs", "install", "--local"]).is_ok());
+
+        Some((clone, payload))
+    }
+
     #[test]
     fn builds_status_command() {
         let cmd = GitCommand::status_porcelain();
@@ -2106,6 +2547,78 @@ mod tests {
         assert!(content.contains("line20-updated\n"));
 
         let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn stage_unstage_and_discard_selected_lines() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let file = repo_dir.join("lines.txt");
+        assert!(std::fs::write(&file, "line1\nline2\nline3\nline4\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["lines.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "base").is_ok());
+
+        assert!(std::fs::write(&file, "line1-updated\nline2\nline3\nline3-added\nline4\n").is_ok());
+
+        assert!(stage_lines(&repo_dir, "lines.txt", 0, &[0, 1]).is_ok());
+        let staged = diff_index_with_hunks(&repo_dir, &["lines.txt".to_string()], 10_000)
+            .expect("staged diff");
+        assert!(staged.text.contains("line1-updated"));
+        assert!(!staged.text.contains("line3-added"));
+
+        assert!(stage_paths(&repo_dir, &["lines.txt".to_string()]).is_ok());
+        let staged_all = diff_index_with_hunks(&repo_dir, &["lines.txt".to_string()], 10_000)
+            .expect("staged all diff");
+        assert!(staged_all.text.contains("line3-added"));
+
+        assert!(unstage_lines(&repo_dir, "lines.txt", 0, &[2]).is_ok());
+        let staged_after_unstage =
+            diff_index_with_hunks(&repo_dir, &["lines.txt".to_string()], 10_000)
+                .expect("staged after unstage");
+        assert!(staged_after_unstage.text.contains("line1-updated"));
+        assert!(!staged_after_unstage.text.contains("line3-added"));
+
+        assert!(std::fs::write(&file, "line1-updated\nline2\nline3\nline3-added\nline4\n").is_ok());
+        assert!(discard_lines(&repo_dir, "lines.txt", 0, &[0]).is_ok());
+        let content = std::fs::read_to_string(&file).unwrap_or_default();
+        assert!(content.contains("line1-updated\n"));
+        assert!(!content.contains("line3-added\n"));
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn lfs_status_fetch_and_pull_work_when_runtime_is_available() {
+        let Some((clone_dir, payload)) = init_lfs_clone_pair("lfs-runtime") else {
+            return;
+        };
+
+        let pointer_before =
+            std::fs::read_to_string(clone_dir.join("payload.bin")).unwrap_or_default();
+        assert!(pointer_before.contains("git-lfs.github.com/spec/v1"));
+
+        assert!(lfs_status(&clone_dir).is_ok());
+        assert!(lfs_fetch(&clone_dir).is_ok());
+
+        let pointer_after_fetch =
+            std::fs::read_to_string(clone_dir.join("payload.bin")).unwrap_or_default();
+        assert!(pointer_after_fetch.contains("git-lfs.github.com/spec/v1"));
+
+        assert!(lfs_pull(&clone_dir).is_ok());
+        let content_after_pull =
+            std::fs::read_to_string(clone_dir.join("payload.bin")).unwrap_or_default();
+        assert_eq!(content_after_pull, payload);
+
+        let _ = std::fs::remove_dir_all(
+            clone_dir
+                .parent()
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or(clone_dir),
+        );
     }
 
     #[test]
