@@ -48,6 +48,28 @@ cargo run -p app_host -- --command "run release.package_local"
 cargo run -p app_host -- --command "run verify.sprint24"
 ```
 
+## GUI runtime
+
+Branchforge now also ships a browser-based GUI host on top of the same runtime/state stack:
+
+Run it like this:
+
+```bash
+cargo run -p app_gui
+# optional custom bind
+cargo run -p app_gui -- --bind 127.0.0.1:8787
+```
+
+Startup flow:
+
+1. Start the server with `cargo run -p app_gui`.
+2. Wait for `Branchforge GUI listening on http://127.0.0.1:8787`.
+3. Open `http://127.0.0.1:8787` in your browser.
+4. Stop the GUI server with `Ctrl+C` in the terminal when finished.
+
+The GUI reuses the existing host runtime for `open`, `panel`, `select`, `run`, `refresh`, plugin lifecycle, diagnostics, and the rest of the direct op catalog. It is not a mock or separate backend.
+The current revision exposes the full `app_host` direct-op surface through dedicated GUI widgets, panel actions, selection shortcuts, or the command box, including history search, stash/worktree/submodule flows, branch/tag management, merge/cherry-pick/revert/reset, rebase/conflict recovery, plugin registry/install lifecycle, LFS diagnostics, release/sign/verify runtime operations, and diff hunk or line actions.
+
 ## Local dev helpers
 
 ```bash
@@ -69,6 +91,8 @@ Compatibility shell wrappers remain in `scripts/`, but they now delegate to runt
 ## Workspace layout
 
 - `crates/` host-side crates
+- `crates/app_gui` browser-based GUI host
 - `plugins/` bundled plugin executables
 - `docs/` architecture and delivery rules
 - `docs/process/console_runner_usage.md` interactive runner command guide
+- `docs/process/gui_runtime_usage.md` GUI runtime guide
