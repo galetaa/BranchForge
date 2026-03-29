@@ -65,6 +65,7 @@ pub struct RepoCapabilities {
     pub is_linked_worktree: bool,
     pub has_submodules: bool,
     pub lfs_detected: bool,
+    pub lfs_available: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -320,21 +321,29 @@ pub fn repo_capabilities(cwd: &Path) -> Result<RepoCapabilities, GitServiceError
         .to_string();
 
     let submodules = list_submodules(cwd)?;
+    let lfs_available = is_lfs_available(cwd);
     let lfs_detected = detect_lfs_baseline(cwd);
 
     Ok(RepoCapabilities {
         is_linked_worktree: common != git_dir,
         has_submodules: !submodules.is_empty(),
         lfs_detected,
+        lfs_available,
     })
 }
 
 pub fn lfs_status(cwd: &Path) -> Result<String, GitServiceError> {
+    if !is_lfs_available(cwd) {
+        return Ok(lfs_unavailable_message("inspect LFS state"));
+    }
     let out = run_git(cwd, &["lfs", "status"])?;
     String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)
 }
 
 pub fn lfs_fetch(cwd: &Path) -> Result<String, GitServiceError> {
+    if !is_lfs_available(cwd) {
+        return Ok(lfs_unavailable_message("fetch LFS objects"));
+    }
     let out = run_git(cwd, &["lfs", "fetch"])?;
     let stdout = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
     let stderr = String::from_utf8(out.stderr).map_err(|_| GitServiceError::Utf8Decode)?;
@@ -342,6 +351,9 @@ pub fn lfs_fetch(cwd: &Path) -> Result<String, GitServiceError> {
 }
 
 pub fn lfs_pull(cwd: &Path) -> Result<String, GitServiceError> {
+    if !is_lfs_available(cwd) {
+        return Ok(lfs_unavailable_message("pull LFS objects"));
+    }
     let out = run_git(cwd, &["lfs", "pull"])?;
     let stdout = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
     let stderr = String::from_utf8(out.stderr).map_err(|_| GitServiceError::Utf8Decode)?;
@@ -462,7 +474,7 @@ pub fn submodule_init_update(cwd: &Path, path: Option<&str>) -> Result<(), GitSe
 }
 
 fn detect_lfs_baseline(cwd: &Path) -> bool {
-    if run_git(cwd, &["lfs", "version"]).is_ok() {
+    if is_lfs_available(cwd) {
         return true;
     }
     let attrs = cwd.join(".gitattributes");
@@ -470,6 +482,14 @@ fn detect_lfs_baseline(cwd: &Path) -> bool {
         .ok()
         .map(|text| text.contains("filter=lfs"))
         .unwrap_or(false)
+}
+
+fn is_lfs_available(cwd: &Path) -> bool {
+    run_git(cwd, &["lfs", "version"]).is_ok()
+}
+
+fn lfs_unavailable_message(action: &str) -> String {
+    format!("git-lfs is not installed on this machine. Install git-lfs to {action}.")
 }
 
 pub fn detect_conflict_state(cwd: &Path) -> Result<Option<ConflictState>, GitServiceError> {
@@ -925,16 +945,7 @@ pub fn merge_abort(cwd: &Path) -> Result<(), GitServiceError> {
 }
 
 pub fn merge_continue(cwd: &Path) -> Result<(), GitServiceError> {
-    if run_git(cwd, &["merge", "--continue"]).is_ok() {
-        return Ok(());
-    }
-    // Keep continue flow non-interactive for automated host/tests.
-    let _ = run_git_with_env(
-        cwd,
-        &["merge", "--continue"],
-        &[("GIT_EDITOR", "true".to_string())],
-    )?;
-    Ok(())
+    continue_with_editor_fallback(cwd, &["merge", "--continue"])
 }
 
 pub fn cherry_pick_commit(cwd: &Path, oid: &str) -> Result<(), GitServiceError> {
@@ -948,8 +959,7 @@ pub fn cherry_pick_abort(cwd: &Path) -> Result<(), GitServiceError> {
 }
 
 pub fn cherry_pick_continue(cwd: &Path) -> Result<(), GitServiceError> {
-    let _ = run_git(cwd, &["cherry-pick", "--continue"])?;
-    Ok(())
+    continue_with_editor_fallback(cwd, &["cherry-pick", "--continue"])
 }
 
 pub fn list_conflicted_files(cwd: &Path) -> Result<Vec<ConflictFile>, GitServiceError> {
@@ -1121,8 +1131,7 @@ pub fn execute_rebase_plan(
 }
 
 pub fn rebase_continue(cwd: &Path) -> Result<(), GitServiceError> {
-    let _ = run_git(cwd, &["rebase", "--continue"])?;
-    Ok(())
+    continue_with_editor_fallback(cwd, &["rebase", "--continue"])
 }
 
 pub fn rebase_skip(cwd: &Path) -> Result<(), GitServiceError> {
@@ -1572,6 +1581,15 @@ fn resolve_ref_oid(cwd: &Path, reference: &str) -> Result<String, GitServiceErro
     String::from_utf8(out.stdout)
         .map(|text| text.trim().to_string())
         .map_err(|_| GitServiceError::Utf8Decode)
+}
+
+fn continue_with_editor_fallback(cwd: &Path, args: &[&str]) -> Result<(), GitServiceError> {
+    if run_git(cwd, args).is_ok() {
+        return Ok(());
+    }
+    // Keep continue flow non-interactive for automated host/tests.
+    let _ = run_git_with_env(cwd, args, &[("GIT_EDITOR", "true".to_string())])?;
+    Ok(())
 }
 
 fn render_rebase_todo(plan: &RebasePlan) -> String {
@@ -2622,6 +2640,27 @@ mod tests {
     }
 
     #[test]
+    fn lfs_ops_fallback_cleanly_when_git_lfs_is_missing() {
+        if git_lfs_available() {
+            return;
+        }
+
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+
+        let status = lfs_status(&repo_dir).unwrap_or_default();
+        let fetch = lfs_fetch(&repo_dir).unwrap_or_default();
+        let pull = lfs_pull(&repo_dir).unwrap_or_default();
+
+        assert!(status.contains("git-lfs is not installed"));
+        assert!(fetch.contains("git-lfs is not installed"));
+        assert!(pull.contains("git-lfs is not installed"));
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
     fn merge_cherry_pick_revert_and_reset_baseline() {
         let repo_dir = unique_temp_dir();
         assert!(std::fs::create_dir_all(&repo_dir).is_ok());
@@ -2771,6 +2810,98 @@ mod tests {
         assert!(conflict_apply_choice(&repo_dir, "conflict.txt", ConflictChoice::Ours).is_ok());
         assert!(mark_conflict_resolved(&repo_dir, &["conflict.txt".to_string()]).is_ok());
         assert!(conflict_continue(&repo_dir).is_ok());
+        assert!(matches!(detect_conflict_state(&repo_dir), Ok(None)));
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn rebase_continue_uses_noninteractive_editor_fallback() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let file = repo_dir.join("rebase.txt");
+        assert!(std::fs::write(&file, "base\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["rebase.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "base").is_ok());
+
+        assert!(create_branch(&repo_dir, "topic").is_ok());
+        assert!(checkout_branch(&repo_dir, "topic").is_ok());
+        assert!(std::fs::write(&file, "topic\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["rebase.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "topic change").is_ok());
+
+        let base = if checkout_branch(&repo_dir, "main").is_ok() {
+            "main"
+        } else {
+            assert!(checkout_branch(&repo_dir, "master").is_ok());
+            "master"
+        };
+        assert!(std::fs::write(&file, "main\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["rebase.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "main change").is_ok());
+
+        assert!(checkout_branch(&repo_dir, "topic").is_ok());
+        let plan = create_rebase_plan(&repo_dir, base).expect("plan");
+        assert!(execute_rebase_plan(&repo_dir, &plan, false).is_err());
+        assert!(matches!(
+            detect_conflict_state(&repo_dir),
+            Ok(Some(ConflictState::Rebase))
+        ));
+
+        assert!(conflict_apply_choice(&repo_dir, "rebase.txt", ConflictChoice::Theirs).is_ok());
+        assert!(mark_conflict_resolved(&repo_dir, &["rebase.txt".to_string()]).is_ok());
+        assert!(rebase_continue(&repo_dir).is_ok());
+        assert!(matches!(detect_conflict_state(&repo_dir), Ok(None)));
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn cherry_pick_continue_uses_noninteractive_editor_fallback() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let file = repo_dir.join("pick.txt");
+        assert!(std::fs::write(&file, "base\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["pick.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "base").is_ok());
+
+        assert!(create_branch(&repo_dir, "feature").is_ok());
+        assert!(checkout_branch(&repo_dir, "feature").is_ok());
+        assert!(std::fs::write(&file, "feature\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["pick.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "feature change").is_ok());
+        let pick_oid = commit_log_page(&repo_dir, 0, 1)
+            .ok()
+            .and_then(|mut page| page.pop())
+            .map(|item| item.oid)
+            .unwrap_or_default();
+        assert!(!pick_oid.is_empty());
+
+        assert!(
+            checkout_branch(&repo_dir, "main").is_ok()
+                || checkout_branch(&repo_dir, "master").is_ok()
+        );
+        assert!(std::fs::write(&file, "main\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["pick.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "main change").is_ok());
+
+        assert!(cherry_pick_commit(&repo_dir, &pick_oid).is_err());
+        assert!(matches!(
+            detect_conflict_state(&repo_dir),
+            Ok(Some(ConflictState::CherryPick))
+        ));
+
+        assert!(conflict_apply_choice(&repo_dir, "pick.txt", ConflictChoice::Theirs).is_ok());
+        assert!(mark_conflict_resolved(&repo_dir, &["pick.txt".to_string()]).is_ok());
+        assert!(cherry_pick_continue(&repo_dir).is_ok());
         assert!(matches!(detect_conflict_state(&repo_dir), Ok(None)));
 
         let _ = std::fs::remove_dir_all(&repo_dir);

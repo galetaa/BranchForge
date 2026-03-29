@@ -278,8 +278,17 @@ pub struct InstalledPluginRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RepoCapabilitiesSnapshot {
+    pub is_linked_worktree: bool,
+    pub has_submodules: bool,
+    pub lfs_detected: bool,
+    pub lfs_available: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct StoreSnapshot {
     pub repo: Option<RepoSnapshot>,
+    pub repo_capabilities: Option<RepoCapabilitiesSnapshot>,
     pub status: StatusSnapshot,
     pub selection: SelectionState,
     pub history: HistoryState,
@@ -353,7 +362,24 @@ impl StateStore {
 
     pub fn update_repo(&mut self, repo: RepoSnapshot) {
         self.snapshot.repo = Some(repo);
+        self.snapshot.repo_capabilities = None;
         self.publish_event(StateEvent::RepoOpened);
+        self.bump_version();
+    }
+
+    pub fn update_repo_context(
+        &mut self,
+        repo: RepoSnapshot,
+        capabilities: RepoCapabilitiesSnapshot,
+    ) {
+        self.snapshot.repo = Some(repo);
+        self.snapshot.repo_capabilities = Some(capabilities);
+        self.publish_event(StateEvent::RepoOpened);
+        self.bump_version();
+    }
+
+    pub fn update_repo_capabilities(&mut self, capabilities: RepoCapabilitiesSnapshot) {
+        self.snapshot.repo_capabilities = Some(capabilities);
         self.bump_version();
     }
 
@@ -800,6 +826,32 @@ mod tests {
             events.get(1),
             Some(StateEvent::Updated { version }) if *version == 1
         ));
+    }
+
+    #[test]
+    fn stores_repo_context_with_capabilities() {
+        let mut store = StateStore::new();
+
+        store.update_repo_context(
+            RepoSnapshot {
+                root: "./demo".to_string(),
+                head: Some("main".to_string()),
+                conflict_state: None,
+            },
+            RepoCapabilitiesSnapshot {
+                is_linked_worktree: true,
+                has_submodules: true,
+                lfs_detected: true,
+                lfs_available: false,
+            },
+        );
+
+        let caps = store.snapshot().repo_capabilities.as_ref();
+        assert!(caps.is_some());
+        assert_eq!(caps.map(|caps| caps.is_linked_worktree), Some(true));
+        assert_eq!(caps.map(|caps| caps.has_submodules), Some(true));
+        assert_eq!(caps.map(|caps| caps.lfs_detected), Some(true));
+        assert_eq!(caps.map(|caps| caps.lfs_available), Some(false));
     }
 
     #[test]

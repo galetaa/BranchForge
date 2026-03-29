@@ -321,7 +321,7 @@ fn build_gui_action_command(action: &str, form: &HashMap<String, String>) -> Opt
             if let Some(mode) = form_value(form, "merge_mode") {
                 args.push(mode.to_string());
             }
-            Some(build_run_command("merge.execute", args, false))
+            Some(build_run_command("merge.execute", args, true))
         }
         "merge_abort" => Some(build_run_command("merge.abort", Vec::new(), false)),
         "cherry_pick_commit" => Some(build_run_command(
@@ -506,7 +506,7 @@ fn build_gui_action_command(action: &str, form: &HashMap<String, String>) -> Opt
         "diff_hunk_discard" => Some(build_run_command(
             "file.discard_hunk",
             diff_hunk_args(form)?,
-            false,
+            true,
         )),
         "diff_lines_stage" => Some(build_run_command(
             "index.stage_lines",
@@ -521,7 +521,7 @@ fn build_gui_action_command(action: &str, form: &HashMap<String, String>) -> Opt
         "diff_lines_discard" => Some(build_run_command(
             "file.discard_lines",
             diff_line_args(form)?,
-            false,
+            true,
         )),
         _ => None,
     }
@@ -715,10 +715,7 @@ fn render_page(
     flash_error: Option<&HostRuntimeError>,
 ) -> String {
     let snapshot = runtime.snapshot();
-    let active_view = snapshot
-        .active_view
-        .clone()
-        .unwrap_or_else(|| "status.panel".to_string());
+    let active_view = resolved_active_view(&snapshot);
     let selected_file = snapshot
         .selection
         .selected_paths
@@ -759,121 +756,144 @@ fn render_page(
         .unwrap_or("");
     let context_widgets =
         render_context_widgets(&snapshot, &active_view, compare_base, compare_head);
+    let repo_state = if snapshot.repo.is_some() {
+        "repo open"
+    } else {
+        "no repo"
+    };
 
     format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Branchforge GUI</title><style>{}</style></head><body><div class=\"shell\" id=\"shell\" data-version=\"{}\"><header class=\"masthead\"><div><p class=\"eyebrow\">Branchforge</p><h1>Runtime GUI</h1><p class=\"sub\">A graphical host surface over the same runtime, jobs, state store, and action catalog.</p><div class=\"hero-metrics\"><span class=\"badge\">live sync 3s</span><span class=\"badge\">same host runtime</span><span class=\"badge\">state v{}</span></div></div><form method=\"post\" action=\"/command\" class=\"open-form\"><input type=\"hidden\" name=\"gui_action\" value=\"repo_open\"><label>Repository</label><div class=\"row\"><input type=\"text\" name=\"repo_path\" value=\"{}\" placeholder=\"/path/to/repo\"><button type=\"submit\">Open</button></div></form></header><section id=\"flash\">{}</section><main class=\"workspace\"><aside class=\"sidebar\" id=\"sidebar\"><section class=\"card\"><h2>Panels</h2>{}</section><section class=\"card\"><h2>Quick Actions</h2>{}</section><section class=\"card\"><h2>Primary Flows</h2>{}</section><section class=\"card\"><h2>Selections</h2><dl class=\"facts\"><div><dt>File</dt><dd>{}</dd></div><div><dt>Commit</dt><dd>{}</dd></div><div><dt>Branch</dt><dd>{}</dd></div><div><dt>Plugin</dt><dd>{}</dd></div></dl></section><section class=\"card\"><h2>Custom Command</h2><form method=\"post\" action=\"/command\" class=\"stack\"><input type=\"text\" name=\"command\" placeholder=\"run diagnostics.repo_capabilities\"><button type=\"submit\">Execute</button></form></section><section class=\"card\"><h2>Actions</h2><pre>{}</pre></section><section class=\"card\"><h2>Ops Catalog</h2><pre>{}</pre></section></aside><section class=\"content\" id=\"content\">{}{}<section class=\"card\"><h2>Runtime Snapshot</h2><pre>{}</pre></section></section></main></div><script>{}</script></body></html>",
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Branchforge GUI</title><style>{}</style></head><body><div class=\"shell\" id=\"shell\" data-version=\"{}\"><header class=\"masthead\" id=\"masthead\"><div><p class=\"eyebrow\">Branchforge</p><h1>Runtime GUI</h1><p class=\"sub\">Focused controls over the same host runtime, jobs, state store, and action catalog.</p><div class=\"hero-metrics\"><span class=\"badge\">state v{}</span><span class=\"badge\">{}</span></div></div><form method=\"post\" action=\"/command\" class=\"open-form\"><label>Repository</label><input type=\"hidden\" name=\"gui_action\" value=\"repo_open\"><div class=\"row\"><input type=\"text\" name=\"repo_path\" value=\"{}\" placeholder=\"/path/to/repo\"><button type=\"submit\">Open</button></div></form></header><section id=\"flash\">{}</section><main class=\"workspace\"><aside class=\"sidebar\" id=\"sidebar\"><section class=\"card\"><h2>Panels</h2>{}</section><section class=\"card\"><h2>Quick Actions</h2>{}</section><section class=\"card\"><h2>Primary Flows</h2>{}</section><section class=\"card\"><h2>Selections</h2><dl class=\"facts\"><div><dt>File</dt><dd>{}</dd></div><div><dt>Commit</dt><dd>{}</dd></div><div><dt>Branch</dt><dd>{}</dd></div><div><dt>Plugin</dt><dd>{}</dd></div></dl></section><section class=\"card\"><h2>Custom Command</h2><form method=\"post\" action=\"/command\" class=\"stack\"><input type=\"text\" name=\"command\" placeholder=\"run diagnostics.repo_capabilities\"><button type=\"submit\">Execute</button></form></section></aside><section class=\"content\" id=\"content\">{}{}</section></main></div><script>{}</script></body></html>",
         styles(),
         snapshot.version,
         snapshot.version,
+        repo_state,
         escape_html(repo_root),
         render_flash(flash_message, flash_error),
-        render_panel_tabs(&active_view),
+        render_panel_tabs(&active_view, snapshot.repo.is_some()),
         render_quick_actions(&snapshot),
         render_workflow_widgets(&snapshot, compare_base, compare_head),
         display_value(&selected_file),
         display_value(&selected_commit),
         display_value(&selected_branch),
         display_value(&selected_plugin),
-        escape_html(&runtime.render_actions()),
-        escape_html(&runtime.ops_catalog()),
         context_widgets,
-        render_active_panel(&snapshot),
-        escape_html(&runtime.render_screen()),
+        render_active_panel(runtime, &snapshot, &active_view),
         client_script(),
     )
+}
+
+fn resolved_active_view(snapshot: &StoreSnapshot) -> String {
+    snapshot.active_view.clone().unwrap_or_else(|| {
+        if snapshot.repo.is_some() {
+            "status.panel".to_string()
+        } else {
+            "empty.state".to_string()
+        }
+    })
 }
 
 fn styles() -> &'static str {
     r#"
 :root{
-  --bg:#f5efe2;
-  --bg-strong:#ead9b6;
-  --ink:#182126;
-  --muted:#5d655e;
-  --line:#d5c3a0;
-  --card:#fffaf0;
-  --accent:#1f5f4a;
-  --accent-strong:#143f32;
-  --warn:#8a2f2a;
-  --shadow:0 16px 50px rgba(24,33,38,.12);
+  --bg:#f3f6f9;
+  --surface:#ffffff;
+  --surface-muted:#f8fafc;
+  --ink:#18212b;
+  --muted:#667085;
+  --line:#d9e1ea;
+  --accent:#2563eb;
+  --accent-soft:#eef4ff;
+  --accent-strong:#1d4ed8;
+  --warn:#b42318;
 }
 *{box-sizing:border-box}
 body{
   margin:0;
-  font-family:"IBM Plex Sans","Avenir Next","Segoe UI",sans-serif;
+  font-family:"SF Pro Text","Segoe UI",sans-serif;
   color:var(--ink);
-  background:
-    radial-gradient(circle at top left, rgba(31,95,74,.16), transparent 26rem),
-    radial-gradient(circle at top right, rgba(214,114,55,.16), transparent 24rem),
-    linear-gradient(180deg, #fbf6ea 0%, var(--bg) 100%);
+  background:var(--bg);
 }
-.shell{max-width:1500px;margin:0 auto;padding:28px}
+.shell{max-width:1360px;margin:0 auto;padding:24px}
 .masthead{
   display:grid;
-  grid-template-columns:1.4fr 1fr;
-  gap:20px;
-  align-items:end;
-  margin-bottom:20px;
+  grid-template-columns:minmax(0,1fr) 360px;
+  gap:16px;
+  align-items:start;
+  margin-bottom:16px;
 }
 .eyebrow{
-  margin:0 0 8px;
+  margin:0 0 6px;
   text-transform:uppercase;
-  letter-spacing:.18em;
-  font-size:.76rem;
+  letter-spacing:.12em;
+  font-size:.75rem;
   color:var(--accent);
 }
 h1,h2,h3{
-  font-family:"Iowan Old Style","Palatino Linotype","Book Antiqua",serif;
   margin:0;
+  font-family:inherit;
+  font-weight:600;
 }
-h1{font-size:clamp(2rem,5vw,3.7rem);line-height:.95}
-h2{font-size:1.15rem;margin-bottom:12px}
-.sub{max-width:52rem;color:var(--muted);font-size:1rem;line-height:1.5}
+h1{font-size:clamp(1.8rem,4vw,2.5rem);line-height:1.05}
+h2{font-size:1rem;margin-bottom:10px}
+.sub{max-width:46rem;color:var(--muted);font-size:.96rem;line-height:1.45}
 .workspace{
   display:grid;
-  grid-template-columns:360px 1fr;
-  gap:20px;
+  grid-template-columns:320px minmax(0,1fr);
+  gap:16px;
 }
-.sidebar,.content{display:grid;gap:16px;align-content:start}
+.sidebar,.content{display:grid;gap:12px;align-content:start}
 .card{
-  background:rgba(255,250,240,.9);
+  background:var(--surface);
   border:1px solid var(--line);
-  border-radius:22px;
-  padding:18px;
-  box-shadow:var(--shadow);
-  backdrop-filter:blur(4px);
+  border-radius:14px;
+  padding:16px;
 }
 .flash{
-  border-radius:18px;
+  border-radius:12px;
   min-height:16px;
-  padding:14px 16px;
-  margin-bottom:16px;
+  padding:12px 14px;
+  margin-bottom:12px;
   border:1px solid var(--line);
 }
-.flash.info{background:#eef7f2;color:var(--accent-strong)}
+.flash.info{background:var(--accent-soft);color:var(--accent-strong)}
 .flash.error{background:#fff1ee;color:var(--warn)}
 .stack,.open-form{display:grid;gap:10px}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 input[type=text],textarea,select{
   width:100%;
   border:1px solid var(--line);
-  border-radius:14px;
-  padding:12px 14px;
-  background:#fffdf8;
+  border-radius:10px;
+  padding:10px 12px;
+  background:var(--surface);
   color:var(--ink);
 }
 textarea{min-height:104px;resize:vertical}
 button{
-  border:0;
-  border-radius:999px;
-  padding:10px 14px;
+  border:1px solid transparent;
+  border-radius:10px;
+  padding:9px 12px;
   background:var(--accent);
   color:white;
   cursor:pointer;
   font-weight:600;
+  font-size:.92rem;
 }
-button.secondary{background:#d6c6a4;color:var(--ink)}
-button.ghost{background:#f4ead3;color:var(--ink)}
+button.secondary{
+  background:var(--surface-muted);
+  border-color:var(--line);
+  color:var(--ink);
+}
+button.ghost{
+  background:var(--accent-soft);
+  border-color:#cfe0ff;
+  color:var(--accent-strong);
+}
+button:disabled{
+  cursor:not-allowed;
+  opacity:.55;
+}
+.disabled-action{display:grid;gap:6px}
 .tabs,.inline-actions,.list-actions{display:flex;gap:8px;flex-wrap:wrap}
 .facts{display:grid;gap:10px;margin:0}
 .facts div{display:grid;gap:4px}
@@ -881,10 +901,10 @@ dt{font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:var(--mu
 dd{margin:0;font-weight:600}
 ul.clean{list-style:none;margin:0;padding:0;display:grid;gap:10px}
 li.item{
-  padding:12px 14px;
+  padding:12px;
   border:1px solid var(--line);
-  border-radius:16px;
-  background:#fffcf5;
+  border-radius:12px;
+  background:var(--surface-muted);
 }
 .meta{color:var(--muted);font-size:.92rem}
 pre{
@@ -895,27 +915,28 @@ pre{
   font-size:.9rem;
   line-height:1.45;
 }
-.grid-two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.grid-two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .badge{
   display:inline-flex;
   align-items:center;
   border-radius:999px;
-  padding:5px 10px;
-  background:var(--bg-strong);
-  color:var(--accent-strong);
+  padding:4px 9px;
+  border:1px solid var(--line);
+  background:var(--surface-muted);
+  color:var(--muted);
   font-size:.82rem;
-  font-weight:700;
+  font-weight:600;
 }
-.hero-metrics{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
-.widget-grid{display:grid;gap:12px}
+.hero-metrics{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.widget-grid{display:grid;gap:10px}
 .widget-grid form{display:grid;gap:8px}
 .checkbox{display:flex;gap:10px;align-items:center;color:var(--muted)}
 .checkbox input{width:auto;margin:0}
 .hunk-list{display:grid;gap:12px;margin-top:16px}
 .hunk-card{
   border:1px solid var(--line);
-  border-radius:18px;
-  background:#fffdf8;
+  border-radius:12px;
+  background:var(--surface-muted);
   padding:14px;
 }
 .hunk-meta{margin-bottom:10px}
@@ -936,7 +957,7 @@ const parseAndSwap = async (responseText, preserveFlash = false) => {
   if (nextShell && currentShell && nextShell.dataset.version) {
     currentShell.dataset.version = nextShell.dataset.version;
   }
-  for (const id of ["sidebar", "content"]) {
+  for (const id of ["masthead", "sidebar", "content"]) {
     const next = doc.getElementById(id);
     const current = document.getElementById(id);
     if (next && current) current.innerHTML = next.innerHTML;
@@ -1008,15 +1029,22 @@ fn render_flash(message: Option<&str>, error: Option<&HostRuntimeError>) -> Stri
         .unwrap_or_default()
 }
 
-fn render_panel_tabs(active_view: &str) -> String {
-    let panels = [
-        ("Status", "panel status", "status.panel"),
-        ("History", "panel history", "history.panel"),
-        ("Branches", "panel branches", "branches.panel"),
-        ("Tags", "panel tags", "tags.panel"),
-        ("Compare", "panel compare", "compare.panel"),
-        ("Diagnostics", "panel diagnostics", "diagnostics.panel"),
-    ];
+fn render_panel_tabs(active_view: &str, repo_open: bool) -> String {
+    let mut panels = vec![("Logs", "panel logs", "logs.panel")];
+    if repo_open {
+        panels.splice(
+            0..0,
+            [
+                ("Status", "panel status", "status.panel"),
+                ("History", "panel history", "history.panel"),
+                ("Branches", "panel branches", "branches.panel"),
+                ("Tags", "panel tags", "tags.panel"),
+                ("Compare", "panel compare", "compare.panel"),
+                ("Diagnostics", "panel diagnostics", "diagnostics.panel"),
+            ],
+        );
+    }
+
     let tabs = panels
         .into_iter()
         .map(|(label, command, view)| {
@@ -1029,17 +1057,35 @@ fn render_panel_tabs(active_view: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("");
-    format!("<div class=\"tabs\">{tabs}</div>")
+    if repo_open {
+        format!("<div class=\"tabs\">{tabs}</div>")
+    } else {
+        format!(
+            "<p class=\"meta\">Open a repository to unlock runtime panels.</p><div class=\"tabs\">{tabs}</div>"
+        )
+    }
 }
 
 fn render_quick_actions(snapshot: &StoreSnapshot) -> String {
+    if snapshot.repo.is_none() {
+        let items = [
+            render_command_button("panel logs", "Logs", "ghost"),
+            render_command_button("run plugin.list", "Plugins", "ghost"),
+            render_command_button("ops", "Ops", "ghost"),
+        ]
+        .join("");
+        return format!(
+            "<p class=\"meta\">Open a repository to unlock repo-backed actions.</p><div class=\"inline-actions\">{items}</div>"
+        );
+    }
+
     let mut buttons = vec![
         ("Refresh", "refresh"),
         ("Status", "run status.refresh"),
         ("Refs", "run refs.refresh"),
         ("History", "run history.page 0 20"),
         ("Capabilities", "run diagnostics.repo_capabilities"),
-        ("Journal", "run diagnostics.journal_summary"),
+        ("Logs", "panel logs"),
         ("Plugins", "plugin list"),
         ("Ops", "ops"),
     ];
@@ -1077,6 +1123,11 @@ fn render_workflow_widgets(
     compare_base: &str,
     compare_head: &str,
 ) -> String {
+    if snapshot.repo.is_none() {
+        return "<p class=\"meta\">Repository workflows appear here after you open a Git repository.</p>"
+            .to_string();
+    }
+
     let branch_base = snapshot
         .repo
         .as_ref()
@@ -1150,6 +1201,7 @@ fn render_context_widgets(
     compare_head: &str,
 ) -> String {
     let sections = match active_view {
+        "empty.state" => vec![render_empty_state_controls()],
         "history.panel" => vec![
             render_history_controls(snapshot),
             render_history_commit_controls(snapshot),
@@ -1163,10 +1215,11 @@ fn render_context_widgets(
         "tags.panel" => vec![render_tag_controls(snapshot)],
         "compare.panel" => vec![render_compare_controls(compare_base, compare_head)],
         "diagnostics.panel" => vec![
-            render_diagnostics_controls(),
+            render_diagnostics_controls(snapshot),
             render_plugin_controls(snapshot),
             render_runtime_ops_controls(),
         ],
+        "logs.panel" => vec![render_logs_controls(snapshot)],
         _ => vec![
             render_status_controls(snapshot),
             render_stash_worktree_controls(),
@@ -1176,6 +1229,37 @@ fn render_context_widgets(
     format!(
         "<section class=\"grid-two\">{}</section>",
         sections.join("")
+    )
+}
+
+fn render_empty_state_controls() -> String {
+    format!(
+        "<section class=\"card\"><h2>Open A Repository</h2><p class=\"meta\">Use the repository form above to attach the GUI to a Git working tree. Once a repository is open, Branchforge will unlock status, history, branches, tags, compare, diagnostics, diff controls, and the full runtime workspace.</p><div class=\"inline-actions\">{}{}{}</div></section>",
+        render_command_button("panel logs", "Logs", "ghost"),
+        render_command_button("run plugin.list", "Plugins", "ghost"),
+        render_command_button("ops", "Ops", "ghost")
+    )
+}
+
+fn render_logs_controls(snapshot: &StoreSnapshot) -> String {
+    let entries = snapshot.journal.entries.len();
+    let refresh_button = if snapshot.repo.is_some() {
+        render_command_button("refresh", "Refresh Repo", "ghost")
+    } else {
+        String::new()
+    };
+    format!(
+        "<section class=\"card\"><h2>System Tools</h2><p class=\"meta\">Recent journal entries: {}. This page keeps runtime state, operation history, actions, and ops catalog in one place instead of repeating them across every panel.</p><div class=\"inline-actions\">{}{}{}{}{}</div></section>",
+        entries,
+        refresh_button,
+        render_command_button(
+            "run diagnostics.journal_summary",
+            "Journal Summary",
+            "ghost"
+        ),
+        render_command_button("panel diagnostics", "Diagnostics", "ghost"),
+        render_command_button("run plugin.list", "Plugin Inventory", "ghost"),
+        render_command_button("ops", "Ops Catalog", "ghost")
     )
 }
 
@@ -1194,7 +1278,7 @@ fn render_status_controls(snapshot: &StoreSnapshot) -> String {
         render_command_button("run diff.index", "Diff Index", "ghost"),
         render_command_button("run index.stage_selected", "Stage Selected", "ghost"),
         render_command_button("run index.unstage_selected", "Unstage Selected", "ghost"),
-        render_command_button("run file.discard", "Discard Selected", "ghost"),
+        render_command_button("run --confirm file.discard", "Discard Selected", "ghost"),
     ]
     .join("");
     format!(
@@ -1236,9 +1320,10 @@ fn render_stash_worktree_controls() -> String {
                     <input type=\"text\" name=\"stash_selector\" placeholder=\"stash@{{0}} or 0\">\
                     <div class=\"inline-actions\">\
                         <button class=\"secondary\" type=\"submit\">Drop</button>\
-                        {}\
                     </div>\
                 </form>\
+                <div class=\"inline-actions\">{}\
+                </div>\
                 <form method=\"post\" action=\"/command\">\
                     <input type=\"hidden\" name=\"gui_action\" value=\"worktree_create\">\
                     <label>Worktree Path</label>\
@@ -1261,9 +1346,10 @@ fn render_stash_worktree_controls() -> String {
                     <input type=\"text\" name=\"worktree_path\" placeholder=\"../branchforge-feature\">\
                     <div class=\"inline-actions\">\
                         <button class=\"secondary\" type=\"submit\">Remove Worktree</button>\
-                        {}\
                     </div>\
                 </form>\
+                <div class=\"inline-actions\">{}\
+                </div>\
                 <form method=\"post\" action=\"/command\">\
                     <input type=\"hidden\" name=\"gui_action\" value=\"submodule_open\">\
                     <label>Submodule Path</label>\
@@ -1308,10 +1394,10 @@ fn render_diff_controls(snapshot: &StoreSnapshot) -> String {
                     <input type=\"text\" name=\"history_limit\" value=\"20\">\
                     <div class=\"inline-actions\">\
                         <button type=\"submit\">File History</button>\
-                        {}\
-                        {}\
                     </div>\
                 </form>\
+                <div class=\"inline-actions\">{}{}\
+                </div>\
             </div>\
         </section>",
         escape_html(selected_file),
@@ -1348,10 +1434,10 @@ fn render_history_controls(snapshot: &StoreSnapshot) -> String {
                     <div class=\"inline-actions\">\
                         <button type=\"submit\">Load History</button>\
                         <button type=\"submit\" name=\"gui_action\" value=\"history_search\" class=\"ghost\">Search Op</button>\
-                        {}\
-                        {}\
                     </div>\
                 </form>\
+                <div class=\"inline-actions\">{}{}\
+                </div>\
                 <form method=\"post\" action=\"/command\">\
                     <input type=\"hidden\" name=\"gui_action\" value=\"history_file\">\
                     <label>File Path</label>\
@@ -1645,10 +1731,10 @@ fn render_compare_controls(compare_base: &str, compare_head: &str) -> String {
                 <input type=\"text\" name=\"compare_head\" value=\"{}\">\
                 <div class=\"inline-actions\">\
                     <button type=\"submit\">Load Compare</button>\
-                    {}\
-                    {}\
                 </div>\
             </form>\
+            <div class=\"inline-actions\">{}{}\
+            </div>\
         </section>",
         escape_html(compare_base),
         escape_html(compare_head),
@@ -1657,11 +1743,27 @@ fn render_compare_controls(compare_base: &str, compare_head: &str) -> String {
     )
 }
 
-fn render_diagnostics_controls() -> String {
+fn render_diagnostics_controls(snapshot: &StoreSnapshot) -> String {
+    let lfs_controls = match snapshot.repo_capabilities.as_ref() {
+        Some(caps) if !caps.lfs_available => format!(
+            "{}{}{}<p class=\"meta\">Install git-lfs to enable LFS actions on this machine.</p>",
+            render_disabled_button("LFS Status", "ghost"),
+            render_disabled_button("LFS Fetch", "ghost"),
+            render_disabled_button("LFS Pull", "ghost")
+        ),
+        _ => format!(
+            "{}{}{}",
+            render_command_button("run diagnostics.lfs_status", "LFS Status", "ghost"),
+            render_command_button("run diagnostics.lfs_fetch", "LFS Fetch", "ghost"),
+            render_command_button("run diagnostics.lfs_pull", "LFS Pull", "ghost")
+        ),
+    };
     format!(
         "<section class=\"card\"><h2>Diagnostics</h2>\
             <div class=\"widget-grid\">\
-                <div class=\"inline-actions\">{}{}{}{}{}\
+                <div class=\"inline-actions\">{}{}\
+                </div>\
+                <div class=\"inline-actions\">{}\
                 </div>\
             </div>\
         </section>",
@@ -1675,9 +1777,7 @@ fn render_diagnostics_controls() -> String {
             "Journal Summary",
             "ghost"
         ),
-        render_command_button("run diagnostics.lfs_status", "LFS Status", "ghost"),
-        render_command_button("run diagnostics.lfs_fetch", "LFS Fetch", "ghost"),
-        render_command_button("run diagnostics.lfs_pull", "LFS Pull", "ghost")
+        lfs_controls
     )
 }
 
@@ -1779,16 +1879,33 @@ fn render_command_button(command: &str, label: &str, class_name: &str) -> String
     )
 }
 
-fn render_active_panel(snapshot: &StoreSnapshot) -> String {
-    let active_view = snapshot.active_view.as_deref().unwrap_or("status.panel");
+fn render_disabled_button(label: &str, class_name: &str) -> String {
+    format!(
+        "<div class=\"disabled-action\"><button class=\"{}\" type=\"button\" disabled>{}</button></div>",
+        class_name,
+        escape_html(label)
+    )
+}
+
+fn render_active_panel(
+    runtime: &HostRuntime,
+    snapshot: &StoreSnapshot,
+    active_view: &str,
+) -> String {
     match active_view {
+        "empty.state" => render_empty_view(),
         "history.panel" => render_history_view(snapshot),
         "branches.panel" => render_branches_view(snapshot),
         "tags.panel" => render_tags_view(snapshot),
         "compare.panel" => render_compare_view(snapshot),
         "diagnostics.panel" => render_diagnostics_view(snapshot),
+        "logs.panel" => render_logs_view(runtime, snapshot),
         _ => render_status_view(snapshot),
     }
+}
+
+fn render_empty_view() -> String {
+    "<section class=\"card\"><h2>No Repository Opened</h2><p class=\"meta\">Open a Git repository to load status, history, branch management, compare, diff, and diagnostics in the main workspace.</p></section>".to_string()
 }
 
 fn render_status_view(snapshot: &StoreSnapshot) -> String {
@@ -2089,28 +2206,42 @@ fn render_compare_view(snapshot: &StoreSnapshot) -> String {
 }
 
 fn render_diagnostics_view(snapshot: &StoreSnapshot) -> String {
-    let journal_entries = snapshot
+    let running = snapshot
         .journal
         .entries
         .iter()
-        .rev()
-        .take(12)
-        .map(|entry| {
-            let status = match entry.status {
-                JournalStatus::Started => "running",
-                JournalStatus::Succeeded => "ok",
-                JournalStatus::Failed => "failed",
-            };
-            format!(
-                "<li class=\"item\"><div class=\"row\"><span class=\"badge\">{}</span><span class=\"meta\">#{}</span></div><div>{}</div><div class=\"meta\">{}</div></li>",
-                status,
-                entry.id,
-                escape_html(&entry.op),
-                escape_html(entry.error.as_deref().unwrap_or(""))
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("");
+        .filter(|entry| matches!(entry.status, JournalStatus::Started))
+        .count();
+    let succeeded = snapshot
+        .journal
+        .entries
+        .iter()
+        .filter(|entry| matches!(entry.status, JournalStatus::Succeeded))
+        .count();
+    let failed = snapshot
+        .journal
+        .entries
+        .iter()
+        .filter(|entry| matches!(entry.status, JournalStatus::Failed))
+        .count();
+    let summary = format!(
+        "journal entries: {}\nrunning: {}\nsucceeded: {}\nfailed: {}\nlfs: {}\nselected plugin: {}",
+        snapshot.journal.entries.len(),
+        running,
+        succeeded,
+        failed,
+        match snapshot.repo_capabilities.as_ref() {
+            Some(caps) if !caps.lfs_available => "unavailable (git-lfs missing)",
+            Some(caps) if caps.lfs_detected => "available (repo detected)",
+            Some(_) => "available (repo not detected)",
+            None => "<unknown>",
+        },
+        snapshot
+            .selection
+            .selected_plugin_id
+            .as_deref()
+            .unwrap_or("<none>")
+    );
     let plugins = if snapshot.installed_plugins.is_empty() {
         "<p class=\"meta\">No installed plugins.</p>".to_string()
     } else {
@@ -2179,23 +2310,42 @@ fn render_diagnostics_view(snapshot: &StoreSnapshot) -> String {
         format!("<ul class=\"clean\">{items}</ul>")
     };
     format!(
-        "<section class=\"grid-two\"><section class=\"card\"><h2>Journal</h2><ul class=\"clean\">{}</ul></section><section class=\"card\"><h2>Installed Plugins</h2>{}</section></section><section class=\"card\"><h2>Runtime Plugin Health</h2>{}</section><section class=\"card\"><h2>Ops Catalog</h2><pre>{}</pre></section>",
-        journal_entries,
+        "<section class=\"grid-two\"><section class=\"card\"><h2>Diagnostics Summary</h2><pre>{}</pre></section><section class=\"card\"><h2>Installed Plugins</h2>{}</section></section><section class=\"card\"><h2>Runtime Plugin Health</h2>{}</section>",
+        escape_html(&summary),
         plugins,
-        runtime_plugins,
-        escape_html(
-            &[
-                "diagnostics.repo_capabilities",
-                "diagnostics.lfs_status",
-                "diagnostics.lfs_fetch",
-                "diagnostics.lfs_pull",
-                "plugin.list",
-                "plugin.discover [registry_path]",
-                "plugin.install <package_dir>",
-                "plugin.install_registry <plugin_id> [registry_path]"
-            ]
-            .join("\n")
-        )
+        runtime_plugins
+    )
+}
+
+fn render_logs_view(runtime: &HostRuntime, snapshot: &StoreSnapshot) -> String {
+    let journal_entries = snapshot
+        .journal
+        .entries
+        .iter()
+        .rev()
+        .take(12)
+        .map(|entry| {
+            let status = match entry.status {
+                JournalStatus::Started => "running",
+                JournalStatus::Succeeded => "ok",
+                JournalStatus::Failed => "failed",
+            };
+            format!(
+                "<li class=\"item\"><div class=\"row\"><span class=\"badge\">{}</span><span class=\"meta\">#{}</span></div><div>{}</div><div class=\"meta\">{}</div></li>",
+                status,
+                entry.id,
+                escape_html(&entry.op),
+                escape_html(entry.error.as_deref().unwrap_or(""))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    format!(
+        "<section class=\"grid-two\"><section class=\"card\"><h2>System Logs</h2><ul class=\"clean\">{}</ul></section><section class=\"card\"><h2>Runtime Snapshot</h2><pre>{}</pre></section></section><section class=\"grid-two\"><section class=\"card\"><h2>Action Catalog</h2><pre>{}</pre></section><section class=\"card\"><h2>Ops Catalog</h2><pre>{}</pre></section></section>",
+        journal_entries,
+        escape_html(&runtime.render_screen()),
+        escape_html(&runtime.render_actions()),
+        escape_html(&runtime.ops_catalog())
     )
 }
 
@@ -2457,6 +2607,35 @@ mod tests {
         })
     }
 
+    fn assert_no_nested_forms(html: &str) {
+        let mut depth = 0usize;
+        let mut cursor = html;
+
+        loop {
+            let next_open = cursor.find("<form");
+            let next_close = cursor.find("</form>");
+            match (next_open, next_close) {
+                (Some(open), Some(close)) if open < close => {
+                    depth += 1;
+                    assert_eq!(depth, 1, "nested <form> detected");
+                    cursor = &cursor[open + 5..];
+                }
+                (_, Some(close)) => {
+                    depth = depth.checked_sub(1).expect("unexpected </form>");
+                    cursor = &cursor[close + "</form>".len()..];
+                }
+                (Some(open), None) => {
+                    depth += 1;
+                    assert_eq!(depth, 1, "nested <form> detected");
+                    cursor = &cursor[open + 5..];
+                }
+                (None, None) => break,
+            }
+        }
+
+        assert_eq!(depth, 0, "all forms should be closed");
+    }
+
     #[test]
     fn decodes_form_urlencoded_payload() {
         let form = parse_form_urlencoded(b"command=run+history.page+0+20&repo_path=foo%2Fbar");
@@ -2554,7 +2733,26 @@ mod tests {
         form.insert("merge_mode".to_string(), "no-ff".to_string());
         assert_eq!(
             build_command_from_form(&form).as_deref(),
-            Some("run merge.execute feature/gui no-ff")
+            Some("run --confirm merge.execute feature/gui no-ff")
+        );
+
+        let mut form = HashMap::new();
+        form.insert("gui_action".to_string(), "diff_hunk_discard".to_string());
+        form.insert("diff_path".to_string(), "src/lib.rs".to_string());
+        form.insert("diff_hunk_index".to_string(), "2".to_string());
+        assert_eq!(
+            build_command_from_form(&form).as_deref(),
+            Some("run --confirm file.discard_hunk src/lib.rs 2")
+        );
+
+        let mut form = HashMap::new();
+        form.insert("gui_action".to_string(), "diff_lines_discard".to_string());
+        form.insert("diff_path".to_string(), "src/lib.rs".to_string());
+        form.insert("diff_hunk_index".to_string(), "2".to_string());
+        form.insert("line_indices".to_string(), "0, 2 4".to_string());
+        assert_eq!(
+            build_command_from_form(&form).as_deref(),
+            Some("run --confirm file.discard_lines src/lib.rs 2 0 2 4")
         );
 
         let mut form = HashMap::new();
@@ -2585,8 +2783,106 @@ mod tests {
         assert!(page.contains("Runtime GUI"));
         assert!(page.contains("Quick Actions"));
         assert!(page.contains("Primary Flows"));
-        assert!(page.contains("Workspace Controls"));
-        assert!(page.contains("live sync 3s"));
+        assert!(page.contains("Open a repository to unlock runtime panels."));
+        assert!(page.contains("panel logs"));
+        assert!(page.contains("No Repository Opened"));
+        assert!(!page.contains("Workspace Controls"));
+        assert!(page.contains("id=\"masthead\""));
+        assert!(page.contains("[\"masthead\", \"sidebar\", \"content\"]"));
+        assert!(page.contains("no repo"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn logs_panel_renders_system_cards_without_repo() {
+        let root = unique_temp_dir("logs");
+        assert!(std::fs::create_dir_all(&root).is_ok());
+        let mut runtime = test_runtime(&root);
+
+        let response = route_request(
+            &mut runtime,
+            HttpRequest {
+                method: "POST".to_string(),
+                path: "/command".to_string(),
+                body: b"command=panel+logs".to_vec(),
+            },
+        );
+
+        assert_eq!(response.status, "200 OK");
+        assert!(response.body.contains("System Logs"));
+        assert!(response.body.contains("Runtime Snapshot"));
+        assert!(response.body.contains("Action Catalog"));
+        assert!(response.body.contains("Ops Catalog"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn diagnostics_controls_disable_lfs_actions_when_git_lfs_is_missing() {
+        let snapshot = StoreSnapshot {
+            repo_capabilities: Some(state_store::RepoCapabilitiesSnapshot {
+                is_linked_worktree: false,
+                has_submodules: false,
+                lfs_detected: false,
+                lfs_available: false,
+            }),
+            ..StoreSnapshot::default()
+        };
+
+        let controls = render_diagnostics_controls(&snapshot);
+        assert!(controls.contains("Install git-lfs to enable LFS actions on this machine."));
+        assert!(controls.contains("type=\"button\" disabled"));
+        assert!(!controls.contains("run diagnostics.lfs_status"));
+        assert!(!controls.contains("run diagnostics.lfs_fetch"));
+        assert!(!controls.contains("run diagnostics.lfs_pull"));
+    }
+
+    #[test]
+    fn diagnostics_summary_reports_missing_git_lfs() {
+        let snapshot = StoreSnapshot {
+            repo_capabilities: Some(state_store::RepoCapabilitiesSnapshot {
+                is_linked_worktree: false,
+                has_submodules: false,
+                lfs_detected: false,
+                lfs_available: false,
+            }),
+            ..StoreSnapshot::default()
+        };
+
+        let page = render_diagnostics_view(&snapshot);
+        assert!(page.contains("lfs: unavailable (git-lfs missing)"));
+    }
+
+    #[test]
+    fn opened_repo_page_does_not_nest_forms() {
+        let root = unique_temp_dir("nested-forms");
+        let repo_dir = root.join("repo");
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        let mut runtime = test_runtime(&root);
+        let response = route_request(
+            &mut runtime,
+            HttpRequest {
+                method: "POST".to_string(),
+                path: "/command".to_string(),
+                body: format!(
+                    "repo_path={}",
+                    repo_dir.to_string_lossy().replace('/', "%2F")
+                )
+                .into_bytes(),
+            },
+        );
+        assert_eq!(response.status, "200 OK");
+
+        let page = render_page(&runtime, None, None);
+        assert_no_nested_forms(&page);
+        assert!(page.contains("run --confirm file.discard"));
 
         let _ = std::fs::remove_dir_all(&root);
     }

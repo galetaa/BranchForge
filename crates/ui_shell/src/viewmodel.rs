@@ -740,6 +740,7 @@ mod tests {
     fn builds_panel_with_commit_button_state() {
         let snapshot = StoreSnapshot {
             repo: None,
+            repo_capabilities: None,
             status: StatusSnapshot {
                 staged: vec!["src/lib.rs".to_string()],
                 unstaged: Vec::new(),
@@ -776,6 +777,7 @@ mod tests {
                 head: Some("feature/demo".to_string()),
                 conflict_state: None,
             }),
+            repo_capabilities: None,
             status: StatusSnapshot::default(),
             selection: SelectionState::default(),
             history: state_store::HistoryState::default(),
@@ -807,6 +809,7 @@ mod tests {
                 head: Some("main".to_string()),
                 conflict_state: Some(plugin_api::ConflictState::Merge),
             }),
+            repo_capabilities: None,
             status: StatusSnapshot::default(),
             selection: SelectionState::default(),
             history: state_store::HistoryState::default(),
@@ -834,6 +837,7 @@ mod tests {
     fn shows_loading_and_operation_error_from_journal() {
         let snapshot = StoreSnapshot {
             repo: None,
+            repo_capabilities: None,
             status: StatusSnapshot {
                 staged: vec!["src/lib.rs".to_string()],
                 unstaged: Vec::new(),
@@ -904,6 +908,7 @@ mod tests {
                 head: Some("main".to_string()),
                 conflict_state: Some(plugin_api::ConflictState::Merge),
             }),
+            repo_capabilities: None,
             status: StatusSnapshot::default(),
             selection: SelectionState::default(),
             history: state_store::HistoryState::default(),
@@ -955,6 +960,7 @@ mod tests {
                 head: Some("feature".to_string()),
                 conflict_state: Some(plugin_api::ConflictState::Rebase),
             }),
+            repo_capabilities: None,
             status: StatusSnapshot::default(),
             selection: SelectionState::default(),
             history: state_store::HistoryState::default(),
@@ -1033,6 +1039,7 @@ mod tests {
                 head: Some("main".to_string()),
                 conflict_state: None,
             }),
+            repo_capabilities: None,
             status: StatusSnapshot::default(),
             selection: SelectionState {
                 selected_paths: Vec::new(),
@@ -1076,6 +1083,7 @@ mod tests {
                 head: Some("main".to_string()),
                 conflict_state: None,
             }),
+            repo_capabilities: None,
             status: StatusSnapshot::default(),
             selection: SelectionState {
                 selected_paths: Vec::new(),
@@ -1128,6 +1136,7 @@ mod tests {
                 head: Some("main".to_string()),
                 conflict_state: None,
             }),
+            repo_capabilities: None,
             status: StatusSnapshot::default(),
             selection: SelectionState {
                 selected_paths: Vec::new(),
@@ -1173,6 +1182,7 @@ mod tests {
                 head: Some("main".to_string()),
                 conflict_state: None,
             }),
+            repo_capabilities: None,
             status: StatusSnapshot::default(),
             selection: SelectionState::default(),
             history: state_store::HistoryState::default(),

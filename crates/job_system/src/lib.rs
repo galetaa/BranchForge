@@ -7,7 +7,7 @@ use state_store::{
     BlameLine, BranchInfo, CommitDetails, DiffChunk, DiffDescriptor, DiffLoadRequest, DiffSource,
     DiffState, HistoryCursor, JournalStatus, OperationSessionKind, OperationSessionState,
     RebaseEntryAction, RebasePlan, RebasePlanEntry, RebaseSessionSnapshot, RefSnapshotSummary,
-    StateStore, StatusSnapshot,
+    RepoCapabilitiesSnapshot, StateStore, StatusSnapshot,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -662,9 +662,15 @@ pub fn execute_job_op(
         }
         "diagnostics.repo_capabilities" => {
             let caps = git_service::repo_capabilities(cwd)?;
+            store.update_repo_capabilities(RepoCapabilitiesSnapshot {
+                is_linked_worktree: caps.is_linked_worktree,
+                has_submodules: caps.has_submodules,
+                lfs_detected: caps.lfs_detected,
+                lfs_available: caps.lfs_available,
+            });
             let text = format!(
-                "linked_worktree: {}\nhas_submodules: {}\nlfs_detected: {}",
-                caps.is_linked_worktree, caps.has_submodules, caps.lfs_detected
+                "linked_worktree: {}\nhas_submodules: {}\nlfs_detected: {}\nlfs_available: {}",
+                caps.is_linked_worktree, caps.has_submodules, caps.lfs_detected, caps.lfs_available
             );
             store.update_diff(build_diff_state(
                 DiffSource::Commit {
@@ -1439,11 +1445,19 @@ pub fn execute_job_op(
 }
 
 fn apply_repo_open(store: &mut StateStore, repo: &RepoOpenResult, status: &StatusSummary) {
-    store.update_repo(RepoSnapshot {
-        root: repo.root.clone(),
-        head: repo.head.clone(),
-        conflict_state: map_conflict_state(repo.conflict_state.as_ref()),
-    });
+    store.update_repo_context(
+        RepoSnapshot {
+            root: repo.root.clone(),
+            head: repo.head.clone(),
+            conflict_state: map_conflict_state(repo.conflict_state.as_ref()),
+        },
+        RepoCapabilitiesSnapshot {
+            is_linked_worktree: repo.capabilities.is_linked_worktree,
+            has_submodules: repo.capabilities.has_submodules,
+            lfs_detected: repo.capabilities.lfs_detected,
+            lfs_available: repo.capabilities.lfs_available,
+        },
+    );
     apply_status(store, status);
     store.clear_repo_selection_preserving_plugin();
     store.clear_history();

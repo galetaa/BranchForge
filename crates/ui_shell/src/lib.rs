@@ -327,6 +327,71 @@ pub fn render_diagnostics_panel(store: &StateStore) -> String {
     )
 }
 
+pub fn render_logs_panel(store: &StateStore) -> String {
+    let entries = store
+        .snapshot()
+        .journal
+        .entries
+        .iter()
+        .rev()
+        .take(12)
+        .map(|entry| {
+            let status = match entry.status {
+                state_store::JournalStatus::Started => "running",
+                state_store::JournalStatus::Succeeded => "ok",
+                state_store::JournalStatus::Failed => "failed",
+            };
+            format!(
+                "#{} {status} {}\n  started={} finished={}\n  error={}",
+                entry.id,
+                entry.op,
+                entry.started_at_ms,
+                entry
+                    .finished_at_ms
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "<none>".to_string()),
+                entry.error.as_deref().unwrap_or("<none>")
+            )
+        })
+        .collect::<Vec<_>>();
+    let log_body = if entries.is_empty() {
+        "<empty>".to_string()
+    } else {
+        entries.join("\n")
+    };
+
+    format!(
+        "Logs Panel\nJournal entries: {}\nSelected file: {}\nSelected commit: {}\nSelected branch: {}\nSelected plugin: {}\n\nRecent activity\n{}\n",
+        store.snapshot().journal.entries.len(),
+        store
+            .snapshot()
+            .selection
+            .selected_paths
+            .first()
+            .map(String::as_str)
+            .unwrap_or("<none>"),
+        store
+            .snapshot()
+            .selection
+            .selected_commit_oid
+            .as_deref()
+            .unwrap_or("<none>"),
+        store
+            .snapshot()
+            .selection
+            .selected_branch
+            .as_deref()
+            .unwrap_or("<none>"),
+        store
+            .snapshot()
+            .selection
+            .selected_plugin_id
+            .as_deref()
+            .unwrap_or("<none>"),
+        log_body
+    )
+}
+
 pub fn render_merge_dialog_preview(source_ref: &str, target_ref: &str, mode: &str) -> String {
     let impact = match mode {
         "ff" | "fast-forward" => "fast-forward only, aborts if history diverged",
@@ -379,6 +444,7 @@ pub fn render_window(store: &StateStore, palette_items: &[palette::PaletteItem])
                 "tags.panel" => render_tags_panel(store),
                 "compare.panel" => render_compare_panel(store),
                 "diagnostics.panel" => render_diagnostics_panel(store),
+                "logs.panel" => render_logs_panel(store),
                 "status.panel" => render_status_panel(store),
                 _ => {
                     if store.repo().is_some() {
@@ -602,6 +668,19 @@ mod tests {
         assert!(rendered.contains("Compare Panel"));
         assert!(rendered.contains("Base ref: main"));
         assert!(rendered.contains("Compare commits: abc1234 feat: compare"));
+    }
+
+    #[test]
+    fn renders_logs_panel_when_active_view_set() {
+        let mut store = StateStore::new();
+        store.set_active_view(Some("logs.panel".to_string()));
+        let entry_id = store.append_journal_entry(None, "history.search".to_string(), 100);
+        store.finish_journal_entry(entry_id, state_store::JournalStatus::Succeeded, 160, None);
+
+        let rendered = render_window(&store, &palette::build_palette(&[], "", false));
+        assert!(rendered.contains("Logs Panel"));
+        assert!(rendered.contains("history.search"));
+        assert!(rendered.contains("active_view: logs.panel"));
     }
 
     #[test]

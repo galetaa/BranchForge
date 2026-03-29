@@ -3036,6 +3036,33 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn workspace_sample_external_package_is_installable() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!("branchforge-plugin-sample-{nanos}"));
+        let plugins_root = root.join("installed");
+        let package_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("workspace root")
+            .join("external_plugins/sample_plugin");
+
+        let manifest = read_manifest(&package_dir);
+        assert!(manifest.is_ok());
+
+        let installed = install_local_plugin(&package_dir, &plugins_root);
+        assert!(installed.is_ok());
+        assert_eq!(
+            installed.expect("install").manifest.plugin_id,
+            "sample_external"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     fn serve_registry_files(
         files: std::collections::HashMap<String, Vec<u8>>,
         request_count: usize,

@@ -111,6 +111,7 @@ enum PanelKind {
     Tags,
     Compare,
     Diagnostics,
+    Logs,
 }
 
 impl PanelKind {
@@ -122,6 +123,7 @@ impl PanelKind {
             "tags" => Some(Self::Tags),
             "compare" => Some(Self::Compare),
             "diagnostics" => Some(Self::Diagnostics),
+            "logs" => Some(Self::Logs),
             _ => None,
         }
     }
@@ -134,6 +136,7 @@ impl PanelKind {
             Self::Tags => "tags",
             Self::Compare => "compare",
             Self::Diagnostics => "diagnostics",
+            Self::Logs => "logs",
         }
     }
 
@@ -145,6 +148,7 @@ impl PanelKind {
             Self::Tags => "tags.panel",
             Self::Compare => "compare.panel",
             Self::Diagnostics => "diagnostics.panel",
+            Self::Logs => "logs.panel",
         }
     }
 }
@@ -757,7 +761,11 @@ impl ConsoleRunner {
                 }
                 PanelKind::Diagnostics => {
                     self.sync_plugin_inventory()?;
-                    self.show_journal_summary();
+                    self.update_journal_summary_diff();
+                }
+                PanelKind::Logs => {
+                    self.sync_plugin_inventory()?;
+                    self.update_journal_summary_diff();
                 }
             }
         }
@@ -1518,8 +1526,8 @@ impl ConsoleRunner {
             | "conflict.abort" => Some(PanelKind::Branches.view_id()),
             "tag.create" | "tag.delete" | "tag.checkout" => Some(PanelKind::Tags.view_id()),
             "compare.refs" => Some(PanelKind::Compare.view_id()),
+            "diagnostics.journal_summary" => Some(PanelKind::Logs.view_id()),
             "diagnostics.repo_capabilities"
-            | "diagnostics.journal_summary"
             | "diagnostics.lfs_status"
             | "diagnostics.lfs_fetch"
             | "diagnostics.lfs_pull" => Some(PanelKind::Diagnostics.view_id()),
@@ -1531,9 +1539,7 @@ impl ConsoleRunner {
         }
     }
 
-    fn show_journal_summary(&mut self) {
-        self.store
-            .set_active_view(Some(PanelKind::Diagnostics.view_id().to_string()));
+    fn update_journal_summary_diff(&mut self) {
         self.store.update_diff(render_text_diff(
             "diagnostics:journal_summary",
             render_journal_summary(&self.store),
@@ -1542,6 +1548,12 @@ impl ConsoleRunner {
             target: "diagnostics.journal_summary".to_string(),
             args: Vec::new(),
         });
+    }
+
+    fn show_journal_summary(&mut self) {
+        self.store
+            .set_active_view(Some(PanelKind::Logs.view_id().to_string()));
+        self.update_journal_summary_diff();
     }
 
     fn execute_in_open_repo(
@@ -3173,14 +3185,15 @@ mod tests {
             path: repo_dir.to_string_lossy().to_string(),
         });
         assert!(open.is_ok());
+        let expected_root = std::fs::canonicalize(&repo_dir).unwrap_or(repo_dir.clone());
         assert_eq!(
             runner
                 .store
                 .snapshot()
                 .repo
                 .as_ref()
-                .map(|repo| repo.root.clone()),
-            Some(repo_dir.to_string_lossy().to_string())
+                .map(|repo| std::path::PathBuf::from(repo.root.clone())),
+            Some(expected_root)
         );
 
         let panel = runner.execute(ConsoleCommand::Panel {
@@ -3193,6 +3206,24 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn logs_panel_is_available_without_repo() {
+        let root = unique_temp_dir("logs-panel");
+        assert!(std::fs::create_dir_all(&root).is_ok());
+        let mut runner = ConsoleRunner::new(test_config(&root));
+
+        let panel = runner.execute(ConsoleCommand::Panel {
+            panel: PanelKind::Logs,
+        });
+        assert!(panel.is_ok());
+        assert_eq!(
+            runner.store.snapshot().active_view.as_deref(),
+            Some("logs.panel")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -3374,7 +3405,7 @@ mod tests {
         assert!(diff.contains("entries:"));
         assert_eq!(
             runner.store.snapshot().active_view.as_deref(),
-            Some("diagnostics.panel")
+            Some("logs.panel")
         );
 
         let _ = std::fs::remove_dir_all(&repo_dir);
