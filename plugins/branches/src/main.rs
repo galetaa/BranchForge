@@ -1,6 +1,6 @@
 use plugin_api::{
-    ActionEffects, ActionSpec, ConfirmPolicy, DangerLevel, PluginHello, PluginRegister, RpcRequest,
-    ViewSpec,
+    ActionEffects, ActionSpec, ConfirmPolicy, DangerLevel, PluginHello, PluginRegister, ViewSpec,
+    serve_static_plugin,
 };
 
 fn spec(
@@ -21,16 +21,7 @@ fn spec(
     }
 }
 
-fn build_hello_request() -> RpcRequest {
-    PluginHello {
-        plugin_id: "branches".to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-    }
-    .to_request("hello-1")
-}
-
-fn build_register_request() -> RpcRequest {
-    let rebase_beta = rebase_beta_enabled();
+fn build_register_payload() -> PluginRegister {
     PluginRegister {
         actions: vec![
             spec(
@@ -76,7 +67,7 @@ fn build_register_request() -> RpcRequest {
             ),
             spec(
                 "rebase.interactive",
-                "Interactive Rebase (beta)",
+                "Interactive Rebase",
                 Some(DangerLevel::High),
                 ActionEffects {
                     writes_refs: true,
@@ -93,6 +84,27 @@ fn build_register_request() -> RpcRequest {
                 Some(DangerLevel::Medium),
                 ActionEffects::read_only(),
                 ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "rebase.plan.set_action",
+                "Set Rebase Plan Action",
+                Some(DangerLevel::Low),
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "rebase.plan.move",
+                "Reorder Rebase Plan Entry",
+                Some(DangerLevel::Low),
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "rebase.plan.clear",
+                "Clear Rebase Plan",
+                Some(DangerLevel::Low),
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
             ),
             spec(
                 "rebase.execute",
@@ -173,6 +185,71 @@ fn build_register_request() -> RpcRequest {
                 ConfirmPolicy::OnDanger,
             ),
             spec(
+                "conflict.list",
+                "List Conflicts",
+                Some(DangerLevel::Low),
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "conflict.focus",
+                "Focus Conflict File",
+                Some(DangerLevel::Low),
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "conflict.resolve.ours",
+                "Resolve Conflict (Ours)",
+                Some(DangerLevel::Medium),
+                ActionEffects::mutating_worktree(),
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "conflict.resolve.theirs",
+                "Resolve Conflict (Theirs)",
+                Some(DangerLevel::Medium),
+                ActionEffects::mutating_worktree(),
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "conflict.mark_resolved",
+                "Mark Conflict Resolved",
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_index: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "conflict.continue",
+                "Continue Conflict Session",
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_refs: true,
+                    writes_index: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
+                "conflict.abort",
+                "Abort Conflict Session",
+                Some(DangerLevel::Medium),
+                ActionEffects {
+                    writes_refs: true,
+                    writes_index: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
                 "reset.soft",
                 "Reset --soft",
                 Some(DangerLevel::Medium),
@@ -208,16 +285,7 @@ fn build_register_request() -> RpcRequest {
                 },
                 ConfirmPolicy::Always,
             ),
-        ]
-        .into_iter()
-        .filter(|spec| {
-            if spec.action_id == "rebase.interactive" {
-                rebase_beta
-            } else {
-                true
-            }
-        })
-        .collect(),
+        ],
         views: vec![ViewSpec {
             view_id: "branches.panel".to_string(),
             title: "Branches".to_string(),
@@ -225,16 +293,24 @@ fn build_register_request() -> RpcRequest {
             when: Some("repo.is_open".to_string()),
         }],
     }
-    .to_request("register-1")
-}
-
-fn rebase_beta_enabled() -> bool {
-    matches!(std::env::var("BRANCHFORGE_REBASE_BETA").as_deref(), Ok("1"))
 }
 
 fn main() {
-    let hello = build_hello_request();
-    let register = build_register_request();
+    let hello = PluginHello {
+        plugin_id: "branches".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    };
+    let register = build_register_payload();
 
-    println!("{} -> {}", hello.method, register.method);
+    if let Err(err) = serve_static_plugin(hello, register, |action_id, context| {
+        serde_json::json!({
+            "ok": true,
+            "plugin_id": "branches",
+            "action_id": action_id,
+            "selection_files": context.selection_files,
+        })
+    }) {
+        eprintln!("branches runtime failed: {err:?}");
+        std::process::exit(1);
+    }
 }

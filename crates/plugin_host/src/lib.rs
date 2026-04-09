@@ -7,9 +7,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use plugin_api::{
     ActionContext, ActionEffects, ActionSpec, CodecError, ConfirmPolicy, DangerLevel, FrameCodec,
-    HOST_PLUGIN_PROTOCOL_VERSION, HelloAck, METHOD_HOST_ACTION_INVOKE, METHOD_PLUGIN_READY,
-    PLUGIN_MANIFEST_VERSION_V1, PluginHello, PluginManifestV1, PluginRegister, RegisterAck,
-    RpcMessage, RpcNotification, RpcRequest, RpcResponse,
+    HOST_PLUGIN_PROTOCOL_VERSION, HelloAck, METHOD_HOST_ACTION_INVOKE, METHOD_PLUGIN_HELLO,
+    METHOD_PLUGIN_READY, METHOD_PLUGIN_REGISTER, PLUGIN_MANIFEST_VERSION_V1, PluginHello,
+    PluginManifestV1, PluginRegister, RegisterAck, RpcMessage, RpcNotification, RpcRequest,
+    RpcResponse,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -755,6 +756,33 @@ pub enum SessionError {
     UnexpectedMessage,
 }
 
+#[derive(Debug)]
+pub enum RuntimeBootstrapError {
+    Process(ProcessError),
+    Session(SessionError),
+    UnexpectedMessage { expected: String, actual: String },
+    InvalidPayload { method: String, reason: String },
+    PluginResponse { message: String },
+}
+
+impl From<ProcessError> for RuntimeBootstrapError {
+    fn from(value: ProcessError) -> Self {
+        Self::Process(value)
+    }
+}
+
+impl From<SessionError> for RuntimeBootstrapError {
+    fn from(value: SessionError) -> Self {
+        Self::Session(value)
+    }
+}
+
+#[derive(Debug)]
+pub struct BootstrappedPluginRuntime {
+    pub session: RuntimeSession,
+    pub register: PluginRegister,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginLifecycleState {
     Discovered,
@@ -1314,6 +1342,114 @@ impl RuntimeSession {
 
     pub fn drain_notifications(&mut self) -> Vec<RpcNotification> {
         std::mem::take(&mut self.notification_outbox)
+    }
+}
+
+pub fn spawn_installed_plugin_process(
+    info: &InstalledPluginInfo,
+) -> Result<PluginProcess, ProcessError> {
+    let program = info.install_dir.join(&info.manifest.entrypoint);
+    PluginProcess::spawn(PluginProcessConfig {
+        plugin_id: info.manifest.plugin_id.clone(),
+        program: program.display().to_string(),
+        args: Vec::new(),
+        restart_policy: RestartPolicy::Never,
+    })
+}
+
+pub fn bootstrap_plugin_runtime(
+    process: &mut PluginProcess,
+) -> Result<BootstrappedPluginRuntime, RuntimeBootstrapError> {
+    let mut session = RuntimeSession::new(process.plugin_id().to_string());
+
+    let hello_request = expect_request(process.receive()?, METHOD_PLUGIN_HELLO)?;
+    let hello: PluginHello =
+        serde_json::from_value(hello_request.params.clone()).map_err(|err| {
+            RuntimeBootstrapError::InvalidPayload {
+                method: METHOD_PLUGIN_HELLO.to_string(),
+                reason: err.to_string(),
+            }
+        })?;
+    let hello_ack = session.handle_hello(&hello)?;
+    process.send(&RpcMessage::Response(
+        hello_ack.to_response(hello_request.id.clone()),
+    ))?;
+
+    let register_request = expect_request(process.receive()?, METHOD_PLUGIN_REGISTER)?;
+    let register: PluginRegister = serde_json::from_value(register_request.params.clone())
+        .map_err(|err| RuntimeBootstrapError::InvalidPayload {
+            method: METHOD_PLUGIN_REGISTER.to_string(),
+            reason: err.to_string(),
+        })?;
+    let register_ack = session.handle_register(&register)?;
+    process.send(&RpcMessage::Response(
+        register_ack.to_response(register_request.id.clone()),
+    ))?;
+
+    Ok(BootstrappedPluginRuntime { session, register })
+}
+
+pub fn invoke_plugin_action(
+    process: &mut PluginProcess,
+    session: &mut RuntimeSession,
+    action_id: &str,
+    context: ActionContext,
+    now: Instant,
+) -> Result<serde_json::Value, RuntimeBootstrapError> {
+    let request = session.invoke_action(action_id, context, now)?;
+    let request_id = request.id.clone();
+    process.send(&RpcMessage::Request(request))?;
+
+    loop {
+        let inbound = process.receive()?;
+        match inbound {
+            RpcMessage::Response(response) => {
+                if response.id != request_id {
+                    return Err(RuntimeBootstrapError::UnexpectedMessage {
+                        expected: format!("response `{request_id}`"),
+                        actual: format!("response `{}`", response.id),
+                    });
+                }
+                let cloned = response.clone();
+                let _ = session.handle_inbound_message(&RpcMessage::Response(response))?;
+                if let Some(error) = cloned.error {
+                    return Err(RuntimeBootstrapError::PluginResponse {
+                        message: format!("code={} message={}", error.code, error.message),
+                    });
+                }
+                return Ok(cloned.result.unwrap_or_else(|| serde_json::json!({})));
+            }
+            RpcMessage::Notification(notification) => {
+                let _ = session.handle_inbound_message(&RpcMessage::Notification(notification));
+            }
+            RpcMessage::Request(request) => {
+                return Err(RuntimeBootstrapError::UnexpectedMessage {
+                    expected: format!("response `{request_id}`"),
+                    actual: format!("request `{}`", request.method),
+                });
+            }
+        }
+    }
+}
+
+fn expect_request(
+    message: RpcMessage,
+    expected_method: &str,
+) -> Result<RpcRequest, RuntimeBootstrapError> {
+    match message {
+        RpcMessage::Request(request) if request.method == expected_method => Ok(request),
+        RpcMessage::Request(request) => Err(RuntimeBootstrapError::UnexpectedMessage {
+            expected: format!("request `{expected_method}`"),
+            actual: format!("request `{}`", request.method),
+        }),
+        RpcMessage::Response(response) => Err(RuntimeBootstrapError::UnexpectedMessage {
+            expected: format!("request `{expected_method}`"),
+            actual: format!("response `{}`", response.id),
+        }),
+        RpcMessage::Notification(notification) => Err(RuntimeBootstrapError::UnexpectedMessage {
+            expected: format!("request `{expected_method}`"),
+            actual: format!("notification `{}`", notification.method),
+        }),
     }
 }
 

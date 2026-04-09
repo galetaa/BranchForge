@@ -2,4 +2,10 @@
 set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+PACKAGED_BIN="$SCRIPT_DIR/target/debug/sample_external_plugin"
+
+if [ -x "$PACKAGED_BIN" ]; then
+  exec "$PACKAGED_BIN"
+fi
+
 exec cargo run --quiet --manifest-path "$SCRIPT_DIR/Cargo.toml" --bin sample_external_plugin

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
@@ -5,11 +6,12 @@ use action_engine::{ActionRequest, validate_action};
 use job_system::{JobExecutionResult, JobLock, JobRequest, execute_job_op};
 use plugin_api::{ActionEffects, ActionSpec, ConfirmPolicy, DangerLevel};
 use plugin_host::{
-    PluginManagerError, branches_registration_payload, compare_registration_payload,
-    diagnostics_registration_payload, discover_local_plugins, history_registration_payload,
-    install_local_plugin, install_registry_plugin, list_installed_plugins, remove_local_plugin,
-    repo_manager_registration_payload, set_plugin_enabled, status_registration_payload,
-    tags_registration_payload,
+    PluginManagerError, bootstrap_plugin_runtime, branches_registration_payload,
+    compare_registration_payload, diagnostics_registration_payload, discover_local_plugins,
+    history_registration_payload, install_local_plugin, install_registry_plugin,
+    invoke_plugin_action, list_installed_plugins, remove_local_plugin,
+    repo_manager_registration_payload, set_plugin_enabled, spawn_installed_plugin_process,
+    status_registration_payload, tags_registration_payload,
 };
 use state_store::{DiffSource, DiffState, InstalledPluginRecord, StateStore};
 
@@ -179,8 +181,14 @@ enum PluginOp {
 
 #[derive(Debug, Clone)]
 struct CatalogAction {
-    owner: &'static str,
+    owner: String,
     spec: ActionSpec,
+}
+
+#[derive(Debug)]
+struct DynamicPluginRuntime {
+    process: plugin_host::PluginProcess,
+    session: plugin_host::RuntimeSession,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,6 +207,7 @@ struct ConsoleRunner {
     config: ConsoleRunnerConfig,
     store: StateStore,
     repo_dir: Option<PathBuf>,
+    dynamic_plugins: HashMap<String, DynamicPluginRuntime>,
     actions: Vec<CatalogAction>,
     last_message: Option<String>,
     last_replayable: Option<ReplayableRun>,
@@ -385,7 +394,8 @@ impl ConsoleRunner {
             config,
             store: StateStore::new(),
             repo_dir: None,
-            actions: build_catalog_actions(),
+            dynamic_plugins: HashMap::new(),
+            actions: build_builtin_catalog_actions(),
             last_message: Some("runner initialized".to_string()),
             last_replayable: None,
         }
@@ -566,7 +576,7 @@ impl ConsoleRunner {
             return (false, Some("repository is not open".to_string()));
         }
 
-        if let Some(owner) = ui_shell::palette::action_owner_plugin(&spec.action_id)
+        if let Some(owner) = self.action_owner_for(&spec.action_id)
             && let Some(status) = self.store.snapshot().plugins.iter().find(|status| {
                 status.plugin_id == owner
                     && matches!(status.health, state_store::PluginHealth::Unavailable { .. })
@@ -897,6 +907,11 @@ impl ConsoleRunner {
             | "verify.sprint22"
             | "verify.sprint23"
             | "verify.sprint24" => self.run_operational_op(target, args),
+            _ if self.find_dynamic_plugin_owner(target).is_some()
+                && !is_supported_direct_op(target) =>
+            {
+                self.invoke_dynamic_plugin_action(target, args)
+            }
             _ if self.find_action(target).is_some() || is_supported_direct_op(target) => {
                 let resolved_args = self.resolve_run_args(target, args)?;
                 self.execute_in_open_repo(target, resolved_args, true)?;
@@ -1365,6 +1380,7 @@ impl ConsoleRunner {
     ) -> Result<Vec<plugin_host::InstalledPluginInfo>, UserFacingError> {
         let installed = list_installed_plugins(&self.config.plugins_root)
             .map_err(translate_plugin_manager_error)?;
+        self.sync_dynamic_plugin_runtimes(&installed);
         if let Some(selected_plugin_id) = self.store.snapshot().selection.selected_plugin_id.clone()
             && !installed
                 .iter()
@@ -1374,7 +1390,171 @@ impl ConsoleRunner {
         }
         self.store
             .update_installed_plugins(map_installed_plugins(&installed));
+        self.rebuild_catalog_actions();
         Ok(installed)
+    }
+
+    fn sync_dynamic_plugin_runtimes(&mut self, installed: &[plugin_host::InstalledPluginInfo]) {
+        let installed_ids = installed
+            .iter()
+            .filter(|plugin| plugin.enabled)
+            .map(|plugin| plugin.manifest.plugin_id.clone())
+            .collect::<Vec<_>>();
+        let to_remove = self
+            .dynamic_plugins
+            .keys()
+            .filter(|plugin_id| !installed_ids.iter().any(|id| id == *plugin_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        for plugin_id in to_remove {
+            self.remove_dynamic_plugin_runtime(&plugin_id);
+        }
+
+        for plugin in installed {
+            if !plugin.enabled {
+                self.remove_dynamic_plugin_runtime(&plugin.manifest.plugin_id);
+                continue;
+            }
+            if self
+                .dynamic_plugins
+                .contains_key(&plugin.manifest.plugin_id)
+            {
+                self.store.update_plugin_status(
+                    &plugin.manifest.plugin_id,
+                    state_store::PluginHealth::Ready,
+                );
+                continue;
+            }
+            match self.spawn_dynamic_plugin_runtime(plugin) {
+                Ok(runtime) => {
+                    self.store.update_plugin_status(
+                        &plugin.manifest.plugin_id,
+                        state_store::PluginHealth::Ready,
+                    );
+                    self.dynamic_plugins
+                        .insert(plugin.manifest.plugin_id.clone(), runtime);
+                }
+                Err(message) => {
+                    self.store.update_plugin_status(
+                        &plugin.manifest.plugin_id,
+                        state_store::PluginHealth::Unavailable { message },
+                    );
+                }
+            }
+        }
+    }
+
+    fn spawn_dynamic_plugin_runtime(
+        &self,
+        plugin: &plugin_host::InstalledPluginInfo,
+    ) -> Result<DynamicPluginRuntime, String> {
+        let mut process = spawn_installed_plugin_process(plugin).map_err(|err| {
+            format!(
+                "spawn {} from {} failed: {err:?}",
+                plugin.manifest.plugin_id,
+                plugin.install_dir.display()
+            )
+        })?;
+        let bootstrapped = bootstrap_plugin_runtime(&mut process).map_err(|err| {
+            format!(
+                "bootstrap {} from {} failed: {err:?}",
+                plugin.manifest.plugin_id,
+                plugin.install_dir.display()
+            )
+        })?;
+        Ok(DynamicPluginRuntime {
+            process,
+            session: bootstrapped.session,
+        })
+    }
+
+    fn remove_dynamic_plugin_runtime(&mut self, plugin_id: &str) {
+        if let Some(mut runtime) = self.dynamic_plugins.remove(plugin_id) {
+            let _ = runtime.process.shutdown();
+        }
+    }
+
+    fn rebuild_catalog_actions(&mut self) {
+        let mut actions = build_builtin_catalog_actions();
+        for (plugin_id, runtime) in &self.dynamic_plugins {
+            push_actions(&mut actions, plugin_id, runtime.session.list_actions());
+        }
+        self.actions = actions;
+    }
+
+    fn find_dynamic_plugin_owner(&self, action_id: &str) -> Option<String> {
+        self.dynamic_plugins
+            .iter()
+            .find_map(|(plugin_id, runtime)| {
+                if runtime.session.action_owner(action_id).is_some() {
+                    Some(plugin_id.clone())
+                } else {
+                    None
+                }
+            })
+    }
+
+    fn invoke_dynamic_plugin_action(
+        &mut self,
+        action_id: &str,
+        args: &[String],
+    ) -> Result<String, UserFacingError> {
+        if !args.is_empty() {
+            return Err(invalid_input_error(
+                "external plugin actions do not accept CLI args yet; use selection state instead",
+            ));
+        }
+        let owner = self.find_dynamic_plugin_owner(action_id).ok_or_else(|| {
+            UserFacingError::with_category(
+                "Unsupported operation",
+                &format!("Unknown dynamic plugin action `{action_id}`."),
+                None,
+                ErrorCategory::System,
+            )
+        })?;
+        let runtime = self.dynamic_plugins.get_mut(&owner).ok_or_else(|| {
+            UserFacingError::with_category(
+                "Plugin unavailable",
+                &format!("Plugin `{owner}` is not running."),
+                None,
+                ErrorCategory::System,
+            )
+        })?;
+        let selection_files = self.store.snapshot().selection.selected_paths.clone();
+        let result = invoke_plugin_action(
+            &mut runtime.process,
+            &mut runtime.session,
+            action_id,
+            plugin_api::ActionContext { selection_files },
+            std::time::Instant::now(),
+        )
+        .map_err(|err| {
+            self.remove_dynamic_plugin_runtime(&owner);
+            self.rebuild_catalog_actions();
+            self.store.update_plugin_status(
+                &owner,
+                state_store::PluginHealth::Unavailable {
+                    message: format!("runtime invoke failed: {err:?}"),
+                },
+            );
+            UserFacingError::with_category(
+                "Plugin invocation failed",
+                &format!("Plugin `{owner}` could not handle `{action_id}`."),
+                Some(format!("{err:?}")),
+                ErrorCategory::System,
+            )
+        })?;
+
+        let message = result
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("plugin `{owner}` handled `{action_id}`"));
+        self.last_replayable = Some(ReplayableRun::Run {
+            target: action_id.to_string(),
+            args: Vec::new(),
+        });
+        Ok(message)
     }
 
     fn resolve_plugin_registry_path(&self, raw: Option<&str>) -> PathBuf {
@@ -1752,9 +1932,16 @@ impl ConsoleRunner {
             .find(|action| action.spec.action_id == action_id)
             .map(|action| &action.spec)
     }
+
+    fn action_owner_for(&self, action_id: &str) -> Option<&str> {
+        self.actions
+            .iter()
+            .find(|action| action.spec.action_id == action_id)
+            .map(|action| action.owner.as_str())
+    }
 }
 
-fn build_catalog_actions() -> Vec<CatalogAction> {
+fn build_builtin_catalog_actions() -> Vec<CatalogAction> {
     let mut actions = Vec::new();
     push_actions(
         &mut actions,
@@ -1791,8 +1978,11 @@ fn build_catalog_actions() -> Vec<CatalogAction> {
     actions
 }
 
-fn push_actions(actions: &mut Vec<CatalogAction>, owner: &'static str, specs: Vec<ActionSpec>) {
-    actions.extend(specs.into_iter().map(|spec| CatalogAction { owner, spec }));
+fn push_actions(actions: &mut Vec<CatalogAction>, owner: &str, specs: Vec<ActionSpec>) {
+    actions.extend(specs.into_iter().map(|spec| CatalogAction {
+        owner: owner.to_string(),
+        spec,
+    }));
 }
 
 fn host_action_spec(
@@ -2822,6 +3012,14 @@ mod tests {
         std::env::temp_dir().join(format!("branchforge-console-runner-{label}-{nanos}-{seq}"))
     }
 
+    fn workspace_repo_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("workspace root")
+            .to_path_buf()
+    }
+
     fn test_config(root: &Path) -> ConsoleRunnerConfig {
         ConsoleRunnerConfig {
             cwd: root.to_path_buf(),
@@ -2980,6 +3178,17 @@ mod tests {
             .is_ok()
         );
         registry_dir
+    }
+
+    fn build_sample_external_plugin() -> PathBuf {
+        let package_dir = workspace_repo_root().join("external_plugins/sample_plugin");
+        let status = std::process::Command::new("cargo")
+            .args(["build", "--manifest-path"])
+            .arg(package_dir.join("Cargo.toml"))
+            .status()
+            .expect("build sample external plugin");
+        assert!(status.success());
+        package_dir
     }
 
     #[test]
@@ -3635,6 +3844,42 @@ mod tests {
         let actions = runner.render_actions();
         assert!(actions.contains("plugin.list"));
         assert!(actions.contains("plugin.remove"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sample_external_plugin_registers_dynamic_action_and_runs() {
+        let root = unique_temp_dir("sample-external-runtime");
+        assert!(std::fs::create_dir_all(&root).is_ok());
+        let package_dir = build_sample_external_plugin();
+        let mut runner = ConsoleRunner::new(test_config(&root));
+
+        assert!(
+            runner
+                .execute(ConsoleCommand::Plugin {
+                    op: PluginOp::Install {
+                        package_dir: package_dir.display().to_string(),
+                    },
+                    confirmed: false,
+                })
+                .is_ok()
+        );
+
+        let actions = runner.render_actions();
+        assert!(actions.contains("sample.ping"));
+
+        let result = runner
+            .execute(ConsoleCommand::Run {
+                target: "sample.ping".to_string(),
+                args: Vec::new(),
+                confirmed: false,
+            })
+            .expect("run sample plugin action");
+        assert_eq!(
+            result.message.as_deref(),
+            Some("sample_external handled request")
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

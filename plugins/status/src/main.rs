@@ -1,6 +1,6 @@
 use plugin_api::{
-    ActionEffects, ActionSpec, ConfirmPolicy, DangerLevel, PluginHello, PluginRegister, RpcRequest,
-    ViewSpec,
+    ActionEffects, ActionSpec, ConfirmPolicy, DangerLevel, PluginHello, PluginRegister, ViewSpec,
+    serve_static_plugin,
 };
 
 fn spec(
@@ -21,15 +21,7 @@ fn spec(
     }
 }
 
-fn build_hello_request() -> RpcRequest {
-    PluginHello {
-        plugin_id: "status".to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-    }
-    .to_request("hello-1")
-}
-
-fn build_register_request() -> RpcRequest {
+fn build_register_payload() -> PluginRegister {
     PluginRegister {
         actions: vec![
             spec(
@@ -66,8 +58,30 @@ fn build_register_request() -> RpcRequest {
                 ConfirmPolicy::Never,
             ),
             spec(
+                "index.stage_lines",
+                "Stage Lines",
+                None,
+                ActionEffects {
+                    writes_index: true,
+                    danger_level: DangerLevel::Low,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::Never,
+            ),
+            spec(
                 "index.unstage_hunk",
                 "Unstage Hunk",
+                None,
+                ActionEffects {
+                    writes_index: true,
+                    danger_level: DangerLevel::Low,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "index.unstage_lines",
+                "Unstage Lines",
                 None,
                 ActionEffects {
                     writes_index: true,
@@ -114,6 +128,17 @@ fn build_register_request() -> RpcRequest {
             spec(
                 "file.discard_hunk",
                 "Discard Hunk",
+                Some(DangerLevel::High),
+                ActionEffects {
+                    writes_worktree: true,
+                    danger_level: DangerLevel::High,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::Always,
+            ),
+            spec(
+                "file.discard_lines",
+                "Discard Lines",
                 Some(DangerLevel::High),
                 ActionEffects {
                     writes_worktree: true,
@@ -184,12 +209,24 @@ fn build_register_request() -> RpcRequest {
             when: Some("repo.is_open".to_string()),
         }],
     }
-    .to_request("register-1")
 }
 
 fn main() {
-    let hello = build_hello_request();
-    let register = build_register_request();
+    let hello = PluginHello {
+        plugin_id: "status".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    };
+    let register = build_register_payload();
 
-    println!("{} -> {}", hello.method, register.method);
+    if let Err(err) = serve_static_plugin(hello, register, |action_id, context| {
+        serde_json::json!({
+            "ok": true,
+            "plugin_id": "status",
+            "action_id": action_id,
+            "selection_files": context.selection_files,
+        })
+    }) {
+        eprintln!("status runtime failed: {err:?}");
+        std::process::exit(1);
+    }
 }

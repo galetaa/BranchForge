@@ -8,11 +8,15 @@ This is a minimal external plugin using the public alpha SDK.
 cargo build --manifest-path external_plugins/sample_plugin/Cargo.toml
 ```
 
-## Run
+## Run Through The Host
 
 ```bash
-./external_plugins/sample_plugin/target/debug/sample_external_plugin
+cargo run -p app_host -- --command "plugin install external_plugins/sample_plugin"
+cargo run -p app_host -- --command "actions"
+cargo run -p app_host -- --command "run sample.ping"
 ```
+
+`sample_external_plugin` is a framed stdio runtime process. If you launch the binary directly, it will wait for host handshake messages on stdin.
 
 ## Install (manual)
 
@@ -20,3 +24,4 @@ cargo build --manifest-path external_plugins/sample_plugin/Cargo.toml
 2. Package the binary together with `plugin.json`.
 3. Install the package directory through the host plugin lifecycle flow.
 4. Enable it from the diagnostics/plugin manager flow if needed.
+5. Run the registered `sample.ping` action through the normal host action surface.

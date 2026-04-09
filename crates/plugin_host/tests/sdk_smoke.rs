@@ -1,5 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Instant;
+
+use plugin_api::ActionContext;
+use plugin_host::{
+    PluginProcess, PluginProcessConfig, RestartPolicy, bootstrap_plugin_runtime,
+    invoke_plugin_action,
+};
 
 #[test]
 fn sample_external_plugin_builds_and_runs() {
@@ -28,13 +35,37 @@ fn sample_external_plugin_builds_and_runs() {
     }
 
     let exe_path = resolve_sample_binary(&repo_root);
-    let output = Command::new(&exe_path).output();
-    assert!(output.is_ok());
-    if let Ok(out) = output {
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(stdout.contains("plugin.hello"));
-        assert!(stdout.contains("plugin.register"));
-    }
+    let mut process = PluginProcess::spawn(PluginProcessConfig {
+        plugin_id: "sample_external".to_string(),
+        program: exe_path.display().to_string(),
+        args: Vec::new(),
+        restart_policy: RestartPolicy::Never,
+    })
+    .expect("spawn sample plugin");
+    let mut runtime = bootstrap_plugin_runtime(&mut process).expect("bootstrap sample plugin");
+    assert!(
+        runtime
+            .register
+            .actions
+            .iter()
+            .any(|action| action.action_id == "sample.ping")
+    );
+
+    let result = invoke_plugin_action(
+        &mut process,
+        &mut runtime.session,
+        "sample.ping",
+        ActionContext {
+            selection_files: vec!["README.md".to_string()],
+        },
+        Instant::now(),
+    )
+    .expect("invoke sample plugin");
+    assert_eq!(result["plugin_id"], "sample_external");
+    assert_eq!(result["action_id"], "sample.ping");
+    assert_eq!(result["selection_files"][0], "README.md");
+
+    process.shutdown().expect("shutdown sample plugin");
 }
 
 fn resolve_sample_binary(repo_root: &Path) -> PathBuf {

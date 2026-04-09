@@ -1,6 +1,6 @@
 use plugin_api::{
-    ActionEffects, ActionSpec, ConfirmPolicy, DangerLevel, PluginHello, PluginRegister, RpcRequest,
-    ViewSpec,
+    ActionEffects, ActionSpec, ConfirmPolicy, DangerLevel, PluginHello, PluginRegister, ViewSpec,
+    serve_static_plugin,
 };
 
 fn spec(action_id: &str, title: &str) -> ActionSpec {
@@ -33,15 +33,7 @@ fn mutation_spec(action_id: &str, title: &str) -> ActionSpec {
     }
 }
 
-fn build_hello_request() -> RpcRequest {
-    PluginHello {
-        plugin_id: "history".to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-    }
-    .to_request("hello-1")
-}
-
-fn build_register_request() -> RpcRequest {
+fn build_register_payload() -> PluginRegister {
     PluginRegister {
         actions: vec![
             spec("history.load_more", "Load More History"),
@@ -60,12 +52,24 @@ fn build_register_request() -> RpcRequest {
             when: Some("repo.is_open".to_string()),
         }],
     }
-    .to_request("register-1")
 }
 
 fn main() {
-    let hello = build_hello_request();
-    let register = build_register_request();
+    let hello = PluginHello {
+        plugin_id: "history".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    };
+    let register = build_register_payload();
 
-    println!("{} -> {}", hello.method, register.method);
+    if let Err(err) = serve_static_plugin(hello, register, |action_id, context| {
+        serde_json::json!({
+            "ok": true,
+            "plugin_id": "history",
+            "action_id": action_id,
+            "selection_files": context.selection_files,
+        })
+    }) {
+        eprintln!("history runtime failed: {err:?}");
+        std::process::exit(1);
+    }
 }

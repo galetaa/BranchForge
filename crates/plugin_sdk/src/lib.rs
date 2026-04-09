@@ -6,5 +6,6 @@ pub use plugin_api::{
     METHOD_HOST_ACTION_PREFLIGHT, METHOD_HOST_ACTION_PREVIEW, METHOD_PLUGIN_HELLO,
     METHOD_PLUGIN_READY, METHOD_PLUGIN_REGISTER, PLUGIN_MANIFEST_VERSION_V1, PluginHello,
     PluginManifestV1, PluginRegister, RepoOpenedEvent, RepoSnapshot, RpcMessage, RpcNotification,
-    RpcRequest, RpcResponse, StateUpdatedEvent, ViewSpec,
+    RpcRequest, RpcResponse, StateUpdatedEvent, StaticPluginRuntimeError, ViewSpec,
+    serve_static_plugin,
 };

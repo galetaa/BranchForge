@@ -50,6 +50,7 @@ name = "branches"
 version = "1.0.1"
 dependencies = [
  "plugin_api",
+ "serde_json",
 ]
 
 [[package]]
@@ -63,6 +64,7 @@ name = "compare"
 version = "1.0.1"
 dependencies = [
  "plugin_api",
+ "serde_json",
 ]
 
 [[package]]
@@ -89,6 +91,7 @@ name = "diagnostics"
 version = "1.0.1"
 dependencies = [
  "plugin_api",
+ "serde_json",
 ]
 
 [[package]]
@@ -120,6 +123,7 @@ name = "history"
 version = "1.0.1"
 dependencies = [
  "plugin_api",
+ "serde_json",
 ]
 
 [[package]]
@@ -286,6 +290,7 @@ name = "tags"
 version = "1.0.1"
 dependencies = [
  "plugin_api",
+ "serde_json",
 ]
 
 [[package]]

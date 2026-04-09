@@ -1,16 +1,9 @@
 use plugin_api::{
-    ActionEffects, ActionSpec, ConfirmPolicy, PluginHello, PluginRegister, RpcRequest, ViewSpec,
+    ActionEffects, ActionSpec, ConfirmPolicy, DangerLevel, PluginHello, PluginRegister, ViewSpec,
+    serve_static_plugin,
 };
 
-fn build_hello_request() -> RpcRequest {
-    PluginHello {
-        plugin_id: "diagnostics".to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-    }
-    .to_request("hello-1")
-}
-
-fn build_register_request() -> RpcRequest {
+fn build_register_payload() -> PluginRegister {
     PluginRegister {
         actions: vec![
             ActionSpec {
@@ -31,6 +24,41 @@ fn build_register_request() -> RpcRequest {
                 effects: ActionEffects::read_only(),
                 confirm_policy: ConfirmPolicy::Never,
             },
+            ActionSpec {
+                action_id: "diagnostics.lfs_status".to_string(),
+                title: "Show LFS Status".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+                danger: None,
+                effects: ActionEffects::read_only(),
+                confirm_policy: ConfirmPolicy::Never,
+            },
+            ActionSpec {
+                action_id: "diagnostics.lfs_fetch".to_string(),
+                title: "Fetch LFS Objects".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+                danger: Some(DangerLevel::Low),
+                effects: ActionEffects {
+                    network: true,
+                    danger_level: DangerLevel::Low,
+                    ..ActionEffects::default()
+                },
+                confirm_policy: ConfirmPolicy::Never,
+            },
+            ActionSpec {
+                action_id: "diagnostics.lfs_pull".to_string(),
+                title: "Pull LFS Objects".to_string(),
+                when: Some("repo.is_open".to_string()),
+                params_schema: None,
+                danger: Some(DangerLevel::Low),
+                effects: ActionEffects {
+                    network: true,
+                    danger_level: DangerLevel::Low,
+                    ..ActionEffects::default()
+                },
+                confirm_policy: ConfirmPolicy::Never,
+            },
         ],
         views: vec![ViewSpec {
             view_id: "diagnostics.panel".to_string(),
@@ -39,12 +67,24 @@ fn build_register_request() -> RpcRequest {
             when: Some("repo.is_open".to_string()),
         }],
     }
-    .to_request("register-1")
 }
 
 fn main() {
-    let hello = build_hello_request();
-    let register = build_register_request();
+    let hello = PluginHello {
+        plugin_id: "diagnostics".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    };
+    let register = build_register_payload();
 
-    println!("{} -> {}", hello.method, register.method);
+    if let Err(err) = serve_static_plugin(hello, register, |action_id, context| {
+        serde_json::json!({
+            "ok": true,
+            "plugin_id": "diagnostics",
+            "action_id": action_id,
+            "selection_files": context.selection_files,
+        })
+    }) {
+        eprintln!("diagnostics runtime failed: {err:?}");
+        std::process::exit(1);
+    }
 }

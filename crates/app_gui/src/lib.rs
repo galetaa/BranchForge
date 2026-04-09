@@ -763,24 +763,210 @@ fn render_page(
     };
 
     format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Branchforge GUI</title><style>{}</style></head><body><div class=\"shell\" id=\"shell\" data-version=\"{}\"><header class=\"masthead\" id=\"masthead\"><div><p class=\"eyebrow\">Branchforge</p><h1>Runtime GUI</h1><p class=\"sub\">Focused controls over the same host runtime, jobs, state store, and action catalog.</p><div class=\"hero-metrics\"><span class=\"badge\">state v{}</span><span class=\"badge\">{}</span></div></div><form method=\"post\" action=\"/command\" class=\"open-form\"><label>Repository</label><input type=\"hidden\" name=\"gui_action\" value=\"repo_open\"><div class=\"row\"><input type=\"text\" name=\"repo_path\" value=\"{}\" placeholder=\"/path/to/repo\"><button type=\"submit\">Open</button></div></form></header><section id=\"flash\">{}</section><main class=\"workspace\"><aside class=\"sidebar\" id=\"sidebar\"><section class=\"card\"><h2>Panels</h2>{}</section><section class=\"card\"><h2>Quick Actions</h2>{}</section><section class=\"card\"><h2>Primary Flows</h2>{}</section><section class=\"card\"><h2>Selections</h2><dl class=\"facts\"><div><dt>File</dt><dd>{}</dd></div><div><dt>Commit</dt><dd>{}</dd></div><div><dt>Branch</dt><dd>{}</dd></div><div><dt>Plugin</dt><dd>{}</dd></div></dl></section><section class=\"card\"><h2>Custom Command</h2><form method=\"post\" action=\"/command\" class=\"stack\"><input type=\"text\" name=\"command\" placeholder=\"run diagnostics.repo_capabilities\"><button type=\"submit\">Execute</button></form></section></aside><section class=\"content\" id=\"content\">{}{}</section></main></div><script>{}</script></body></html>",
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Branchforge GUI</title><style>{}</style></head><body><div class=\"shell\" id=\"shell\" data-version=\"{}\"><header class=\"masthead\" id=\"masthead\">{}</header><section id=\"flash\">{}</section><main class=\"workspace\"><aside class=\"sidebar\" id=\"sidebar\">{}</aside><section class=\"content\" id=\"content\">{}{}{}</section></main></div><script>{}</script></body></html>",
         styles(),
         snapshot.version,
-        snapshot.version,
-        repo_state,
-        escape_html(repo_root),
+        render_masthead(&snapshot, repo_root, repo_state),
         render_flash(flash_message, flash_error),
-        render_panel_tabs(&active_view, snapshot.repo.is_some()),
-        render_quick_actions(&snapshot),
-        render_workflow_widgets(&snapshot, compare_base, compare_head),
-        display_value(&selected_file),
-        display_value(&selected_commit),
-        display_value(&selected_branch),
-        display_value(&selected_plugin),
+        render_sidebar(&snapshot, &active_view, compare_base, compare_head),
+        render_workspace_summary(
+            &snapshot,
+            &active_view,
+            &selected_file,
+            &selected_commit,
+            &selected_branch,
+            &selected_plugin,
+        ),
         context_widgets,
         render_active_panel(runtime, &snapshot, &active_view),
         client_script(),
     )
+}
+
+fn render_masthead(snapshot: &StoreSnapshot, repo_root: &str, repo_state: &str) -> String {
+    format!(
+        "<div><p class=\"eyebrow\">Branchforge</p><h1>Runtime GUI</h1><p class=\"sub\">Focused controls over the same host runtime, jobs, state store, and action catalog.</p><div class=\"hero-metrics\"><span class=\"badge\">state v{}</span><span class=\"badge\">{}</span>{}</div></div><div class=\"masthead-tools\">{}{} </div>",
+        snapshot.version,
+        repo_state,
+        snapshot
+            .repo
+            .as_ref()
+            .and_then(|repo| repo.head.as_ref())
+            .map(|head| format!("<span class=\"badge\">head {}</span>", escape_html(head)))
+            .unwrap_or_default(),
+        render_open_form(repo_root),
+        render_command_bar(),
+    )
+}
+
+fn render_open_form(repo_root: &str) -> String {
+    format!(
+        "<form method=\"post\" action=\"/command\" class=\"card tight open-form\"><label>Repository</label><input type=\"hidden\" name=\"gui_action\" value=\"repo_open\"><div class=\"row row-stretch\"><input type=\"text\" name=\"repo_path\" value=\"{}\" placeholder=\"/path/to/repo\"><button type=\"submit\">Open</button></div></form>",
+        escape_html(repo_root)
+    )
+}
+
+fn render_command_bar() -> String {
+    "<form method=\"post\" action=\"/command\" class=\"card tight command-bar\"><label>Command Bar</label><div class=\"row row-stretch\"><input type=\"text\" name=\"command\" placeholder=\"run diagnostics.repo_capabilities\"><button type=\"submit\">Run</button></div><p class=\"meta\">Accepts the same runtime commands as the console runner.</p></form>".to_string()
+}
+
+fn render_sidebar(
+    snapshot: &StoreSnapshot,
+    active_view: &str,
+    compare_base: &str,
+    compare_head: &str,
+) -> String {
+    [
+        render_fold_card(
+            "Panels",
+            render_panel_tabs(active_view, snapshot.repo.is_some()),
+            true,
+        ),
+        render_fold_card("Quick Actions", render_quick_actions(snapshot), true),
+        render_fold_card(
+            "Primary Flows",
+            render_workflow_widgets(snapshot, compare_base, compare_head),
+            snapshot.repo.is_none(),
+        ),
+        render_fold_card("Selections", render_selection_summary(snapshot), true),
+    ]
+    .join("")
+}
+
+fn render_fold_card(title: &str, body: String, open: bool) -> String {
+    format!(
+        "<details class=\"card fold\"{}><summary><h2>{}</h2><span class=\"fold-icon\" aria-hidden=\"true\"></span></summary><div class=\"fold-body\">{}</div></details>",
+        if open { " open" } else { "" },
+        escape_html(title),
+        body
+    )
+}
+
+fn render_selection_summary(snapshot: &StoreSnapshot) -> String {
+    let mut chips = Vec::new();
+    if let Some(repo) = snapshot.repo.as_ref() {
+        chips.push(format!(
+            "<span class=\"badge badge-strong\">repo {}</span>",
+            escape_html(&repo.root)
+        ));
+    }
+    if let Some(head) = snapshot.repo.as_ref().and_then(|repo| repo.head.as_ref()) {
+        chips.push(format!(
+            "<span class=\"badge\">head {}</span>",
+            escape_html(head)
+        ));
+    }
+    if let Some(path) = snapshot.selection.selected_paths.first() {
+        chips.push(format!(
+            "<span class=\"badge\">file {}</span>",
+            escape_html(path)
+        ));
+    }
+    if let Some(commit) = snapshot.selection.selected_commit_oid.as_ref() {
+        chips.push(format!(
+            "<span class=\"badge\">commit {}</span>",
+            escape_html(&short_oid(commit))
+        ));
+    }
+    if let Some(branch) = snapshot.selection.selected_branch.as_ref() {
+        chips.push(format!(
+            "<span class=\"badge\">branch {}</span>",
+            escape_html(branch)
+        ));
+    }
+    if let Some(plugin) = snapshot.selection.selected_plugin_id.as_ref() {
+        chips.push(format!(
+            "<span class=\"badge\">plugin {}</span>",
+            escape_html(plugin)
+        ));
+    }
+    if chips.is_empty() {
+        "<p class=\"meta\">No active selections yet. Pick a file, commit, branch, or plugin to unlock faster defaults.</p>".to_string()
+    } else {
+        format!("<div class=\"chip-list\">{}</div>", chips.join(""))
+    }
+}
+
+fn render_workspace_summary(
+    snapshot: &StoreSnapshot,
+    active_view: &str,
+    selected_file: &str,
+    selected_commit: &str,
+    selected_branch: &str,
+    selected_plugin: &str,
+) -> String {
+    let mut chips = vec![format!(
+        "<span class=\"badge badge-strong\">panel {}</span>",
+        escape_html(active_view_title(active_view))
+    )];
+    if let Some(repo) = snapshot.repo.as_ref() {
+        chips.push(format!(
+            "<span class=\"badge\">repo {}</span>",
+            escape_html(&repo.root)
+        ));
+    }
+    if let Some(head) = snapshot.repo.as_ref().and_then(|repo| repo.head.as_ref()) {
+        chips.push(format!(
+            "<span class=\"badge\">head {}</span>",
+            escape_html(head)
+        ));
+    }
+    if !selected_file.is_empty() {
+        chips.push(format!(
+            "<span class=\"badge\">file {}</span>",
+            escape_html(selected_file)
+        ));
+    }
+    if !selected_commit.is_empty() {
+        chips.push(format!(
+            "<span class=\"badge\">commit {}</span>",
+            escape_html(&short_oid(selected_commit))
+        ));
+    }
+    if !selected_branch.is_empty() {
+        chips.push(format!(
+            "<span class=\"badge\">branch {}</span>",
+            escape_html(selected_branch)
+        ));
+    }
+    if !selected_plugin.is_empty() {
+        chips.push(format!(
+            "<span class=\"badge\">plugin {}</span>",
+            escape_html(selected_plugin)
+        ));
+    }
+
+    let quick_buttons = if snapshot.repo.is_some() {
+        [
+            render_command_button("refresh", "Refresh", "ghost"),
+            render_command_button("panel diagnostics", "Diagnostics", "ghost"),
+            render_command_button("panel logs", "Logs", "ghost"),
+        ]
+        .join("")
+    } else {
+        [render_command_button("panel logs", "Logs", "ghost")].join("")
+    };
+
+    format!(
+        "<section class=\"card tight workspace-summary\"><div class=\"summary-head\"><div><p class=\"eyebrow eyebrow-small\">Workspace</p><h2>{}</h2></div><div class=\"inline-actions\">{}</div></div><div class=\"chip-list\">{}</div></section>",
+        escape_html(active_view_title(active_view)),
+        quick_buttons,
+        chips.join("")
+    )
+}
+
+fn active_view_title(active_view: &str) -> &'static str {
+    match active_view {
+        "empty.state" => "Getting Started",
+        "status.panel" => "Status",
+        "history.panel" => "History",
+        "branches.panel" => "Branches",
+        "tags.panel" => "Tags",
+        "compare.panel" => "Compare",
+        "diagnostics.panel" => "Diagnostics",
+        "logs.panel" => "Logs",
+        _ => "Workspace",
+    }
 }
 
 fn resolved_active_view(snapshot: &StoreSnapshot) -> String {
@@ -817,11 +1003,12 @@ body{
 .shell{max-width:1360px;margin:0 auto;padding:24px}
 .masthead{
   display:grid;
-  grid-template-columns:minmax(0,1fr) 360px;
-  gap:16px;
+  grid-template-columns:minmax(0,1fr) minmax(280px,420px);
+  gap:12px;
   align-items:start;
-  margin-bottom:16px;
+  margin-bottom:12px;
 }
+.masthead-tools{display:grid;gap:10px}
 .eyebrow{
   margin:0 0 6px;
   text-transform:uppercase;
@@ -829,42 +1016,66 @@ body{
   font-size:.75rem;
   color:var(--accent);
 }
+.eyebrow-small{font-size:.68rem;margin-bottom:4px}
 h1,h2,h3{
   margin:0;
   font-family:inherit;
   font-weight:600;
 }
 h1{font-size:clamp(1.8rem,4vw,2.5rem);line-height:1.05}
-h2{font-size:1rem;margin-bottom:10px}
+h2{font-size:.98rem;margin-bottom:8px}
 .sub{max-width:46rem;color:var(--muted);font-size:.96rem;line-height:1.45}
 .workspace{
   display:grid;
-  grid-template-columns:320px minmax(0,1fr);
-  gap:16px;
+  grid-template-columns:280px minmax(0,1fr);
+  gap:12px;
 }
-.sidebar,.content{display:grid;gap:12px;align-content:start}
+.sidebar,.content{display:grid;gap:10px;align-content:start}
+.sidebar{position:sticky;top:12px;height:max-content}
 .card{
   background:var(--surface);
   border:1px solid var(--line);
   border-radius:14px;
-  padding:16px;
+  padding:12px;
+}
+.card.tight{padding:10px 12px}
+.fold summary{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:10px;
+  cursor:pointer;
+  list-style:none;
+}
+.fold summary::-webkit-details-marker{display:none}
+.fold-icon::before{content:"+";font-weight:700;color:var(--muted)}
+.fold[open] .fold-icon::before{content:"−"}
+.fold-body{display:grid;gap:10px;margin-top:10px}
+.workspace-summary .summary-head{
+  display:flex;
+  justify-content:space-between;
+  gap:10px;
+  align-items:flex-start;
 }
 .flash{
   border-radius:12px;
   min-height:16px;
-  padding:12px 14px;
+  padding:10px 12px;
   margin-bottom:12px;
   border:1px solid var(--line);
 }
 .flash.info{background:var(--accent-soft);color:var(--accent-strong)}
 .flash.error{background:#fff1ee;color:var(--warn)}
 .stack,.open-form{display:grid;gap:10px}
-.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.command-bar,.open-form{gap:8px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.row-stretch > *{flex:1}
+.row-stretch button{flex:0 0 auto}
 input[type=text],textarea,select{
   width:100%;
   border:1px solid var(--line);
   border-radius:10px;
-  padding:10px 12px;
+  padding:9px 11px;
   background:var(--surface);
   color:var(--ink);
 }
@@ -872,12 +1083,12 @@ textarea{min-height:104px;resize:vertical}
 button{
   border:1px solid transparent;
   border-radius:10px;
-  padding:9px 12px;
+  padding:8px 11px;
   background:var(--accent);
   color:white;
   cursor:pointer;
   font-weight:600;
-  font-size:.92rem;
+  font-size:.88rem;
 }
 button.secondary{
   background:var(--surface-muted);
@@ -894,14 +1105,14 @@ button:disabled{
   opacity:.55;
 }
 .disabled-action{display:grid;gap:6px}
-.tabs,.inline-actions,.list-actions{display:flex;gap:8px;flex-wrap:wrap}
+.tabs,.inline-actions,.list-actions,.chip-list{display:flex;gap:8px;flex-wrap:wrap}
 .facts{display:grid;gap:10px;margin:0}
 .facts div{display:grid;gap:4px}
 dt{font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
 dd{margin:0;font-weight:600}
-ul.clean{list-style:none;margin:0;padding:0;display:grid;gap:10px}
+ul.clean{list-style:none;margin:0;padding:0;display:grid;gap:8px}
 li.item{
-  padding:12px;
+  padding:10px;
   border:1px solid var(--line);
   border-radius:12px;
   background:var(--surface-muted);
@@ -914,6 +1125,8 @@ pre{
   font-family:"IBM Plex Mono","SFMono-Regular",monospace;
   font-size:.9rem;
   line-height:1.45;
+  max-height:28rem;
+  overflow:auto;
 }
 .grid-two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .badge{
@@ -927,9 +1140,27 @@ pre{
   font-size:.82rem;
   font-weight:600;
 }
+.badge-strong{
+  background:var(--accent-soft);
+  border-color:#cfe0ff;
+  color:var(--accent-strong);
+}
 .hero-metrics{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 .widget-grid{display:grid;gap:10px}
 .widget-grid form{display:grid;gap:8px}
+.flow-grid{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:8px;
+}
+.mini-form{
+  display:grid;
+  gap:8px;
+  padding:10px;
+  border:1px solid var(--line);
+  border-radius:12px;
+  background:var(--surface-muted);
+}
 .checkbox{display:flex;gap:10px;align-items:center;color:var(--muted)}
 .checkbox input{width:auto;margin:0}
 .hunk-list{display:grid;gap:12px;margin-top:16px}
@@ -943,6 +1174,8 @@ pre{
 .line-guide{max-height:20rem;overflow:auto}
 @media (max-width: 1080px){
   .masthead,.workspace,.grid-two{grid-template-columns:1fr}
+  .flow-grid{grid-template-columns:1fr}
+  .sidebar{position:static}
   .shell{padding:16px}
 }
 "#
@@ -1141,48 +1374,46 @@ fn render_workflow_widgets(
         .map(String::as_str)
         .unwrap_or("");
     format!(
-        "<div class=\"widget-grid\">\
-            <form method=\"post\" action=\"/command\">\
+        "<div class=\"flow-grid\">\
+            <form method=\"post\" action=\"/command\" class=\"mini-form\">\
                 <input type=\"hidden\" name=\"gui_action\" value=\"commit_create\">\
-                <label>Commit Message</label>\
+                <label>Commit</label>\
                 <input type=\"text\" name=\"commit_message\" placeholder=\"Describe the staged change\">\
-                <button type=\"submit\">Create Commit</button>\
+                <div class=\"inline-actions\"><button type=\"submit\">Create Commit</button></div>\
             </form>\
-            <form method=\"post\" action=\"/command\">\
+            <form method=\"post\" action=\"/command\" class=\"mini-form\">\
                 <input type=\"hidden\" name=\"gui_action\" value=\"branch_create\">\
-                <label>Branch Name</label>\
+                <label>New Branch</label>\
                 <input type=\"text\" name=\"branch_name\" placeholder=\"feature/gui-shell\">\
-                <label>Base Ref</label>\
                 <input type=\"text\" name=\"branch_base\" value=\"{}\">\
-                <button type=\"submit\">Create Branch</button>\
+                <div class=\"inline-actions\"><button type=\"submit\">Create Branch</button></div>\
             </form>\
-            <form method=\"post\" action=\"/command\">\
+            <form method=\"post\" action=\"/command\" class=\"mini-form\">\
                 <input type=\"hidden\" name=\"gui_action\" value=\"branch_checkout\">\
-                <label>Branch Checkout</label>\
+                <label>Checkout</label>\
                 <input type=\"text\" name=\"branch_name\" value=\"{}\" placeholder=\"selected branch or explicit ref\">\
-                <button type=\"submit\">Checkout Branch</button>\
+                <div class=\"inline-actions\"><button type=\"submit\">Checkout Branch</button></div>\
             </form>\
-            <form method=\"post\" action=\"/command\">\
+            <form method=\"post\" action=\"/command\" class=\"mini-form\">\
                 <input type=\"hidden\" name=\"gui_action\" value=\"compare_refs\">\
-                <label>Compare Base</label>\
+                <label>Compare</label>\
                 <input type=\"text\" name=\"compare_base\" value=\"{}\">\
-                <label>Compare Head</label>\
                 <input type=\"text\" name=\"compare_head\" value=\"{}\">\
-                <button type=\"submit\">Compare Refs</button>\
+                <div class=\"inline-actions\"><button type=\"submit\">Compare Refs</button></div>\
             </form>\
-            <form method=\"post\" action=\"/command\">\
+            <form method=\"post\" action=\"/command\" class=\"mini-form\">\
                 <input type=\"hidden\" name=\"gui_action\" value=\"history_file\">\
-                <label>History / Blame File</label>\
+                <label>File History</label>\
                 <input type=\"text\" name=\"history_file_path\" value=\"{}\" placeholder=\"selected file or explicit path\">\
                 <div class=\"inline-actions\">\
                     <button class=\"secondary\" type=\"submit\">File History</button>\
                 </div>\
             </form>\
-            <form method=\"post\" action=\"/command\">\
+            <form method=\"post\" action=\"/command\" class=\"mini-form\">\
                 <input type=\"hidden\" name=\"gui_action\" value=\"blame_file\">\
                 <label>Blame File</label>\
                 <input type=\"text\" name=\"history_file_path\" value=\"{}\" placeholder=\"selected file or explicit path\">\
-                <button type=\"submit\">Load Blame</button>\
+                <div class=\"inline-actions\"><button type=\"submit\">Load Blame</button></div>\
             </form>\
         </div>",
         escape_html(branch_base),

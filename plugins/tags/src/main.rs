@@ -1,17 +1,14 @@
 use plugin_api::{
-    ActionEffects, ActionSpec, ConfirmPolicy, DangerLevel, PluginHello, PluginRegister, RpcRequest,
-    ViewSpec,
+    ActionEffects, ActionSpec, ConfirmPolicy, DangerLevel, PluginHello, PluginRegister, ViewSpec,
+    serve_static_plugin,
 };
 
-fn build_hello_request() -> RpcRequest {
-    PluginHello {
-        plugin_id: "tags".to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-    }
-    .to_request("hello-1")
-}
-
-fn spec(action_id: &str, title: &str, danger: Option<DangerLevel>) -> ActionSpec {
+fn spec(
+    action_id: &str,
+    title: &str,
+    danger: Option<DangerLevel>,
+    confirm_policy: ConfirmPolicy,
+) -> ActionSpec {
     ActionSpec {
         action_id: action_id.to_string(),
         title: title.to_string(),
@@ -23,15 +20,25 @@ fn spec(action_id: &str, title: &str, danger: Option<DangerLevel>) -> ActionSpec
             danger_level: danger.unwrap_or(DangerLevel::Medium),
             ..ActionEffects::default()
         },
-        confirm_policy: ConfirmPolicy::OnDanger,
+        confirm_policy,
     }
 }
 
-fn build_register_request() -> RpcRequest {
+fn build_register_payload() -> PluginRegister {
     PluginRegister {
         actions: vec![
-            spec("tag.create", "Create Tag", Some(DangerLevel::Low)),
-            spec("tag.delete", "Delete Tag", Some(DangerLevel::Medium)),
+            spec(
+                "tag.create",
+                "Create Tag",
+                Some(DangerLevel::Low),
+                ConfirmPolicy::Never,
+            ),
+            spec(
+                "tag.delete",
+                "Delete Tag",
+                Some(DangerLevel::Medium),
+                ConfirmPolicy::OnDanger,
+            ),
             ActionSpec {
                 action_id: "tag.checkout".to_string(),
                 title: "Checkout Tag".to_string(),
@@ -54,12 +61,24 @@ fn build_register_request() -> RpcRequest {
             when: Some("repo.is_open".to_string()),
         }],
     }
-    .to_request("register-1")
 }
 
 fn main() {
-    let hello = build_hello_request();
-    let register = build_register_request();
+    let hello = PluginHello {
+        plugin_id: "tags".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    };
+    let register = build_register_payload();
 
-    println!("{} -> {}", hello.method, register.method);
+    if let Err(err) = serve_static_plugin(hello, register, |action_id, context| {
+        serde_json::json!({
+            "ok": true,
+            "plugin_id": "tags",
+            "action_id": action_id,
+            "selection_files": context.selection_files,
+        })
+    }) {
+        eprintln!("tags runtime failed: {err:?}");
+        std::process::exit(1);
+    }
 }

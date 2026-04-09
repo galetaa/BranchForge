@@ -420,6 +420,235 @@ pub struct JobFinishedEvent {
     pub success: bool,
 }
 
+#[derive(Debug)]
+pub enum StaticPluginRuntimeError {
+    Io(std::io::Error),
+    Codec(CodecError),
+    InvalidHostMessage { message: String },
+    InvalidPayload { method: String, reason: String },
+}
+
+impl From<std::io::Error> for StaticPluginRuntimeError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+impl From<CodecError> for StaticPluginRuntimeError {
+    fn from(value: CodecError) -> Self {
+        Self::Codec(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct HostActionInvokeRequest {
+    action_id: String,
+    context: ActionContext,
+}
+
+pub fn serve_static_plugin<F>(
+    hello: PluginHello,
+    register: PluginRegister,
+    mut handle_action: F,
+) -> Result<(), StaticPluginRuntimeError>
+where
+    F: FnMut(&str, &ActionContext) -> serde_json::Value,
+{
+    let codec = FrameCodec::default();
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let mut reader = stdin.lock();
+    let mut writer = stdout.lock();
+
+    let hello_request = hello.to_request("hello-1");
+    write_message(
+        &codec,
+        &mut writer,
+        RpcMessage::Request(hello_request.clone()),
+    )?;
+    expect_ok_response(&codec, &mut reader, &hello_request.id, METHOD_PLUGIN_HELLO)?;
+
+    let register_request = register.to_request("register-1");
+    write_message(
+        &codec,
+        &mut writer,
+        RpcMessage::Request(register_request.clone()),
+    )?;
+    expect_ok_response(
+        &codec,
+        &mut reader,
+        &register_request.id,
+        METHOD_PLUGIN_REGISTER,
+    )?;
+
+    loop {
+        match codec.read_from(&mut reader) {
+            Ok(RpcMessage::Request(request)) => {
+                let response = respond_to_host_request(&register, request, &mut handle_action);
+                write_message(&codec, &mut writer, RpcMessage::Response(response))?;
+            }
+            Ok(RpcMessage::Notification(_)) => {}
+            Ok(RpcMessage::Response(_)) => {
+                return Err(StaticPluginRuntimeError::InvalidHostMessage {
+                    message: "plugin received an unexpected response frame from host".to_string(),
+                });
+            }
+            Err(CodecError::Io(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Ok(());
+            }
+            Err(err) => return Err(StaticPluginRuntimeError::from(err)),
+        }
+    }
+}
+
+fn write_message<W: Write>(
+    codec: &FrameCodec,
+    writer: &mut W,
+    message: RpcMessage,
+) -> Result<(), StaticPluginRuntimeError> {
+    codec.write_to(writer, &message)?;
+    writer.flush()?;
+    Ok(())
+}
+
+fn expect_ok_response<R: Read>(
+    codec: &FrameCodec,
+    reader: &mut R,
+    expected_id: &str,
+    expected_method: &str,
+) -> Result<(), StaticPluginRuntimeError> {
+    let inbound = codec.read_from(reader)?;
+    let response = match inbound {
+        RpcMessage::Response(response) => response,
+        RpcMessage::Request(request) => {
+            return Err(StaticPluginRuntimeError::InvalidHostMessage {
+                message: format!(
+                    "expected response for {expected_method}, received request `{}`",
+                    request.method
+                ),
+            });
+        }
+        RpcMessage::Notification(notification) => {
+            return Err(StaticPluginRuntimeError::InvalidHostMessage {
+                message: format!(
+                    "expected response for {expected_method}, received notification `{}`",
+                    notification.method
+                ),
+            });
+        }
+    };
+
+    if response.id != expected_id {
+        return Err(StaticPluginRuntimeError::InvalidHostMessage {
+            message: format!(
+                "expected response id `{expected_id}` for {expected_method}, received `{}`",
+                response.id
+            ),
+        });
+    }
+
+    if let Some(error) = response.error {
+        return Err(StaticPluginRuntimeError::InvalidHostMessage {
+            message: format!(
+                "host rejected {expected_method}: code={} message={}",
+                error.code, error.message
+            ),
+        });
+    }
+
+    Ok(())
+}
+
+fn respond_to_host_request<F>(
+    register: &PluginRegister,
+    request: RpcRequest,
+    handle_action: &mut F,
+) -> RpcResponse
+where
+    F: FnMut(&str, &ActionContext) -> serde_json::Value,
+{
+    match request.method.as_str() {
+        METHOD_HOST_ACTION_INVOKE => {
+            match serde_json::from_value::<HostActionInvokeRequest>(request.params.clone()) {
+                Ok(invoke) => RpcResponse::ok(
+                    request.id,
+                    handle_action(&invoke.action_id, &invoke.context),
+                ),
+                Err(err) => {
+                    error_response(request.id, -32602, format!("invalid invoke payload: {err}"))
+                }
+            }
+        }
+        METHOD_HOST_ACTION_PREFLIGHT => {
+            let action_id = request
+                .params
+                .get("action_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let known = register
+                .actions
+                .iter()
+                .any(|spec| spec.action_id == action_id);
+            let warnings = if known || action_id.is_empty() {
+                Vec::new()
+            } else {
+                vec![format!("unknown action `{action_id}`")]
+            };
+            RpcResponse::ok(
+                request.id,
+                serde_json::to_value(ActionPreflightResult {
+                    action_id,
+                    ok: known,
+                    warnings,
+                })
+                .unwrap_or_else(|_| serde_json::json!({"ok": false})),
+            )
+        }
+        METHOD_HOST_ACTION_PREVIEW => {
+            let action_id = request
+                .params
+                .get("action_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let title = register
+                .actions
+                .iter()
+                .find(|spec| spec.action_id == action_id)
+                .map(|spec| spec.title.clone())
+                .unwrap_or_else(|| action_id.clone());
+            RpcResponse::ok(
+                request.id,
+                serde_json::to_value(ActionPreview {
+                    action_id: action_id.clone(),
+                    title: title.clone(),
+                    summary: format!("Ready to run {title}."),
+                    warnings: Vec::new(),
+                })
+                .unwrap_or_else(|_| serde_json::json!({"action_id": action_id})),
+            )
+        }
+        _ => error_response(
+            request.id,
+            -32601,
+            format!("unsupported host method `{}`", request.method),
+        ),
+    }
+}
+
+fn error_response(id: String, code: i32, message: String) -> RpcResponse {
+    RpcResponse {
+        id,
+        result: None,
+        error: Some(RpcError {
+            code,
+            message,
+            data: None,
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;

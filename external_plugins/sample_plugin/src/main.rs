@@ -1,16 +1,9 @@
 use plugin_sdk::{
-    ActionEffects, ActionSpec, ConfirmPolicy, PluginHello, PluginRegister, RpcRequest, ViewSpec,
+    ActionEffects, ActionSpec, ConfirmPolicy, PluginHello, PluginRegister, ViewSpec,
+    serve_static_plugin,
 };
 
-fn build_hello_request() -> RpcRequest {
-    PluginHello {
-        plugin_id: "sample_external".to_string(),
-        version: "0.1.0".to_string(),
-    }
-    .to_request("hello-1")
-}
-
-fn build_register_request() -> RpcRequest {
+fn build_register_payload() -> PluginRegister {
     PluginRegister {
         actions: vec![ActionSpec {
             action_id: "sample.ping".to_string(),
@@ -28,12 +21,25 @@ fn build_register_request() -> RpcRequest {
             when: Some("always".to_string()),
         }],
     }
-    .to_request("register-1")
 }
 
 fn main() {
-    let hello = build_hello_request();
-    let register = build_register_request();
+    let hello = PluginHello {
+        plugin_id: "sample_external".to_string(),
+        version: "0.1.0".to_string(),
+    };
+    let register = build_register_payload();
 
-    println!("{} -> {}", hello.method, register.method);
+    if let Err(err) = serve_static_plugin(hello, register, |action_id, context| {
+        serde_json::json!({
+            "ok": true,
+            "plugin_id": "sample_external",
+            "action_id": action_id,
+            "message": "sample_external handled request",
+            "selection_files": context.selection_files,
+        })
+    }) {
+        eprintln!("sample_external runtime failed: {err:?}");
+        std::process::exit(1);
+    }
 }
