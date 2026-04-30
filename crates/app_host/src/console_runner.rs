@@ -589,114 +589,94 @@ impl ConsoleRunner {
             );
         }
 
+        let snapshot = self.store.snapshot();
         match spec.action_id.as_str() {
-            "index.stage_selected" | "index.unstage_selected" | "file.discard" => {
-                if self.store.snapshot().selection.selected_paths.is_empty() {
-                    return (false, Some("no selected files".to_string()));
-                }
+            "index.stage_selected" | "index.unstage_selected" | "file.discard"
+                if snapshot.selection.selected_paths.is_empty() =>
+            {
+                return (false, Some("no selected files".to_string()));
             }
             "index.stage_hunk" | "index.stage_lines" | "file.discard_hunk"
-            | "file.discard_lines" => {
-                if self.store.snapshot().diff.hunks.is_empty()
+            | "file.discard_lines"
+                if snapshot.diff.hunks.is_empty()
                     || !matches!(
-                        self.store.snapshot().diff.source,
+                        &snapshot.diff.source,
                         Some(state_store::DiffSource::Worktree { .. })
-                    )
-                {
-                    return (
-                        false,
-                        Some("load a worktree diff with hunks first".to_string()),
-                    );
-                }
+                    ) =>
+            {
+                return (
+                    false,
+                    Some("load a worktree diff with hunks first".to_string()),
+                );
             }
-            "index.unstage_hunk" | "index.unstage_lines" => {
-                if self.store.snapshot().diff.hunks.is_empty()
+            "index.unstage_hunk" | "index.unstage_lines"
+                if snapshot.diff.hunks.is_empty()
                     || !matches!(
-                        self.store.snapshot().diff.source,
+                        &snapshot.diff.source,
                         Some(state_store::DiffSource::Index { .. })
-                    )
-                {
-                    return (
-                        false,
-                        Some("load an index diff with hunks first".to_string()),
-                    );
-                }
+                    ) =>
+            {
+                return (
+                    false,
+                    Some("load an index diff with hunks first".to_string()),
+                );
             }
-            "commit.create" => {
-                if self.store.snapshot().status.staged.is_empty() {
-                    return (false, Some("no staged changes".to_string()));
-                }
+            "commit.create" if snapshot.status.staged.is_empty() => {
+                return (false, Some("no staged changes".to_string()));
             }
-            "history.load_more" => {
-                if self.store.snapshot().history.next_cursor.is_none() {
-                    return (false, Some("no next history page".to_string()));
-                }
+            "history.load_more" if snapshot.history.next_cursor.is_none() => {
+                return (false, Some("no next history page".to_string()));
             }
-            "history.select_commit" | "cherry_pick.commit" | "revert.commit" => {
-                if self
-                    .store
-                    .snapshot()
-                    .selection
-                    .selected_commit_oid
-                    .is_none()
-                {
-                    return (false, Some("no selected commit".to_string()));
-                }
+            "history.select_commit" | "cherry_pick.commit" | "revert.commit"
+                if snapshot.selection.selected_commit_oid.is_none() =>
+            {
+                return (false, Some("no selected commit".to_string()));
             }
-            "history.file" | "blame.file" => {
-                if self.store.snapshot().selection.selected_paths.is_empty() {
-                    return (false, Some("no selected files".to_string()));
-                }
+            "history.file" | "blame.file" if snapshot.selection.selected_paths.is_empty() => {
+                return (false, Some("no selected files".to_string()));
             }
-            "branch.checkout" | "branch.rename" | "branch.delete" => {
-                if self.store.snapshot().selection.selected_branch.is_none() {
-                    return (false, Some("no selected branch".to_string()));
-                }
+            "branch.checkout" | "branch.rename" | "branch.delete"
+                if snapshot.selection.selected_branch.is_none() =>
+            {
+                return (false, Some("no selected branch".to_string()));
             }
-            "rebase.execute" => {
-                if self.store.snapshot().rebase.plan.is_none() {
-                    return (false, Some("no rebase plan".to_string()));
-                }
+            "rebase.execute" if snapshot.rebase.plan.is_none() => {
+                return (false, Some("no rebase plan".to_string()));
             }
-            "rebase.plan.set_action" | "rebase.plan.move" | "rebase.plan.clear" => {
-                if self.store.snapshot().rebase.plan.is_none() {
-                    return (false, Some("no rebase plan".to_string()));
-                }
+            "rebase.plan.set_action" | "rebase.plan.move" | "rebase.plan.clear"
+                if snapshot.rebase.plan.is_none() =>
+            {
+                return (false, Some("no rebase plan".to_string()));
             }
-            "rebase.continue" | "rebase.skip" | "rebase.abort" => {
-                if self.store.snapshot().rebase.session.is_none() {
-                    return (false, Some("no active rebase session".to_string()));
-                }
+            "rebase.continue" | "rebase.skip" | "rebase.abort"
+                if snapshot.rebase.session.is_none() =>
+            {
+                return (false, Some("no active rebase session".to_string()));
             }
-            "conflict.focus" => {
-                if self.store.snapshot().selection.selected_paths.is_empty() {
-                    return (false, Some("no selected conflict files".to_string()));
-                }
+            "conflict.focus" if snapshot.selection.selected_paths.is_empty() => {
+                return (false, Some("no selected conflict files".to_string()));
             }
-            "conflict.resolve.ours" | "conflict.resolve.theirs" | "conflict.mark_resolved" => {
-                if self.store.snapshot().selection.selected_paths.is_empty() {
-                    return (false, Some("no selected conflict files".to_string()));
-                }
+            "conflict.resolve.ours" | "conflict.resolve.theirs" | "conflict.mark_resolved"
+                if snapshot.selection.selected_paths.is_empty() =>
+            {
+                return (false, Some("no selected conflict files".to_string()));
             }
-            "conflict.continue" | "conflict.abort" => {
-                if self
-                    .store
-                    .snapshot()
+            "conflict.continue" | "conflict.abort"
+                if snapshot
                     .repo
                     .as_ref()
                     .and_then(|repo| repo.conflict_state.as_ref())
-                    .is_none()
-                {
-                    return (false, Some("no active conflict session".to_string()));
-                }
+                    .is_none() =>
+            {
+                return (false, Some("no active conflict session".to_string()));
             }
-            "plugin.enable" | "plugin.disable" | "plugin.remove" => {
-                if self.store.snapshot().selection.selected_plugin_id.is_none() {
-                    return (
-                        false,
-                        Some("no selected plugin (or pass id explicitly)".to_string()),
-                    );
-                }
+            "plugin.enable" | "plugin.disable" | "plugin.remove"
+                if snapshot.selection.selected_plugin_id.is_none() =>
+            {
+                return (
+                    false,
+                    Some("no selected plugin (or pass id explicitly)".to_string()),
+                );
             }
             _ => {}
         }
