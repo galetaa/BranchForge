@@ -1755,26 +1755,26 @@ pub fn status_registration_payload() -> PluginRegister {
                 "stash.pop",
                 "Pop Stash",
                 Some("repo.is_open"),
-                Some(DangerLevel::Medium),
+                Some(DangerLevel::High),
                 ActionEffects {
                     writes_index: true,
                     writes_worktree: true,
-                    danger_level: DangerLevel::Medium,
+                    danger_level: DangerLevel::High,
                     ..ActionEffects::default()
                 },
-                ConfirmPolicy::OnDanger,
+                ConfirmPolicy::Always,
             ),
             spec(
                 "stash.drop",
                 "Drop Stash",
                 Some("repo.is_open"),
-                Some(DangerLevel::Medium),
+                Some(DangerLevel::High),
                 ActionEffects {
                     writes_refs: true,
-                    danger_level: DangerLevel::Medium,
+                    danger_level: DangerLevel::High,
                     ..ActionEffects::default()
                 },
-                ConfirmPolicy::OnDanger,
+                ConfirmPolicy::Always,
             ),
         ],
         views: vec![plugin_api::ViewSpec {
@@ -1841,29 +1841,29 @@ pub fn history_registration_payload() -> PluginRegister {
                 "cherry_pick.commit",
                 "Cherry-pick Commit",
                 Some("repo.is_open"),
-                Some(DangerLevel::Medium),
+                Some(DangerLevel::High),
                 ActionEffects {
                     writes_refs: true,
                     writes_index: true,
                     writes_worktree: true,
-                    danger_level: DangerLevel::Medium,
+                    danger_level: DangerLevel::High,
                     ..ActionEffects::default()
                 },
-                ConfirmPolicy::OnDanger,
+                ConfirmPolicy::Always,
             ),
             spec(
                 "revert.commit",
                 "Revert Commit",
                 Some("repo.is_open"),
-                Some(DangerLevel::Medium),
+                Some(DangerLevel::High),
                 ActionEffects {
                     writes_refs: true,
                     writes_index: true,
                     writes_worktree: true,
-                    danger_level: DangerLevel::Medium,
+                    danger_level: DangerLevel::High,
                     ..ActionEffects::default()
                 },
-                ConfirmPolicy::OnDanger,
+                ConfirmPolicy::Always,
             ),
         ],
         views: vec![plugin_api::ViewSpec {
@@ -2193,13 +2193,13 @@ pub fn tags_registration_payload() -> PluginRegister {
                 "tag.delete",
                 "Delete Tag",
                 Some("repo.is_open"),
-                Some(DangerLevel::Medium),
+                Some(DangerLevel::High),
                 ActionEffects {
                     writes_refs: true,
-                    danger_level: DangerLevel::Medium,
+                    danger_level: DangerLevel::High,
                     ..ActionEffects::default()
                 },
-                ConfirmPolicy::OnDanger,
+                ConfirmPolicy::Always,
             ),
             spec(
                 "tag.checkout",

@@ -21,15 +21,15 @@ fn mutation_spec(action_id: &str, title: &str) -> ActionSpec {
         title: title.to_string(),
         when: Some("repo.is_open".to_string()),
         params_schema: None,
-        danger: Some(DangerLevel::Medium),
+        danger: Some(DangerLevel::High),
         effects: ActionEffects {
             writes_refs: true,
             writes_index: true,
             writes_worktree: true,
-            danger_level: DangerLevel::Medium,
+            danger_level: DangerLevel::High,
             ..ActionEffects::default()
         },
-        confirm_policy: ConfirmPolicy::OnDanger,
+        confirm_policy: ConfirmPolicy::Always,
     }
 }
 

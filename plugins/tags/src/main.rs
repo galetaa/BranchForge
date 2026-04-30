@@ -36,8 +36,8 @@ fn build_register_payload() -> PluginRegister {
             spec(
                 "tag.delete",
                 "Delete Tag",
-                Some(DangerLevel::Medium),
-                ConfirmPolicy::OnDanger,
+                Some(DangerLevel::High),
+                ConfirmPolicy::Always,
             ),
             ActionSpec {
                 action_id: "tag.checkout".to_string(),

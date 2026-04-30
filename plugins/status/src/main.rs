@@ -181,25 +181,25 @@ fn build_register_payload() -> PluginRegister {
             spec(
                 "stash.pop",
                 "Pop Stash",
-                Some(DangerLevel::Medium),
+                Some(DangerLevel::High),
                 ActionEffects {
                     writes_index: true,
                     writes_worktree: true,
-                    danger_level: DangerLevel::Medium,
+                    danger_level: DangerLevel::High,
                     ..ActionEffects::default()
                 },
-                ConfirmPolicy::OnDanger,
+                ConfirmPolicy::Always,
             ),
             spec(
                 "stash.drop",
                 "Drop Stash",
-                Some(DangerLevel::Medium),
+                Some(DangerLevel::High),
                 ActionEffects {
                     writes_refs: true,
-                    danger_level: DangerLevel::Medium,
+                    danger_level: DangerLevel::High,
                     ..ActionEffects::default()
                 },
-                ConfirmPolicy::OnDanger,
+                ConfirmPolicy::Always,
             ),
         ],
         views: vec![ViewSpec {

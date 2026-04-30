@@ -90,6 +90,7 @@ mod tests {
     use plugin_api::PluginHello;
     use plugin_host::{
         RuntimeSession, branches_registration_payload, default_registration_payload,
+        history_registration_payload, status_registration_payload, tags_registration_payload,
     };
 
     #[test]
@@ -234,6 +235,106 @@ mod tests {
             Err(InvokeError::ConfirmationRequired { action_id, danger })
                 if action_id == "reset.hard" && danger == DangerLevel::High
         ));
+    }
+
+    #[test]
+    fn route_action_invoke_requires_confirmation_for_tag_delete() {
+        let mut session = RuntimeSession::new("tags");
+        let hello = PluginHello {
+            plugin_id: "tags".to_string(),
+            version: "0.1".to_string(),
+        };
+        let hello_result = session.handle_hello(&hello);
+        assert!(hello_result.is_ok());
+
+        let register_result = session.handle_register(&tags_registration_payload());
+        assert!(register_result.is_ok());
+
+        let action = ActionRequest {
+            action: "tag.delete".to_string(),
+            confirmed: false,
+        };
+        let routed = route_action_invoke(
+            &mut session,
+            &action,
+            ActionContext {
+                selection_files: Vec::new(),
+            },
+            Instant::now(),
+        );
+        assert!(matches!(
+            routed,
+            Err(InvokeError::ConfirmationRequired { action_id, danger })
+                if action_id == "tag.delete" && danger == DangerLevel::High
+        ));
+    }
+
+    #[test]
+    fn route_action_invoke_requires_confirmation_for_stash_pop_and_drop() {
+        let mut session = RuntimeSession::new("status");
+        let hello = PluginHello {
+            plugin_id: "status".to_string(),
+            version: "0.1".to_string(),
+        };
+        let hello_result = session.handle_hello(&hello);
+        assert!(hello_result.is_ok());
+
+        let register_result = session.handle_register(&status_registration_payload());
+        assert!(register_result.is_ok());
+
+        for action_id in ["stash.pop", "stash.drop"] {
+            let action = ActionRequest {
+                action: action_id.to_string(),
+                confirmed: false,
+            };
+            let routed = route_action_invoke(
+                &mut session,
+                &action,
+                ActionContext {
+                    selection_files: Vec::new(),
+                },
+                Instant::now(),
+            );
+            assert!(matches!(
+                routed,
+                Err(InvokeError::ConfirmationRequired { action_id: routed_id, danger })
+                    if routed_id == action_id && danger == DangerLevel::High
+            ));
+        }
+    }
+
+    #[test]
+    fn route_action_invoke_requires_confirmation_for_history_ref_mutations() {
+        let mut session = RuntimeSession::new("history");
+        let hello = PluginHello {
+            plugin_id: "history".to_string(),
+            version: "0.1".to_string(),
+        };
+        let hello_result = session.handle_hello(&hello);
+        assert!(hello_result.is_ok());
+
+        let register_result = session.handle_register(&history_registration_payload());
+        assert!(register_result.is_ok());
+
+        for action_id in ["cherry_pick.commit", "revert.commit"] {
+            let action = ActionRequest {
+                action: action_id.to_string(),
+                confirmed: false,
+            };
+            let routed = route_action_invoke(
+                &mut session,
+                &action,
+                ActionContext {
+                    selection_files: Vec::new(),
+                },
+                Instant::now(),
+            );
+            assert!(matches!(
+                routed,
+                Err(InvokeError::ConfirmationRequired { action_id: routed_id, danger })
+                    if routed_id == action_id && danger == DangerLevel::High
+            ));
+        }
     }
 
     #[test]
