@@ -136,8 +136,8 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
         if line == "\r\n" || line.is_empty() {
             break;
         }
-        if let Some(value) = line.strip_prefix("Content-Length:") {
-            content_length = value.trim().parse::<usize>().unwrap_or(0);
+        if let Some(value) = parse_content_length_header(&line) {
+            content_length = value;
         }
     }
 
@@ -149,6 +149,15 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
     }
 
     Ok(HttpRequest { method, path, body })
+}
+
+fn parse_content_length_header(line: &str) -> Option<usize> {
+    let (name, value) = line.split_once(':')?;
+    if name.eq_ignore_ascii_case("content-length") {
+        Some(value.trim().parse::<usize>().unwrap_or(0))
+    } else {
+        None
+    }
 }
 
 fn write_http_response(stream: &mut TcpStream, response: HttpResponse) -> Result<(), String> {
@@ -2875,6 +2884,23 @@ mod tests {
             Some("run history.page 0 20")
         );
         assert_eq!(form.get("repo_path").map(String::as_str), Some("foo/bar"));
+    }
+
+    #[test]
+    fn parses_content_length_case_insensitively() {
+        assert_eq!(
+            parse_content_length_header("Content-Length: 42\r\n"),
+            Some(42)
+        );
+        assert_eq!(
+            parse_content_length_header("content-length: 42\r\n"),
+            Some(42)
+        );
+        assert_eq!(
+            parse_content_length_header("CONTENT-LENGTH: 42\r\n"),
+            Some(42)
+        );
+        assert_eq!(parse_content_length_header("Host: localhost\r\n"), None);
     }
 
     #[test]
