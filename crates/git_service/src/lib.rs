@@ -279,6 +279,13 @@ pub fn run_git_with_input(
 }
 
 pub fn repo_open(cwd: &Path) -> Result<RepoOpenResult, GitServiceError> {
+    if !cwd.is_dir() {
+        return Err(GitServiceError::GitError {
+            exit_code: 128,
+            stderr: format!("fatal: not a git repository: {}", cwd.display()),
+        });
+    }
+
     let root_out = run_git(cwd, &["rev-parse", "--show-toplevel"])?;
     let head_out = run_git(cwd, &["branch", "--show-current"]);
 
@@ -2269,6 +2276,17 @@ mod tests {
         let result = repo_open(&repo_dir);
         assert!(matches!(result, Err(GitServiceError::GitError { .. })));
         let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn repo_open_fails_for_missing_path_as_repository_error() {
+        let repo_dir = unique_temp_dir();
+        let result = repo_open(&repo_dir);
+        assert!(matches!(
+            result,
+            Err(GitServiceError::GitError { stderr, .. })
+                if stderr.contains("not a git repository")
+        ));
     }
 
     #[test]
