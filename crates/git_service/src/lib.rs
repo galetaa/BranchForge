@@ -47,6 +47,16 @@ pub struct CommitSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphLogCommit {
+    pub oid: String,
+    pub author: String,
+    pub time: String,
+    pub summary: String,
+    pub parents: Vec<String>,
+    pub refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StashEntry {
     pub reference: String,
     pub message: String,
@@ -666,6 +676,61 @@ pub fn commit_log_page_filtered_with_hash_prefix(
     commits.extend(all);
 
     Ok(commits)
+}
+
+pub fn commit_graph_page(
+    cwd: &Path,
+    offset: usize,
+    limit: usize,
+) -> Result<Vec<GraphLogCommit>, GitServiceError> {
+    let format = "--format=%H%x1f%P%x1f%an%x1f%ad%x1f%s%x1f%D";
+    let out = run_git(
+        cwd,
+        &[
+            "log",
+            "--date=iso-strict",
+            "--topo-order",
+            format,
+            "--max-count",
+            &limit.to_string(),
+            "--skip",
+            &offset.to_string(),
+        ],
+    )?;
+    let text = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+    let mut commits = Vec::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let parts = line.split('\x1f').collect::<Vec<_>>();
+        if parts.len() != 6 {
+            return Err(GitServiceError::ParseError(
+                "invalid graph log line".to_string(),
+            ));
+        }
+        commits.push(GraphLogCommit {
+            oid: parts[0].to_string(),
+            parents: parts[1]
+                .split_whitespace()
+                .filter(|parent| !parent.is_empty())
+                .map(str::to_string)
+                .collect(),
+            author: parts[2].to_string(),
+            time: parts[3].to_string(),
+            summary: parts[4].to_string(),
+            refs: parse_graph_refs(parts[5]),
+        });
+    }
+    Ok(commits)
+}
+
+fn parse_graph_refs(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 pub fn stash_create(cwd: &Path, message: Option<&str>) -> Result<(), GitServiceError> {
@@ -2421,6 +2486,40 @@ mod tests {
         if let Ok(commits) = page {
             assert_eq!(commits.len(), 1);
             assert!(commits[0].summary.contains("commit"));
+        }
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn commit_graph_page_returns_parents_and_refs() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        assert!(std::fs::write(repo_dir.join("one.txt"), "one\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["one.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "commit one").is_ok());
+        assert!(create_tag(&repo_dir, "v-graph").is_ok());
+
+        assert!(std::fs::write(repo_dir.join("two.txt"), "two\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["two.txt".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "commit two").is_ok());
+
+        let graph = commit_graph_page(&repo_dir, 0, 10);
+        assert!(graph.is_ok());
+        if let Ok(commits) = graph {
+            assert_eq!(commits.len(), 2);
+            assert_eq!(commits[0].parents.len(), 1);
+            assert!(commits[0].refs.iter().any(|label| label.contains("HEAD")));
+            assert!(
+                commits[1]
+                    .refs
+                    .iter()
+                    .any(|label| label.contains("v-graph"))
+            );
         }
 
         let _ = std::fs::remove_dir_all(&repo_dir);
