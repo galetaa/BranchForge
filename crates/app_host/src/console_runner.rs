@@ -3,6 +3,9 @@ use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use action_engine::{ActionRequest, validate_action};
+use graph_model::{
+    GraphCommit, GraphInputCommit, GraphRef, GraphRefKind, GraphRefLabel, build_graph,
+};
 use job_system::{JobExecutionResult, JobLock, JobRequest, execute_job_op};
 use plugin_api::{ActionEffects, ActionSpec, ConfirmPolicy, DangerLevel};
 use plugin_host::{
@@ -328,6 +331,18 @@ pub struct HostRuntime {
     runner: ConsoleRunner,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostActionCatalogItem {
+    pub owner: String,
+    pub action_id: String,
+    pub title: String,
+    pub danger: DangerLevel,
+    pub confirm_policy: ConfirmPolicy,
+    pub enabled: bool,
+    pub disabled_reason: Option<String>,
+    pub has_params: bool,
+}
+
 impl HostRuntime {
     pub fn new(config: ConsoleRunnerConfig) -> Self {
         Self {
@@ -362,6 +377,20 @@ impl HostRuntime {
 
     pub fn render_actions(&self) -> String {
         self.runner.render_actions()
+    }
+
+    pub fn action_catalog(&self) -> Vec<HostActionCatalogItem> {
+        self.runner.action_catalog_items()
+    }
+
+    pub fn history_graph(&self) -> Result<Vec<GraphCommit>, HostRuntimeError> {
+        self.runner
+            .history_graph()
+            .map_err(|error| HostRuntimeError {
+                title: error.title,
+                message: error.message,
+                detail: error.detail,
+            })
     }
 
     pub fn ops_catalog(&self) -> String {
@@ -568,6 +597,64 @@ impl ConsoleRunner {
             lines.push(line);
         }
         lines.join("\n")
+    }
+
+    fn action_catalog_items(&self) -> Vec<HostActionCatalogItem> {
+        self.actions
+            .iter()
+            .map(|action| {
+                let (enabled, disabled_reason) = self.action_availability(&action.spec);
+                HostActionCatalogItem {
+                    owner: action.owner.clone(),
+                    action_id: action.spec.action_id.clone(),
+                    title: action.spec.title.clone(),
+                    danger: action.spec.effective_danger(),
+                    confirm_policy: action.spec.confirm_policy.clone(),
+                    enabled,
+                    disabled_reason,
+                    has_params: action.spec.params_schema.is_some(),
+                }
+            })
+            .collect()
+    }
+
+    fn history_graph(&self) -> Result<Vec<GraphCommit>, UserFacingError> {
+        let Some(repo_dir) = self.repo_dir.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let visible_count = self.store.snapshot().history.commits.len().max(100);
+        let graph_log =
+            git_service::commit_graph_page(repo_dir, 0, visible_count).map_err(|err| {
+                UserFacingError::with_category(
+                    "History graph failed",
+                    "Could not load commit graph metadata.",
+                    Some(format!("{err:?}")),
+                    ErrorCategory::Git,
+                )
+            })?;
+
+        let mut refs = Vec::new();
+        let inputs = graph_log
+            .into_iter()
+            .map(|commit| {
+                refs.extend(commit.refs.iter().filter_map(|label| {
+                    map_graph_ref_label(label).map(|mapped| GraphRef {
+                        oid: commit.oid.clone(),
+                        label: mapped,
+                    })
+                }));
+                GraphInputCommit {
+                    short_oid: commit.oid.chars().take(8).collect(),
+                    oid: commit.oid,
+                    summary: commit.summary,
+                    author: commit.author,
+                    time: commit.time,
+                    parents: commit.parents,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        Ok(build_graph(&inputs, &refs))
     }
 
     fn action_availability(&self, spec: &ActionSpec) -> (bool, Option<String>) {
@@ -1956,6 +2043,40 @@ fn build_builtin_catalog_actions() -> Vec<CatalogAction> {
     );
     push_actions(&mut actions, "diagnostics", host_plugin_action_specs());
     actions
+}
+
+fn map_graph_ref_label(raw: &str) -> Option<GraphRefLabel> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(name) = trimmed.strip_prefix("HEAD -> ") {
+        return Some(GraphRefLabel {
+            name: name.to_string(),
+            kind: GraphRefKind::Head,
+        });
+    }
+    if let Some(name) = trimmed.strip_prefix("tag: ") {
+        return Some(GraphRefLabel {
+            name: name.to_string(),
+            kind: GraphRefKind::Tag,
+        });
+    }
+    if trimmed == "HEAD" {
+        return Some(GraphRefLabel {
+            name: "HEAD".to_string(),
+            kind: GraphRefKind::Head,
+        });
+    }
+    let kind = if trimmed.contains('/') {
+        GraphRefKind::RemoteBranch
+    } else {
+        GraphRefKind::LocalBranch
+    };
+    Some(GraphRefLabel {
+        name: trimmed.to_string(),
+        kind,
+    })
 }
 
 fn push_actions(actions: &mut Vec<CatalogAction>, owner: &str, specs: Vec<ActionSpec>) {
