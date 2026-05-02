@@ -9,6 +9,8 @@ members = [
   "crates/git_service",
   "crates/ui_shell",
   "crates/app_gui",
+  "crates/app_desktop",
+  "crates/graph_model",
   "crates/plugin_sdk",
   "plugins/repo_manager",
   "plugins/status",
