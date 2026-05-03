@@ -223,9 +223,30 @@ pub enum OperationSessionState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefSnapshotSummary {
     pub head: Option<String>,
+    #[serde(default)]
+    pub head_oid: Option<String>,
+    #[serde(default)]
+    pub current_branch: Option<String>,
     pub branch_count: usize,
     pub tag_count: usize,
     pub conflict_state: Option<ConflictState>,
+    #[serde(default)]
+    pub refs: Vec<RefSnapshotEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefSnapshotEntry {
+    pub full_name: String,
+    pub short_name: String,
+    pub oid: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackupRefSummary {
+    pub name: String,
+    pub target_ref: String,
+    pub target_oid: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -238,6 +259,12 @@ pub struct OperationJournalEntry {
     pub finished_at_ms: Option<u64>,
     pub error: Option<String>,
     #[serde(default)]
+    pub repo_root: Option<String>,
+    #[serde(default)]
+    pub params: Vec<String>,
+    #[serde(default)]
+    pub risk: Option<DangerLevel>,
+    #[serde(default)]
     pub session_id: Option<u64>,
     #[serde(default)]
     pub session_kind: Option<OperationSessionKind>,
@@ -247,6 +274,8 @@ pub struct OperationJournalEntry {
     pub pre_refs: Option<RefSnapshotSummary>,
     #[serde(default)]
     pub post_refs: Option<RefSnapshotSummary>,
+    #[serde(default)]
+    pub backup_refs: Vec<BackupRefSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -566,11 +595,15 @@ impl StateStore {
             started_at_ms,
             finished_at_ms: None,
             error: None,
+            repo_root: None,
+            params: Vec::new(),
+            risk: None,
             session_id: None,
             session_kind: None,
             session_state: None,
             pre_refs: None,
             post_refs: None,
+            backup_refs: Vec::new(),
         });
         self.enforce_journal_retention();
         self.bump_version();
@@ -594,6 +627,27 @@ impl StateStore {
             entry.status = status;
             entry.finished_at_ms = Some(finished_at_ms);
             entry.error = error;
+        }
+        self.bump_version();
+    }
+
+    pub fn set_journal_context(
+        &mut self,
+        entry_id: u64,
+        repo_root: Option<String>,
+        params: Vec<String>,
+        risk: Option<DangerLevel>,
+    ) {
+        if let Some(entry) = self
+            .snapshot
+            .journal
+            .entries
+            .iter_mut()
+            .find(|entry| entry.id == entry_id)
+        {
+            entry.repo_root = repo_root;
+            entry.params = params;
+            entry.risk = risk;
         }
         self.bump_version();
     }
@@ -666,6 +720,27 @@ impl StateStore {
             entry.post_refs = Some(post_refs);
         }
         self.bump_version();
+    }
+
+    pub fn set_journal_backup_refs(&mut self, entry_id: u64, backup_refs: Vec<BackupRefSummary>) {
+        if let Some(entry) = self
+            .snapshot
+            .journal
+            .entries
+            .iter_mut()
+            .find(|entry| entry.id == entry_id)
+        {
+            entry.backup_refs = backup_refs;
+        }
+        self.bump_version();
+    }
+
+    pub fn clear_old_journal_entries(&mut self, keep_latest: usize) {
+        let len = self.snapshot.journal.entries.len();
+        if len > keep_latest {
+            self.snapshot.journal.entries.drain(0..(len - keep_latest));
+            self.bump_version();
+        }
     }
 
     pub fn clear_journal(&mut self) {
@@ -1133,9 +1208,12 @@ mod tests {
             entry_id,
             RefSnapshotSummary {
                 head: Some("main".to_string()),
+                head_oid: Some("abc123".to_string()),
+                current_branch: Some("main".to_string()),
                 branch_count: 2,
                 tag_count: 1,
                 conflict_state: None,
+                refs: Vec::new(),
             },
         );
         store.set_journal_session_state(entry_id, OperationSessionState::Succeeded);
@@ -1143,9 +1221,12 @@ mod tests {
             entry_id,
             RefSnapshotSummary {
                 head: Some("main".to_string()),
+                head_oid: Some("def456".to_string()),
+                current_branch: Some("main".to_string()),
                 branch_count: 2,
                 tag_count: 1,
                 conflict_state: None,
+                refs: Vec::new(),
             },
         );
 

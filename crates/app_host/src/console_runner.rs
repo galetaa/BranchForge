@@ -348,6 +348,14 @@ pub struct HostActionCatalogItem {
     pub explain: Option<ExplainTemplate>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostReflogEntry {
+    pub oid: String,
+    pub selector: String,
+    pub time: String,
+    pub message: String,
+}
+
 impl HostRuntime {
     pub fn new(config: ConsoleRunnerConfig) -> Self {
         Self {
@@ -404,6 +412,20 @@ impl HostRuntime {
 
     pub fn explain_action(&self, action_id: &str) -> Option<ExplainTemplate> {
         explain_template_for_action(action_id)
+    }
+
+    pub fn reflog_entries(
+        &self,
+        reference: &str,
+        limit: usize,
+    ) -> Result<Vec<HostReflogEntry>, HostRuntimeError> {
+        self.runner
+            .reflog_entries(reference, limit)
+            .map_err(|error| HostRuntimeError {
+                title: error.title,
+                message: error.message,
+                detail: error.detail,
+            })
     }
 
     pub fn history_graph(&self) -> Result<Vec<GraphCommit>, HostRuntimeError> {
@@ -679,6 +701,31 @@ impl ConsoleRunner {
             .collect::<Vec<_>>();
 
         Ok(build_graph(&inputs, &refs))
+    }
+
+    fn reflog_entries(
+        &self,
+        reference: &str,
+        limit: usize,
+    ) -> Result<Vec<HostReflogEntry>, UserFacingError> {
+        let repo_dir = self.require_repo_dir()?;
+        let entries = git_service::reflog_entries(&repo_dir, reference, limit).map_err(|err| {
+            UserFacingError::with_category(
+                "Reflog failed",
+                "Could not load reflog entries.",
+                Some(format!("{err:?}")),
+                ErrorCategory::Git,
+            )
+        })?;
+        Ok(entries
+            .into_iter()
+            .map(|entry| HostReflogEntry {
+                oid: entry.oid,
+                selector: entry.selector,
+                time: entry.time,
+                message: entry.message,
+            })
+            .collect())
     }
 
     fn preview_operation(
@@ -1271,6 +1318,61 @@ impl ConsoleRunner {
                 self.sync_plugin_inventory()?;
                 self.show_journal_summary();
                 Ok("updated diagnostics journal summary".to_string())
+            }
+            "journal.open_entry" => {
+                let entry_id = args.first().and_then(|value| value.parse::<u64>().ok());
+                self.show_journal_entry(entry_id)?;
+                Ok("opened journal entry details".to_string())
+            }
+            "journal.copy_details" => {
+                let entry_id = args.first().and_then(|value| value.parse::<u64>().ok());
+                let details = self.render_journal_entry_details(entry_id)?;
+                self.store
+                    .update_diff(render_text_diff("journal:entry_details", details.clone()));
+                Ok(details)
+            }
+            "journal.export" => {
+                let out_file = args
+                    .first()
+                    .map(|raw| resolve_path(&self.config.cwd, raw))
+                    .unwrap_or_else(|| self.config.cwd.join("target/tmp/branchforge-journal.json"));
+                if let Some(parent) = out_file.parent() {
+                    std::fs::create_dir_all(parent).map_err(|err| {
+                        UserFacingError::with_category(
+                            "Journal export failed",
+                            "Could not create journal export directory.",
+                            Some(err.to_string()),
+                            ErrorCategory::System,
+                        )
+                    })?;
+                }
+                self.store.persist_journal(&out_file).map_err(|err| {
+                    UserFacingError::with_category(
+                        "Journal export failed",
+                        "Could not write journal export.",
+                        Some(err),
+                        ErrorCategory::System,
+                    )
+                })?;
+                Ok(format!("exported journal to {}", out_file.display()))
+            }
+            "journal.clear_old_entries" => {
+                let keep_latest = args
+                    .first()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(50);
+                self.store.clear_old_journal_entries(keep_latest);
+                Ok(format!("kept latest {keep_latest} journal entries"))
+            }
+            "journal.restore_ref" => {
+                let params = self.resolve_restore_ref_args(args)?;
+                self.execute_in_open_repo("recovery.restore_ref", params, false)?;
+                Ok("restored ref from journal".to_string())
+            }
+            "journal.recover_operation" => {
+                let params = self.resolve_recover_operation_args(args)?;
+                self.execute_in_open_repo("recovery.create_branch_from_backup", params, false)?;
+                Ok("created recovery branch from journal backup".to_string())
             }
             "conflict.focus" => {
                 let repo_dir = self.require_repo_dir()?;
@@ -2144,7 +2246,9 @@ impl ConsoleRunner {
             | "conflict.abort" => Some(PanelKind::Branches.view_id()),
             "tag.create" | "tag.delete" | "tag.checkout" => Some(PanelKind::Tags.view_id()),
             "compare.refs" => Some(PanelKind::Compare.view_id()),
-            "diagnostics.journal_summary" => Some(PanelKind::Logs.view_id()),
+            "diagnostics.journal_summary" | "journal.open_entry" | "journal.copy_details" => {
+                Some(PanelKind::Logs.view_id())
+            }
             "diagnostics.repo_capabilities"
             | "diagnostics.lfs_status"
             | "diagnostics.lfs_fetch"
@@ -2172,6 +2276,125 @@ impl ConsoleRunner {
         self.store
             .set_active_view(Some(PanelKind::Logs.view_id().to_string()));
         self.update_journal_summary_diff();
+    }
+
+    fn show_journal_entry(&mut self, entry_id: Option<u64>) -> Result<(), UserFacingError> {
+        let details = self.render_journal_entry_details(entry_id)?;
+        self.store
+            .set_active_view(Some(PanelKind::Logs.view_id().to_string()));
+        self.store
+            .update_diff(render_text_diff("journal:entry_details", details));
+        Ok(())
+    }
+
+    fn render_journal_entry_details(
+        &self,
+        entry_id: Option<u64>,
+    ) -> Result<String, UserFacingError> {
+        let entry = self
+            .select_journal_entry(entry_id)
+            .ok_or_else(|| invalid_input_error("journal entry not found"))?;
+        let mut lines = vec![
+            format!("Journal Entry #{}", entry.id),
+            format!("Operation: {}", entry.op),
+            format!("Status: {:?}", entry.status),
+            format!(
+                "Risk: {}",
+                entry.risk.as_ref().map(danger_label).unwrap_or("unknown")
+            ),
+            format!(
+                "Repository: {}",
+                entry.repo_root.as_deref().unwrap_or("<unknown>")
+            ),
+            format!(
+                "Params: {}",
+                if entry.params.is_empty() {
+                    "<none>".to_string()
+                } else {
+                    redact_params(&entry.params).join(" ")
+                }
+            ),
+        ];
+        if let Some(error) = entry.error.as_deref() {
+            lines.push(format!("Error: {error}"));
+            lines.push("Suggested next step: inspect repository status, then use recovery refs or reflog if refs moved.".to_string());
+        }
+        if let Some(pre_refs) = entry.pre_refs.as_ref() {
+            lines.push(format_ref_snapshot("Pre refs", pre_refs));
+        }
+        if let Some(post_refs) = entry.post_refs.as_ref() {
+            lines.push(format_ref_snapshot("Post refs", post_refs));
+        }
+        if !entry.backup_refs.is_empty() {
+            lines.push("Backup refs:".to_string());
+            for backup in &entry.backup_refs {
+                lines.push(format!(
+                    "- {} -> {} ({}, reason={})",
+                    backup.name, backup.target_oid, backup.target_ref, backup.reason
+                ));
+            }
+        }
+        if let Some(explain) = explain_template_for_operation(&entry.op) {
+            lines.push("Equivalent Git commands:".to_string());
+            for command in explain.git_commands {
+                lines.push(format!("- {command}"));
+            }
+            lines.push("Recovery notes:".to_string());
+            for note in explain.recovery_notes {
+                lines.push(format!("- {note}"));
+            }
+        }
+        Ok(lines.join("\n"))
+    }
+
+    fn select_journal_entry(
+        &self,
+        entry_id: Option<u64>,
+    ) -> Option<&state_store::OperationJournalEntry> {
+        match entry_id {
+            Some(id) => self
+                .store
+                .snapshot()
+                .journal
+                .entries
+                .iter()
+                .find(|entry| entry.id == id),
+            None => self.store.snapshot().journal.entries.last(),
+        }
+    }
+
+    fn resolve_restore_ref_args(&self, args: &[String]) -> Result<Vec<String>, UserFacingError> {
+        if args.len() >= 2 {
+            return Ok(vec![args[0].clone(), args[1].clone()]);
+        }
+        let entry_id = args.first().and_then(|value| value.parse::<u64>().ok());
+        let entry = self
+            .select_journal_entry(entry_id)
+            .ok_or_else(|| invalid_input_error("journal entry not found"))?;
+        let backup = entry
+            .backup_refs
+            .first()
+            .ok_or_else(|| invalid_input_error("journal entry has no backup refs"))?;
+        Ok(vec![backup.target_ref.clone(), backup.target_oid.clone()])
+    }
+
+    fn resolve_recover_operation_args(
+        &self,
+        args: &[String],
+    ) -> Result<Vec<String>, UserFacingError> {
+        let entry_id = args.first().and_then(|value| value.parse::<u64>().ok());
+        let branch_name = args
+            .get(1)
+            .cloned()
+            .unwrap_or_else(|| format!("branchforge/recovery/{}", entry_id.unwrap_or(0)));
+        let entry = self
+            .select_journal_entry(entry_id)
+            .ok_or_else(|| invalid_input_error("journal entry not found"))?;
+        let backup = entry
+            .backup_refs
+            .first()
+            .ok_or_else(|| invalid_input_error("journal entry has no backup refs"))?;
+        Ok(vec![branch_name, backup.name.clone()])
     }
 
     fn execute_in_open_repo(
@@ -2818,6 +3041,94 @@ fn host_plugin_action_specs() -> Vec<ActionSpec> {
             ConfirmPolicy::Never,
         ),
         host_action_spec(
+            "journal.open_entry",
+            "Open Journal Entry",
+            Some("always"),
+            None,
+            ActionEffects::read_only(),
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "journal.copy_details",
+            "Copy Journal Details",
+            Some("always"),
+            None,
+            ActionEffects::read_only(),
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "journal.export",
+            "Export Journal",
+            Some("always"),
+            Some(DangerLevel::Low),
+            ActionEffects {
+                writes_worktree: true,
+                danger_level: DangerLevel::Low,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "journal.clear_old_entries",
+            "Clear Old Journal Entries",
+            Some("always"),
+            Some(DangerLevel::Medium),
+            ActionEffects {
+                writes_worktree: true,
+                danger_level: DangerLevel::Medium,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::OnDanger,
+        ),
+        host_action_spec(
+            "journal.restore_ref",
+            "Restore Ref From Journal",
+            Some("repo.is_open"),
+            Some(DangerLevel::High),
+            ActionEffects::mutating_refs(),
+            ConfirmPolicy::Always,
+        ),
+        host_action_spec(
+            "journal.recover_operation",
+            "Recover Journal Operation",
+            Some("repo.is_open"),
+            Some(DangerLevel::High),
+            ActionEffects::mutating_refs(),
+            ConfirmPolicy::Always,
+        ),
+        host_action_spec(
+            "recovery.restore_ref",
+            "Recovery Restore Ref",
+            Some("repo.is_open"),
+            Some(DangerLevel::High),
+            ActionEffects::mutating_refs(),
+            ConfirmPolicy::Always,
+        ),
+        host_action_spec(
+            "recovery.create_branch_from_backup",
+            "Create Branch From Backup",
+            Some("repo.is_open"),
+            Some(DangerLevel::Medium),
+            ActionEffects {
+                writes_refs: true,
+                danger_level: DangerLevel::Medium,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::OnDanger,
+        ),
+        host_action_spec(
+            "recovery.create_branch_from_reflog",
+            "Create Branch From Reflog",
+            Some("repo.is_open"),
+            Some(DangerLevel::Medium),
+            ActionEffects {
+                writes_refs: true,
+                danger_level: DangerLevel::Medium,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::OnDanger,
+        ),
+        host_action_spec(
             "plugin.discover",
             "Discover Registry Plugins",
             Some("always"),
@@ -3391,12 +3702,34 @@ fn lock_for_op(op: &str, _args: &[String]) -> Result<JobLock, UserFacingError> {
         | "conflict.resolve.theirs"
         | "conflict.mark_resolved" => JobLock::IndexWrite,
         "diagnostics.lfs_fetch" | "diagnostics.lfs_pull" => JobLock::Network,
-        "commit.create" | "commit.amend" | "worktree.create" | "worktree.remove" | "stash.drop"
-        | "merge.execute" | "merge.abort" | "cherry_pick.commit" | "cherry_pick.abort"
-        | "revert.commit" | "rebase.plan.create" | "rebase.execute" | "rebase.continue"
-        | "rebase.skip" | "rebase.abort" | "branch.checkout" | "branch.create"
-        | "branch.rename" | "branch.delete" | "tag.create" | "tag.delete" | "tag.checkout"
-        | "file.discard" | "conflict.continue" | "conflict.abort" => JobLock::RefsWrite,
+        "commit.create"
+        | "commit.amend"
+        | "worktree.create"
+        | "worktree.remove"
+        | "stash.drop"
+        | "merge.execute"
+        | "merge.abort"
+        | "cherry_pick.commit"
+        | "cherry_pick.abort"
+        | "revert.commit"
+        | "rebase.plan.create"
+        | "rebase.execute"
+        | "rebase.continue"
+        | "rebase.skip"
+        | "rebase.abort"
+        | "branch.checkout"
+        | "branch.create"
+        | "branch.rename"
+        | "branch.delete"
+        | "tag.create"
+        | "tag.delete"
+        | "tag.checkout"
+        | "file.discard"
+        | "conflict.continue"
+        | "conflict.abort"
+        | "recovery.restore_ref"
+        | "recovery.create_branch_from_backup"
+        | "recovery.create_branch_from_reflog" => JobLock::RefsWrite,
         "reset.refs" => JobLock::RefsWrite,
         _ => {
             return Err(UserFacingError::with_category(
@@ -3483,6 +3816,15 @@ fn is_supported_direct_op(op: &str) -> bool {
             | "tag.create"
             | "tag.delete"
             | "tag.checkout"
+            | "journal.open_entry"
+            | "journal.copy_details"
+            | "journal.export"
+            | "journal.restore_ref"
+            | "journal.recover_operation"
+            | "journal.clear_old_entries"
+            | "recovery.restore_ref"
+            | "recovery.create_branch_from_backup"
+            | "recovery.create_branch_from_reflog"
             | "plugin.list"
             | "plugin.discover"
             | "plugin.install"
@@ -3659,14 +4001,65 @@ fn render_journal_summary(store: &StateStore) -> String {
                 .as_deref()
                 .map(|error| format!(" | error={error}"))
                 .unwrap_or_default();
+            let recovery = if entry.backup_refs.is_empty() {
+                ""
+            } else {
+                " recovery=available"
+            };
             lines.push(format!(
-                "#{} {} {} duration={}{}",
-                entry.id, status, entry.op, duration, suffix
+                "#{} {} {} duration={}{}{}",
+                entry.id, status, entry.op, duration, recovery, suffix
             ));
         }
     }
 
     lines.join("\n")
+}
+
+fn format_ref_snapshot(label: &str, refs: &state_store::RefSnapshotSummary) -> String {
+    format!(
+        "{label}: head={} oid={} branches={} tags={} tracked_refs={}",
+        refs.head.as_deref().unwrap_or("<none>"),
+        refs.head_oid.as_deref().unwrap_or("<unknown>"),
+        refs.branch_count,
+        refs.tag_count,
+        refs.refs.len()
+    )
+}
+
+fn redact_params(params: &[String]) -> Vec<String> {
+    params
+        .iter()
+        .map(|param| {
+            let lower = param.to_lowercase();
+            if lower.contains("token")
+                || lower.contains("password")
+                || lower.contains("secret")
+                || lower.contains("credential")
+            {
+                "<redacted>".to_string()
+            } else {
+                param.clone()
+            }
+        })
+        .collect()
+}
+
+fn explain_template_for_operation(op: &str) -> Option<ExplainTemplate> {
+    match op {
+        "reset.refs" => explain_template_for_action("reset.hard"),
+        "recovery.restore_ref" | "recovery.create_branch_from_backup" => Some(explain(
+            "recovery.restore_ref",
+            "This restores a ref or creates a branch from a saved recovery point.",
+            &[
+                "git update-ref <ref> <oid>",
+                "git branch <name> <backup-ref>",
+            ],
+            &["Restoring a ref moves that ref and can change what future checkouts see."],
+            &["Recovery operations are journaled so the previous state can be inspected."],
+        )),
+        other => explain_template_for_action(other),
+    }
 }
 
 fn view_to_owner(view_id: &str) -> Option<&'static str> {

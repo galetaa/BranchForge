@@ -21,7 +21,7 @@ pub mod operations;
 pub mod recent_repos;
 
 pub use console_runner::{
-    ConsoleRunnerConfig, ConsoleSessionOutput, HostActionCatalogItem, HostRuntime,
+    ConsoleRunnerConfig, ConsoleSessionOutput, HostActionCatalogItem, HostReflogEntry, HostRuntime,
     HostRuntimeError, explain_template_for_action, run_console_app, run_console_command,
     run_console_session,
 };

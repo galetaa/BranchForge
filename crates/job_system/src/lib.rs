@@ -2,12 +2,12 @@ use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 
 use git_service::{GitCommand, GitServiceError, RepoOpenResult, StatusSummary};
-use plugin_api::{ConflictState, RepoSnapshot};
+use plugin_api::{ConflictState, DangerLevel, RepoSnapshot};
 use state_store::{
-    BlameLine, BranchInfo, CommitDetails, DiffChunk, DiffDescriptor, DiffLoadRequest, DiffSource,
-    DiffState, HistoryCursor, JournalStatus, OperationSessionKind, OperationSessionState,
-    RebaseEntryAction, RebasePlan, RebasePlanEntry, RebaseSessionSnapshot, RefSnapshotSummary,
-    RepoCapabilitiesSnapshot, StateStore, StatusSnapshot,
+    BackupRefSummary, BlameLine, BranchInfo, CommitDetails, DiffChunk, DiffDescriptor,
+    DiffLoadRequest, DiffSource, DiffState, HistoryCursor, JournalStatus, OperationSessionKind,
+    OperationSessionState, RebaseEntryAction, RebasePlan, RebasePlanEntry, RebaseSessionSnapshot,
+    RefSnapshotEntry, RefSnapshotSummary, RepoCapabilitiesSnapshot, StateStore, StatusSnapshot,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -158,7 +158,8 @@ pub fn execute_job_op(
     } else {
         None
     };
-    let journal_entry = start_journal_entry(store, request, session_id, pre_refs);
+    let backup_refs = prepare_recovery_artifacts(cwd, request, pre_refs.as_ref())?;
+    let journal_entry = start_journal_entry(store, request, session_id, pre_refs, backup_refs, cwd);
     let result = (|| match request.op.as_str() {
         "repo.open" => {
             refresh_repo_and_status(cwd, store)?;
@@ -1015,6 +1016,49 @@ pub fn execute_job_op(
             let mode = parse_reset_mode(mode_raw)?;
             let target = request.paths.get(1).map(String::as_str).unwrap_or("HEAD");
             git_service::reset_ref(cwd, mode, target)?;
+            refresh_after_advanced_op(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "recovery.restore_ref" => {
+            let ref_name = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "recovery.restore_ref requires ref name in request.paths[0]"
+                        .to_string(),
+                }
+            })?;
+            let target_oid = request.paths.get(1).map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "recovery.restore_ref requires target oid in request.paths[1]"
+                        .to_string(),
+                }
+            })?;
+            git_service::restore_ref(cwd, ref_name, target_oid)?;
+            refresh_after_advanced_op(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "recovery.create_branch_from_backup" | "recovery.create_branch_from_reflog" => {
+            let branch_name = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: format!("{} requires branch name in request.paths[0]", request.op),
+                }
+            })?;
+            let target = request.paths.get(1).map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: format!(
+                        "{} requires target ref or oid in request.paths[1]",
+                        request.op
+                    ),
+                }
+            })?;
+            git_service::create_branch_at(cwd, branch_name, target)?;
             refresh_after_advanced_op(cwd, store)?;
             Ok(JobExecutionResult {
                 op: request.op.clone(),
@@ -1940,11 +1984,19 @@ fn start_journal_entry(
     request: &JobRequest,
     session_id: Option<u64>,
     pre_refs: Option<RefSnapshotSummary>,
+    backup_refs: Vec<BackupRefSummary>,
+    cwd: &Path,
 ) -> Option<u64> {
     if !is_journaled_op(&request.op) {
         return None;
     }
     let entry_id = store.append_journal_entry(request.job_id, request.op.clone(), now_millis());
+    store.set_journal_context(
+        entry_id,
+        Some(cwd.to_string_lossy().to_string()),
+        request.paths.clone(),
+        risk_for_op(&request.op),
+    );
     if let Some(session_id) = session_id {
         store.set_journal_session(
             entry_id,
@@ -1955,6 +2007,9 @@ fn start_journal_entry(
     }
     if let Some(pre_refs) = pre_refs {
         store.set_journal_pre_refs(entry_id, pre_refs);
+    }
+    if !backup_refs.is_empty() {
+        store.set_journal_backup_refs(entry_id, backup_refs);
     }
     Some(entry_id)
 }
@@ -1996,12 +2051,120 @@ fn capture_ref_snapshot(cwd: &Path) -> Option<RefSnapshotSummary> {
     let repo = git_service::repo_open(cwd).ok()?;
     let branches = git_service::list_local_branches(cwd).ok()?;
     let tags = git_service::list_tags(cwd).ok()?;
+    let refs = git_service::list_recoverable_refs(cwd).unwrap_or_default();
     Some(RefSnapshotSummary {
-        head: repo.head,
+        head: repo.head.clone(),
+        head_oid: git_service::resolve_ref_oid(cwd, "HEAD").ok(),
+        current_branch: repo.head,
         branch_count: branches.len(),
         tag_count: tags.len(),
         conflict_state: map_conflict_state(repo.conflict_state.as_ref()),
+        refs: refs
+            .into_iter()
+            .map(|item| RefSnapshotEntry {
+                full_name: item.full_name,
+                short_name: item.short_name,
+                oid: item.oid,
+            })
+            .collect(),
     })
+}
+
+fn prepare_recovery_artifacts(
+    cwd: &Path,
+    request: &JobRequest,
+    pre_refs: Option<&RefSnapshotSummary>,
+) -> Result<Vec<BackupRefSummary>, JobExecutionError> {
+    if !needs_backup_ref(&request.op) {
+        return Ok(Vec::new());
+    }
+
+    let mut backups = Vec::new();
+    match request.op.as_str() {
+        "reset.refs" | "rebase.execute" | "merge.execute" | "merge.abort" | "rebase.abort"
+        | "conflict.abort" => {
+            let target_ref = pre_refs
+                .and_then(|snapshot| snapshot.current_branch.clone())
+                .unwrap_or_else(|| "HEAD".to_string());
+            let target_oid = pre_refs
+                .and_then(|snapshot| snapshot.head_oid.clone())
+                .or_else(|| git_service::resolve_ref_oid(cwd, "HEAD").ok());
+            if let Some(target_oid) = target_oid {
+                backups.push(create_backup_summary(
+                    cwd,
+                    &target_ref,
+                    &target_oid,
+                    &format!("pre-{}", request.op),
+                )?);
+            }
+        }
+        "branch.delete" => {
+            if let Some(branch) = request.paths.first() {
+                let target_ref = format!("refs/heads/{branch}");
+                let target_oid = git_service::resolve_ref_oid(cwd, branch)?;
+                backups.push(create_backup_summary(
+                    cwd,
+                    &target_ref,
+                    &target_oid,
+                    "pre-branch-delete",
+                )?);
+            }
+        }
+        "tag.delete" => {
+            if let Some(tag) = request.paths.first() {
+                let target_ref = format!("refs/tags/{tag}");
+                let target_oid = git_service::resolve_ref_oid(cwd, tag)?;
+                backups.push(create_backup_summary(
+                    cwd,
+                    &target_ref,
+                    &target_oid,
+                    "pre-tag-delete",
+                )?);
+            }
+        }
+        _ => {}
+    }
+
+    Ok(backups)
+}
+
+fn create_backup_summary(
+    cwd: &Path,
+    target_ref: &str,
+    target_oid: &str,
+    reason: &str,
+) -> Result<BackupRefSummary, JobExecutionError> {
+    let name = git_service::create_backup_ref(cwd, target_ref, target_oid)?;
+    Ok(BackupRefSummary {
+        name,
+        target_ref: target_ref.to_string(),
+        target_oid: target_oid.to_string(),
+        reason: reason.to_string(),
+    })
+}
+
+fn needs_backup_ref(op: &str) -> bool {
+    matches!(
+        op,
+        "reset.refs"
+            | "rebase.execute"
+            | "merge.execute"
+            | "merge.abort"
+            | "rebase.abort"
+            | "conflict.abort"
+            | "branch.delete"
+            | "tag.delete"
+    )
+}
+
+fn risk_for_op(op: &str) -> Option<DangerLevel> {
+    match op {
+        "reset.refs" | "rebase.execute" | "merge.execute" | "merge.abort" | "rebase.abort"
+        | "conflict.abort" | "branch.delete" | "tag.delete" | "stash.drop" | "stash.pop"
+        | "file.discard" | "file.discard_hunk" | "file.discard_lines" => Some(DangerLevel::High),
+        "commit.amend" | "branch.rename" | "worktree.remove" => Some(DangerLevel::Medium),
+        _ => None,
+    }
 }
 
 fn is_session_op(op: &str) -> bool {
@@ -2013,6 +2176,9 @@ fn is_session_op(op: &str) -> bool {
             | "cherry_pick.abort"
             | "revert.commit"
             | "reset.refs"
+            | "recovery.restore_ref"
+            | "recovery.create_branch_from_backup"
+            | "recovery.create_branch_from_reflog"
             | "rebase.execute"
             | "rebase.continue"
             | "rebase.skip"
@@ -2037,6 +2203,7 @@ fn is_journaled_op(op: &str) -> bool {
             | "index.unstage_lines"
             | "file.discard_hunk"
             | "file.discard_lines"
+            | "file.discard"
             | "commit.create"
             | "commit.amend"
             | "branch.checkout"
@@ -2049,6 +2216,9 @@ fn is_journaled_op(op: &str) -> bool {
             | "cherry_pick.abort"
             | "revert.commit"
             | "reset.refs"
+            | "recovery.restore_ref"
+            | "recovery.create_branch_from_backup"
+            | "recovery.create_branch_from_reflog"
             | "rebase.plan.create"
             | "rebase.plan.set_action"
             | "rebase.plan.move"
@@ -2084,7 +2254,6 @@ fn is_journaled_op(op: &str) -> bool {
             | "tag.create"
             | "tag.delete"
             | "tag.checkout"
-            | "file.discard"
     )
 }
 
@@ -2795,6 +2964,95 @@ mod tests {
             Err(JobExecutionError::InvalidInput { message })
                 if message == "Cannot delete current branch."
         ));
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn reset_creates_backup_ref_and_recovery_branch_is_journaled() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+        assert!(std::fs::write(repo_dir.join("README.md"), "one\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["README.md".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "one").is_ok());
+        assert!(std::fs::write(repo_dir.join("README.md"), "two\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["README.md".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "two").is_ok());
+        let pre_reset = git_service::resolve_ref_oid(&repo_dir, "HEAD").expect("pre reset");
+
+        let mut store = StateStore::new();
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "repo.open".to_string(),
+                    lock: JobLock::Read,
+                    paths: Vec::new(),
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "reset.refs".to_string(),
+                    lock: JobLock::RefsWrite,
+                    paths: vec!["hard".to_string(), "HEAD~1".to_string()],
+                    job_id: Some(42),
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        let reset_entry = store
+            .snapshot()
+            .journal
+            .entries
+            .iter()
+            .find(|entry| entry.op == "reset.refs")
+            .expect("reset journal")
+            .clone();
+        assert_eq!(reset_entry.risk, Some(DangerLevel::High));
+        assert_eq!(reset_entry.backup_refs.len(), 1);
+        assert_eq!(reset_entry.backup_refs[0].target_oid, pre_reset);
+
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "recovery.create_branch_from_backup".to_string(),
+                    lock: JobLock::RefsWrite,
+                    paths: vec![
+                        "branchforge/recovered-reset".to_string(),
+                        reset_entry.backup_refs[0].name.clone(),
+                    ],
+                    job_id: Some(43),
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            git_service::resolve_ref_oid(&repo_dir, "branchforge/recovered-reset")
+                .expect("recovered branch"),
+            pre_reset
+        );
+        assert!(
+            store
+                .snapshot()
+                .journal
+                .entries
+                .iter()
+                .any(|entry| entry.op == "recovery.create_branch_from_backup")
+        );
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }

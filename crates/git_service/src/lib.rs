@@ -2,6 +2,10 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Command;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+static BACKUP_REF_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitCommand {
@@ -54,6 +58,21 @@ pub struct GraphLogCommit {
     pub summary: String,
     pub parents: Vec<String>,
     pub refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitRef {
+    pub full_name: String,
+    pub short_name: String,
+    pub oid: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReflogEntry {
+    pub oid: String,
+    pub selector: String,
+    pub time: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1655,6 +1674,119 @@ pub fn resolve_ref_oid(cwd: &Path, reference: &str) -> Result<String, GitService
         .map_err(|_| GitServiceError::Utf8Decode)
 }
 
+pub fn list_recoverable_refs(cwd: &Path) -> Result<Vec<GitRef>, GitServiceError> {
+    let out = run_git(
+        cwd,
+        &[
+            "for-each-ref",
+            "--format=%(refname)%00%(refname:short)%00%(objectname)",
+            "refs/heads",
+            "refs/tags",
+            "refs/branchforge/backups",
+        ],
+    )?;
+    let text = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+    let mut refs = Vec::new();
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let parts = line.split('\0').collect::<Vec<_>>();
+        if parts.len() != 3 {
+            return Err(GitServiceError::ParseError(
+                "invalid ref snapshot record".to_string(),
+            ));
+        }
+        refs.push(GitRef {
+            full_name: parts[0].to_string(),
+            short_name: parts[1].to_string(),
+            oid: parts[2].to_string(),
+        });
+    }
+    Ok(refs)
+}
+
+pub fn create_backup_ref(
+    cwd: &Path,
+    target_ref: &str,
+    target_oid: &str,
+) -> Result<String, GitServiceError> {
+    let ref_name = format!(
+        "refs/branchforge/backups/{}/{}",
+        backup_timestamp(),
+        sanitize_ref_component(target_ref)
+    );
+    let _ = run_git(cwd, &["update-ref", &ref_name, target_oid])?;
+    Ok(ref_name)
+}
+
+pub fn restore_ref(cwd: &Path, ref_name: &str, target_oid: &str) -> Result<(), GitServiceError> {
+    let _ = run_git(cwd, &["update-ref", ref_name, target_oid])?;
+    Ok(())
+}
+
+pub fn create_branch_at(cwd: &Path, name: &str, target: &str) -> Result<(), GitServiceError> {
+    let _ = run_git(cwd, &["branch", name, target])?;
+    Ok(())
+}
+
+pub fn reflog_entries(
+    cwd: &Path,
+    reference: &str,
+    limit: usize,
+) -> Result<Vec<ReflogEntry>, GitServiceError> {
+    let limit = limit.clamp(1, 200).to_string();
+    let format = "%H%x1f%gd%x1f%ci%x1f%gs";
+    let out = run_git(
+        cwd,
+        &[
+            "reflog",
+            "show",
+            reference,
+            "--date=iso-strict",
+            &format!("--max-count={limit}"),
+            &format!("--format={format}"),
+        ],
+    )?;
+    let text = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+    let mut entries = Vec::new();
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let parts = line.split('\x1f').collect::<Vec<_>>();
+        if parts.len() != 4 {
+            return Err(GitServiceError::ParseError(
+                "invalid reflog entry record".to_string(),
+            ));
+        }
+        entries.push(ReflogEntry {
+            oid: parts[0].to_string(),
+            selector: parts[1].to_string(),
+            time: parts[2].to_string(),
+            message: parts[3].to_string(),
+        });
+    }
+    Ok(entries)
+}
+
+fn backup_timestamp() -> String {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let seq = BACKUP_REF_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{millis}-{seq}")
+}
+
+fn sanitize_ref_component(raw: &str) -> String {
+    let sanitized = raw
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    sanitized.trim_matches('-').to_string()
+}
+
 fn continue_with_editor_fallback(cwd: &Path, args: &[&str]) -> Result<(), GitServiceError> {
     if run_git(cwd, args).is_ok() {
         return Ok(());
@@ -2598,6 +2730,44 @@ mod tests {
                 || checkout_branch(&repo_dir, "master").is_ok()
         );
         assert!(delete_branch(&repo_dir, "feature-renamed").is_ok());
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn backup_ref_restore_and_reflog_entries_work() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(run_git(&repo_dir, &["init"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok());
+        assert!(run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+
+        assert!(std::fs::write(repo_dir.join("README.md"), "one\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["README.md".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "one").is_ok());
+        let first = resolve_ref_oid(&repo_dir, "HEAD").expect("first oid");
+        assert!(std::fs::write(repo_dir.join("README.md"), "two\n").is_ok());
+        assert!(stage_paths(&repo_dir, &["README.md".to_string()]).is_ok());
+        assert!(commit_create(&repo_dir, "two").is_ok());
+        let second = resolve_ref_oid(&repo_dir, "HEAD").expect("second oid");
+
+        let backup = create_backup_ref(&repo_dir, "refs/heads/main", &first).expect("backup");
+        let refs = list_recoverable_refs(&repo_dir).expect("refs");
+        assert!(refs.iter().any(|item| item.full_name == backup));
+
+        assert!(restore_ref(&repo_dir, "refs/heads/recovered", &first).is_ok());
+        assert_eq!(
+            resolve_ref_oid(&repo_dir, "refs/heads/recovered").expect("restored"),
+            first
+        );
+        assert!(create_branch_at(&repo_dir, "from-backup", &backup).is_ok());
+        assert_eq!(
+            resolve_ref_oid(&repo_dir, "refs/heads/from-backup").expect("branch"),
+            first
+        );
+
+        let reflog = reflog_entries(&repo_dir, "HEAD", 10).expect("reflog");
+        assert!(reflog.iter().any(|entry| entry.oid == second));
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }
