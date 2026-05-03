@@ -91,6 +91,20 @@ Desktop packaging foundations:
 
 The alpha package contains the desktop binary, bundled plugins, icon resource, Linux desktop entry, Windows zip-layout notes, macOS `.app` skeleton, and config/log/crashlog directories.
 
+## Safety and recovery
+
+Dangerous desktop actions open an impact preview before they run. The preview shows plain-language impact, affected refs/files, rewrite warnings, equivalent Git commands, and an explicit `I understand` checkbox before confirmation.
+
+The Journal panel is the recovery entry point. It shows operation status, params, risk, pre/post ref snapshots, backup refs, errors, and recovery actions. Destructive ref operations create BranchForge backup refs under `refs/branchforge/backups/...` when possible, and recovery operations are journaled too.
+
+Useful checks:
+
+```bash
+cargo run -p app_host -- --command "actions"
+cargo run -p app_host -- --command "run --confirm journal.export target/tmp/branchforge-journal.json"
+cargo test -p job_system reset_creates_backup_ref_and_recovery_branch_is_journaled
+```
+
 ## Local dev helpers
 
 ```bash
