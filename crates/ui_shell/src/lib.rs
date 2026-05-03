@@ -296,6 +296,28 @@ pub fn render_diagnostics_panel(store: &StateStore) -> String {
         }
         lines.join("\n")
     };
+    let plugin_security = if store.snapshot().plugin_security.is_empty() {
+        "Plugin security: <empty>".to_string()
+    } else {
+        let mut lines = vec![format!(
+            "Plugin security: {}",
+            store.snapshot().plugin_security.len()
+        )];
+        for record in &store.snapshot().plugin_security {
+            lines.push(format!(
+                "- {} trust={:?} signed={} warnings={}",
+                record.plugin_id,
+                record.trust_level,
+                record.signed,
+                if record.warnings.is_empty() {
+                    "<none>".to_string()
+                } else {
+                    record.warnings.join("; ")
+                }
+            ));
+        }
+        lines.join("\n")
+    };
     let plugin_controls = [
         "Plugin controls:",
         "- plugin.list",
@@ -308,7 +330,7 @@ pub fn render_diagnostics_panel(store: &StateStore) -> String {
     .join("\n");
 
     format!(
-        "Diagnostics Panel\nHost version: {}\nProtocol version: {}\nJournal entries: {}\nRunning: {}\nSucceeded: {}\nFailed: {}\nLast error: {}\nAvg duration(ms): {}\nSlowest op: {}\nActionable blockers: {}\nRuntime plugin health: {}\nRebase plan: {}\nRebase session: {}\n{}\n{}\n",
+        "Diagnostics Panel\nHost version: {}\nProtocol version: {}\nJournal entries: {}\nRunning: {}\nSucceeded: {}\nFailed: {}\nLast error: {}\nAvg duration(ms): {}\nSlowest op: {}\nActionable blockers: {}\nRuntime plugin health: {}\nRebase plan: {}\nRebase session: {}\n{}\n{}\n{}\n",
         host_version,
         protocol_version,
         entries.len(),
@@ -323,6 +345,7 @@ pub fn render_diagnostics_panel(store: &StateStore) -> String {
         rebase_plan.unwrap_or_else(|| "<none>".to_string()),
         rebase_session.unwrap_or_else(|| "<none>".to_string()),
         installed_plugins,
+        plugin_security,
         plugin_controls
     )
 }

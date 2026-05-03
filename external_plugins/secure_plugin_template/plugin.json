@@ -1,0 +1,9 @@
+{
+  "manifest_version": "1",
+  "plugin_id": "secure_template",
+  "version": "0.1.0",
+  "protocol_version": "0.1",
+  "entrypoint": "secure_plugin_template",
+  "description": "Secure plugin template with minimal permissions",
+  "permissions": ["read_state"]
+}

@@ -19,10 +19,10 @@ use plugin_host::{
 use state_store::{
     BranchStack, BranchStackEntry, BranchStackState, CheckStatus, CommitImpact, DiffSource,
     DiffState, ExplainTemplate, FileImpact, ImpactLevel, ImpactSummary, InstalledPluginRecord,
-    OperationPreview, PreviewWarning, PreviewWarningLevel, ProviderRepository, PullRequestState,
-    PullRequestStateSnapshot, PullRequestSummary, RefImpact, RemoteImpact, RepoBranchSummary,
-    RepoStatusSummary, ReviewState, StackEntryStatus, StateStore, Workspace, WorkspaceJobResult,
-    WorkspaceRepo, WorkspaceState,
+    OperationPreview, PluginSecurityRecord, PluginTrustLevel, PreviewWarning, PreviewWarningLevel,
+    ProviderRepository, PullRequestState, PullRequestStateSnapshot, PullRequestSummary, RefImpact,
+    RemoteImpact, RepoBranchSummary, RepoStatusSummary, ReviewState, StackEntryStatus, StateStore,
+    Workspace, WorkspaceJobResult, WorkspaceRepo, WorkspaceState,
 };
 
 use crate::errors::{ErrorCategory, UserFacingError, translate_job_error};
@@ -2557,6 +2557,12 @@ impl ConsoleRunner {
         self.store
             .update_installed_plugins(map_installed_plugins(&installed));
         self.rebuild_catalog_actions();
+        self.store
+            .update_plugin_security(map_plugin_security_records(
+                &installed,
+                &self.actions,
+                &self.config.plugins_root,
+            ));
         Ok(installed)
     }
 
@@ -5462,6 +5468,70 @@ fn map_installed_plugins(
         .collect()
 }
 
+fn map_plugin_security_records(
+    installed: &[plugin_host::InstalledPluginInfo],
+    actions: &[CatalogAction],
+    plugins_root: &Path,
+) -> Vec<PluginSecurityRecord> {
+    installed
+        .iter()
+        .map(|plugin| {
+            let signed = plugin.install_dir.join("plugin.sig").exists()
+                || plugin.install_dir.join("SIGNATURE").exists()
+                || plugin
+                    .manifest
+                    .permissions
+                    .iter()
+                    .any(|permission| permission == "signed");
+            let trust_level = if plugin.install_dir.starts_with(plugins_root.join("bundled")) {
+                PluginTrustLevel::Bundled
+            } else if signed {
+                PluginTrustLevel::SignedCommunity
+            } else if plugin.enabled {
+                PluginTrustLevel::UnsignedLocal
+            } else {
+                PluginTrustLevel::ExperimentalSandboxed
+            };
+            let contributed_actions = actions
+                .iter()
+                .filter(|action| action.owner == plugin.manifest.plugin_id)
+                .map(|action| action.spec.action_id.clone())
+                .collect::<Vec<_>>();
+            let mut warnings = Vec::new();
+            if !signed && !matches!(trust_level, PluginTrustLevel::Bundled) {
+                warnings.push(
+                    "unsigned package: keep disabled until the source is trusted".to_string(),
+                );
+            }
+            for permission in &plugin.manifest.permissions {
+                if matches!(
+                    permission.as_str(),
+                    "write_repo" | "network" | "spawn_process" | "filesystem_write"
+                ) {
+                    warnings.push(format!("high-impact permission requested: {permission}"));
+                }
+            }
+            if plugin.manifest.protocol_version != plugin_api::HOST_PLUGIN_PROTOCOL_VERSION {
+                warnings.push(format!(
+                    "protocol {} differs from host {}",
+                    plugin.manifest.protocol_version,
+                    plugin_api::HOST_PLUGIN_PROTOCOL_VERSION
+                ));
+            }
+            PluginSecurityRecord {
+                plugin_id: plugin.manifest.plugin_id.clone(),
+                trust_level,
+                signed,
+                permissions: plugin.manifest.permissions.clone(),
+                contributed_actions,
+                contributed_views: Vec::new(),
+                warnings,
+                update_available: false,
+            }
+        })
+        .collect()
+}
+
 fn render_journal_summary(store: &StateStore) -> String {
     let mut lines = vec!["Journal Summary".to_string()];
     let entries = &store.snapshot().journal.entries;
@@ -6525,6 +6595,17 @@ mod tests {
         assert_eq!(
             runner.store.snapshot().installed_plugins[0].plugin_id,
             "sample_status"
+        );
+        assert_eq!(runner.store.snapshot().plugin_security.len(), 1);
+        assert_eq!(
+            runner.store.snapshot().plugin_security[0].trust_level,
+            PluginTrustLevel::UnsignedLocal
+        );
+        assert!(
+            runner.store.snapshot().plugin_security[0]
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("unsigned"))
         );
         assert_eq!(
             runner.store.snapshot().active_view.as_deref(),

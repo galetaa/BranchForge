@@ -1763,6 +1763,31 @@ impl BranchForgeDesktopApp {
                 ));
             }
         }
+        if !state.snapshot.plugin_security.is_empty() {
+            ui.separator();
+            ui.label(RichText::new("Plugin Security").strong());
+            egui::Grid::new("plugin.security")
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.label(RichText::new("Plugin").strong());
+                    ui.label(RichText::new("Trust").strong());
+                    ui.label(RichText::new("Signed").strong());
+                    ui.label(RichText::new("Warnings").strong());
+                    ui.end_row();
+                    for record in &state.snapshot.plugin_security {
+                        let warnings = if record.warnings.is_empty() {
+                            String::new()
+                        } else {
+                            record.warnings.join("; ")
+                        };
+                        ui.label(record.plugin_id.as_str());
+                        ui.label(format!("{:?}", record.trust_level));
+                        ui.label(if record.signed { "yes" } else { "no" });
+                        ui.label(warnings);
+                        ui.end_row();
+                    }
+                });
+        }
         ui.separator();
         ui.label(RichText::new("Actions").strong());
         egui::Grid::new("action.catalog")
