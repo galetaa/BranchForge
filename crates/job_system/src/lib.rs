@@ -583,6 +583,25 @@ pub fn execute_job_op(
                 state_version: store.snapshot().version,
             })
         }
+        "stack.restack_branch" => {
+            let branch = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "stack.restack_branch requires branch in request.paths[0]".to_string(),
+                }
+            })?;
+            let base = request.paths.get(1).map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "stack.restack_branch requires base in request.paths[1]".to_string(),
+                }
+            })?;
+            git_service::rebase_branch_onto(cwd, branch, base)?;
+            refresh_after_advanced_op(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
         "history.search" => {
             let (offset, limit) = parse_history_request(request)?;
             let filter_author = request.paths.get(2).cloned().filter(|v| !v.is_empty());
@@ -2328,6 +2347,18 @@ fn prepare_recovery_artifacts(
                 )?);
             }
         }
+        "stack.restack_branch" => {
+            if let Some(branch) = request.paths.first() {
+                let target_ref = format!("refs/heads/{branch}");
+                let target_oid = git_service::resolve_ref_oid(cwd, branch)?;
+                backups.push(create_backup_summary(
+                    cwd,
+                    &target_ref,
+                    &target_oid,
+                    "pre-stack-restack",
+                )?);
+            }
+        }
         "tag.delete" => {
             if let Some(tag) = request.paths.first() {
                 let target_ref = format!("refs/tags/{tag}");
@@ -2371,6 +2402,7 @@ fn needs_backup_ref(op: &str) -> bool {
             | "rebase.abort"
             | "conflict.abort"
             | "branch.delete"
+            | "stack.restack_branch"
             | "tag.delete"
     )
 }
@@ -2391,7 +2423,8 @@ fn risk_for_op(op: &str) -> Option<DangerLevel> {
         | "file.discard_hunk"
         | "file.discard_lines"
         | "remote.remove"
-        | "remote.push_force_with_lease" => Some(DangerLevel::High),
+        | "remote.push_force_with_lease"
+        | "stack.restack_branch" => Some(DangerLevel::High),
         "commit.amend"
         | "branch.rename"
         | "worktree.remove"
@@ -2422,6 +2455,7 @@ fn is_session_op(op: &str) -> bool {
             | "rebase.abort"
             | "conflict.continue"
             | "conflict.abort"
+            | "stack.restack_branch"
     )
 }
 
@@ -2499,6 +2533,7 @@ fn is_journaled_op(op: &str) -> bool {
             | "remote.push_set_upstream"
             | "remote.push_force_with_lease"
             | "remote.branch_list"
+            | "stack.restack_branch"
             | "tag.create"
             | "tag.delete"
             | "tag.checkout"

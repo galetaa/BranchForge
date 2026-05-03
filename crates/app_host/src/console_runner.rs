@@ -17,9 +17,12 @@ use plugin_host::{
     status_registration_payload, tags_registration_payload,
 };
 use state_store::{
-    CommitImpact, DiffSource, DiffState, ExplainTemplate, FileImpact, ImpactLevel, ImpactSummary,
-    InstalledPluginRecord, OperationPreview, PreviewWarning, PreviewWarningLevel, RefImpact,
-    RemoteImpact, StateStore,
+    BranchStack, BranchStackEntry, BranchStackState, CheckStatus, CommitImpact, DiffSource,
+    DiffState, ExplainTemplate, FileImpact, ImpactLevel, ImpactSummary, InstalledPluginRecord,
+    OperationPreview, PreviewWarning, PreviewWarningLevel, ProviderRepository, PullRequestState,
+    PullRequestStateSnapshot, PullRequestSummary, RefImpact, RemoteImpact, RepoBranchSummary,
+    RepoStatusSummary, ReviewState, StackEntryStatus, StateStore, Workspace, WorkspaceJobResult,
+    WorkspaceRepo, WorkspaceState,
 };
 
 use crate::errors::{ErrorCategory, UserFacingError, translate_job_error};
@@ -464,9 +467,11 @@ pub fn run_scripted_console_session(
 
 impl ConsoleRunner {
     fn new(config: ConsoleRunnerConfig) -> Self {
+        let mut store = StateStore::new();
+        let _ = store.restore_workspaces(&workspace_store_path_for(&config.cwd));
         Self {
             config,
-            store: StateStore::new(),
+            store,
             repo_dir: None,
             dynamic_plugins: HashMap::new(),
             actions: build_builtin_catalog_actions(),
@@ -1455,6 +1460,19 @@ impl ConsoleRunner {
                     .set_active_view(Some(PanelKind::Branches.view_id().to_string()));
                 Ok(format!("focused conflict file {path}"))
             }
+            "workspace.create"
+            | "workspace.add_repo"
+            | "workspace.remove_repo"
+            | "workspace.switch"
+            | "workspace.switch_repo"
+            | "workspace.refresh_all"
+            | "workspace.fetch_all"
+            | "workspace.persist"
+            | "workspace.restore" => self.run_workspace_op(target, args),
+            "pr.detect_provider" | "pr.list" | "pr.create_url" | "pr.open" | "pr.checkout" => {
+                self.run_pr_op(target, args)
+            }
+            "stack.create" | "stack.detect" | "stack.restack" => self.run_stack_op(target, args),
             "plugin.list" => self.run_plugin_op(PluginOp::List, confirmed),
             "plugin.discover" => {
                 let registry_path = args.first().cloned();
@@ -1791,6 +1809,552 @@ impl ConsoleRunner {
         self.store
             .update_diff(render_text_diff(&format!("ops:{target}"), detail.clone()));
         Ok(detail.lines().next().unwrap_or(target).to_string())
+    }
+
+    fn run_workspace_op(
+        &mut self,
+        target: &str,
+        args: &[String],
+    ) -> Result<String, UserFacingError> {
+        let mut state = self.store.snapshot().workspace.clone();
+        match target {
+            "workspace.create" => {
+                let name = args
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "Default Workspace".to_string());
+                let id = unique_workspace_id(&state, &name);
+                state.workspaces.push(Workspace {
+                    id: id.clone(),
+                    name: name.clone(),
+                    repos: Vec::new(),
+                    groups: Vec::new(),
+                    last_opened_ms: current_millis(),
+                });
+                state.active_workspace_id = Some(id);
+                state.active_repo_id = None;
+                self.store.update_workspace_state(state);
+                self.persist_workspace_state()?;
+                Ok(format!("created workspace {name}"))
+            }
+            "workspace.add_repo" => {
+                let raw_path = args.first().ok_or_else(|| {
+                    invalid_input_error(
+                        "workspace.add_repo requires repository path: `run workspace.add_repo <path> [group]`",
+                    )
+                })?;
+                let repo_path = resolve_path(&self.config.cwd, raw_path);
+                let repo = git_service::repo_open(&repo_path).map_err(|err| {
+                    UserFacingError::with_category(
+                        "Workspace repo failed",
+                        "Could not open repository for workspace.",
+                        Some(format!("{err:?}")),
+                        ErrorCategory::Git,
+                    )
+                })?;
+                let root = PathBuf::from(repo.root);
+                let repo_record = workspace_repo_record(&root, args.get(1).cloned())?;
+                let workspace_idx = ensure_active_workspace(&mut state);
+                let workspace = &mut state.workspaces[workspace_idx];
+                if !workspace
+                    .repos
+                    .iter()
+                    .any(|item| item.repo_id == repo_record.repo_id)
+                {
+                    workspace.repos.push(repo_record.clone());
+                }
+                state.active_repo_id = Some(repo_record.repo_id.clone());
+                self.store.update_workspace_state(state);
+                self.persist_workspace_state()?;
+                Ok(format!("added workspace repo {}", root.display()))
+            }
+            "workspace.remove_repo" => {
+                let target_repo = args.first().ok_or_else(|| {
+                    invalid_input_error("workspace.remove_repo requires repo id or path")
+                })?;
+                let workspace_idx = active_workspace_index(&state).ok_or_else(|| {
+                    invalid_input_error("no active workspace; create one before removing repos")
+                })?;
+                let mut workspace = state.workspaces[workspace_idx].clone();
+                let before = workspace.repos.len();
+                workspace.repos.retain(|repo| {
+                    repo.repo_id != *target_repo
+                        && repo.path != *target_repo
+                        && repo.display_name != *target_repo
+                });
+                if before == workspace.repos.len() {
+                    return Err(invalid_input_error(
+                        "workspace repo was not found by id, path, or display name",
+                    ));
+                }
+                if state
+                    .active_repo_id
+                    .as_ref()
+                    .is_some_and(|id| !workspace.repos.iter().any(|repo| &repo.repo_id == id))
+                {
+                    state.active_repo_id = workspace.repos.first().map(|repo| repo.repo_id.clone());
+                }
+                state.workspaces[workspace_idx] = workspace;
+                self.store.update_workspace_state(state);
+                self.persist_workspace_state()?;
+                Ok(format!("removed workspace repo {target_repo}"))
+            }
+            "workspace.switch" => {
+                let workspace_id = args.first().cloned();
+                let idx = workspace_id
+                    .as_ref()
+                    .and_then(|value| find_workspace_index(&state, value))
+                    .or_else(|| (!state.workspaces.is_empty()).then_some(0))
+                    .ok_or_else(|| invalid_input_error("no workspace is available"))?;
+                state.workspaces[idx].last_opened_ms = current_millis();
+                state.active_workspace_id = Some(state.workspaces[idx].id.clone());
+                state.active_repo_id = state.workspaces[idx]
+                    .repos
+                    .first()
+                    .map(|repo| repo.repo_id.clone());
+                let name = state.workspaces[idx].name.clone();
+                self.store.update_workspace_state(state);
+                self.persist_workspace_state()?;
+                Ok(format!("workspace -> {name}"))
+            }
+            "workspace.switch_repo" => {
+                let target_repo = args.first().ok_or_else(|| {
+                    invalid_input_error(
+                        "workspace.switch_repo requires repo id, path, or display name",
+                    )
+                })?;
+                let (workspace_idx, repo) = find_workspace_repo(&state, target_repo)
+                    .ok_or_else(|| invalid_input_error("workspace repo was not found"))?;
+                state.active_workspace_id = Some(state.workspaces[workspace_idx].id.clone());
+                state.active_repo_id = Some(repo.repo_id.clone());
+                self.store.update_workspace_state(state);
+                self.persist_workspace_state()?;
+                let opened = self.open_repo(&repo.path)?;
+                Ok(format!("workspace repo -> {}; {opened}", repo.display_name))
+            }
+            "workspace.refresh_all" | "workspace.fetch_all" => {
+                let workspace_idx = active_workspace_index(&state).ok_or_else(|| {
+                    invalid_input_error("no active workspace; create one and add repos first")
+                })?;
+                let mut workspace = state.workspaces[workspace_idx].clone();
+                let mut results = Vec::new();
+                for repo in &mut workspace.repos {
+                    if target == "workspace.fetch_all" {
+                        let fetch = git_service::fetch_all(Path::new(&repo.path));
+                        results.push(WorkspaceJobResult {
+                            repo_id: repo.repo_id.clone(),
+                            op: "fetch_all".to_string(),
+                            success: fetch.is_ok(),
+                            message: fetch
+                                .map(|text| {
+                                    if text.is_empty() {
+                                        "fetch --all completed".to_string()
+                                    } else {
+                                        text
+                                    }
+                                })
+                                .unwrap_or_else(|err| format!("{err:?}")),
+                        });
+                    }
+                    match summarize_workspace_repo(Path::new(&repo.path)) {
+                        Ok((status, branch)) => {
+                            repo.status_summary = status;
+                            repo.branch_summary = branch;
+                            results.push(WorkspaceJobResult {
+                                repo_id: repo.repo_id.clone(),
+                                op: "refresh".to_string(),
+                                success: true,
+                                message: "refreshed".to_string(),
+                            });
+                        }
+                        Err(message) => {
+                            repo.status_summary.last_error = Some(message.clone());
+                            results.push(WorkspaceJobResult {
+                                repo_id: repo.repo_id.clone(),
+                                op: "refresh".to_string(),
+                                success: false,
+                                message,
+                            });
+                        }
+                    }
+                }
+                state.workspaces[workspace_idx] = workspace;
+                state.last_results = results;
+                self.store.update_workspace_state(state);
+                self.persist_workspace_state()?;
+                Ok(format!(
+                    "{} workspace repos",
+                    if target == "workspace.fetch_all" {
+                        "fetched"
+                    } else {
+                        "refreshed"
+                    }
+                ))
+            }
+            "workspace.persist" => {
+                let out_file = args
+                    .first()
+                    .map(|raw| resolve_path(&self.config.cwd, raw))
+                    .unwrap_or_else(|| workspace_store_path_for(&self.config.cwd));
+                self.persist_workspace_state_to(&out_file)?;
+                Ok(format!(
+                    "persisted workspace state to {}",
+                    out_file.display()
+                ))
+            }
+            "workspace.restore" => {
+                let in_file = args
+                    .first()
+                    .map(|raw| resolve_path(&self.config.cwd, raw))
+                    .unwrap_or_else(|| workspace_store_path_for(&self.config.cwd));
+                self.store.restore_workspaces(&in_file).map_err(|err| {
+                    UserFacingError::with_category(
+                        "Workspace restore failed",
+                        "Could not restore workspace state.",
+                        Some(err),
+                        ErrorCategory::System,
+                    )
+                })?;
+                Ok(format!(
+                    "restored workspace state from {}",
+                    in_file.display()
+                ))
+            }
+            _ => Err(invalid_input_error("unsupported workspace operation")),
+        }
+    }
+
+    fn run_pr_op(&mut self, target: &str, args: &[String]) -> Result<String, UserFacingError> {
+        let repo_dir = self.require_repo_dir()?;
+        match target {
+            "pr.detect_provider" => {
+                let (provider, _) = self.detect_provider_for_repo(&repo_dir)?;
+                self.store
+                    .update_pull_request_state(PullRequestStateSnapshot {
+                        detected_provider: Some(provider.clone()),
+                        ..self.store.snapshot().pull_requests.clone()
+                    });
+                Ok(format!(
+                    "detected {:?} provider at {}",
+                    provider.provider, provider.web_url
+                ))
+            }
+            "pr.list" => {
+                let (provider, _) = self.detect_provider_for_repo(&repo_dir)?;
+                let current = self.current_branch_pr_summary(&repo_dir, &provider, args)?;
+                self.store
+                    .update_pull_request_state(PullRequestStateSnapshot {
+                        detected_provider: Some(provider),
+                        pull_requests: current.iter().cloned().collect(),
+                        current_branch_pr: current,
+                        last_error: None,
+                    });
+                Ok("updated pull request foundation state".to_string())
+            }
+            "pr.create_url" => {
+                let (provider, _) = self.detect_provider_for_repo(&repo_dir)?;
+                let base = args.first().map(String::as_str).unwrap_or("main");
+                let head = args
+                    .get(1)
+                    .cloned()
+                    .or_else(|| {
+                        self.store
+                            .snapshot()
+                            .repo
+                            .as_ref()
+                            .and_then(|repo| repo.head.clone())
+                    })
+                    .ok_or_else(|| {
+                        invalid_input_error("pr.create_url requires head branch when detached")
+                    })?;
+                let title = args.get(2).map(|_| args[2..].join(" "));
+                let url = create_pull_request_url(&provider, base, &head, title.as_deref());
+                let summary = pull_request_summary_for_url(&provider, base, &head, url.clone());
+                self.store
+                    .update_pull_request_state(PullRequestStateSnapshot {
+                        detected_provider: Some(provider),
+                        pull_requests: vec![summary.clone()],
+                        current_branch_pr: Some(summary),
+                        last_error: None,
+                    });
+                self.store
+                    .update_diff(render_text_diff("pr:create_url", url.clone()));
+                Ok(url)
+            }
+            "pr.open" => {
+                let url = args
+                    .first()
+                    .cloned()
+                    .or_else(|| {
+                        self.store
+                            .snapshot()
+                            .pull_requests
+                            .current_branch_pr
+                            .as_ref()
+                            .and_then(|pr| pr.web_url.clone())
+                    })
+                    .ok_or_else(|| {
+                        invalid_input_error("pr.open requires a URL or current PR state")
+                    })?;
+                self.store
+                    .update_diff(render_text_diff("pr:open", format!("open {url}")));
+                Ok(format!("PR URL: {url}"))
+            }
+            "pr.checkout" => {
+                let number = args
+                    .first()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .ok_or_else(|| invalid_input_error("pr.checkout requires numeric PR/MR id"))?;
+                let local_branch = args
+                    .get(1)
+                    .cloned()
+                    .unwrap_or_else(|| format!("pr/{number}"));
+                let (provider, remote) = self.detect_provider_for_repo(&repo_dir)?;
+                git_service::checkout_pull_request(
+                    &repo_dir,
+                    map_provider_kind_for_git(&provider.provider),
+                    &remote,
+                    number,
+                    &local_branch,
+                )
+                .map_err(|err| {
+                    UserFacingError::with_category(
+                        "PR checkout failed",
+                        "Could not fetch and checkout pull request branch.",
+                        Some(format!("{err:?}")),
+                        ErrorCategory::Git,
+                    )
+                })?;
+                self.execute_in_open_repo("status.refresh", Vec::new(), false)?;
+                Ok(format!("checked out PR/MR {number} as {local_branch}"))
+            }
+            _ => Err(invalid_input_error("unsupported PR operation")),
+        }
+    }
+
+    fn run_stack_op(&mut self, target: &str, args: &[String]) -> Result<String, UserFacingError> {
+        let repo_dir = self.require_repo_dir()?;
+        match target {
+            "stack.create" => {
+                let name = args.first().cloned().ok_or_else(|| {
+                    invalid_input_error("stack.create requires name, base, and branches")
+                })?;
+                let base = args.get(1).cloned().ok_or_else(|| {
+                    invalid_input_error("stack.create requires base ref in args[1]")
+                })?;
+                let branches = args.get(2..).unwrap_or(&[]);
+                if branches.is_empty() {
+                    return Err(invalid_input_error(
+                        "stack.create requires at least one branch after the base",
+                    ));
+                }
+                let mut entries = Vec::new();
+                let mut parent = base;
+                for branch in branches {
+                    entries.push(build_stack_entry(&repo_dir, &parent, branch)?);
+                    parent = branch.clone();
+                }
+                let id = stack_id_for(&name);
+                let mut state = self.store.snapshot().branch_stacks.clone();
+                upsert_stack(
+                    &mut state,
+                    BranchStack {
+                        id: id.clone(),
+                        name: name.clone(),
+                        entries,
+                    },
+                );
+                state.active_stack_id = Some(id);
+                state.last_error = None;
+                self.store.update_branch_stack_state(state);
+                Ok(format!("created branch stack {name}"))
+            }
+            "stack.detect" => {
+                let base = args
+                    .first()
+                    .cloned()
+                    .or_else(|| {
+                        self.store
+                            .snapshot()
+                            .repo
+                            .as_ref()
+                            .and_then(|repo| repo.head.clone())
+                    })
+                    .unwrap_or_else(|| "main".to_string());
+                let mut entries = Vec::new();
+                for branch in git_service::list_local_branches(&repo_dir).map_err(|err| {
+                    UserFacingError::with_category(
+                        "Stack detection failed",
+                        "Could not list local branches.",
+                        Some(format!("{err:?}")),
+                        ErrorCategory::Git,
+                    )
+                })? {
+                    if branch.name == base {
+                        continue;
+                    }
+                    if let Ok(entry) = build_stack_entry(&repo_dir, &base, &branch.name)
+                        && entry.ahead > 0
+                    {
+                        entries.push(entry);
+                    }
+                }
+                entries.sort_by(|left, right| left.branch.cmp(&right.branch));
+                let name = format!("Detected from {base}");
+                let id = stack_id_for(&name);
+                let mut state = self.store.snapshot().branch_stacks.clone();
+                upsert_stack(
+                    &mut state,
+                    BranchStack {
+                        id: id.clone(),
+                        name: name.clone(),
+                        entries,
+                    },
+                );
+                state.active_stack_id = Some(id);
+                state.last_error = None;
+                self.store.update_branch_stack_state(state);
+                Ok(format!("detected branch stack {name}"))
+            }
+            "stack.restack" => {
+                if !git_service::worktree_is_clean(&repo_dir).unwrap_or(false) {
+                    return Err(UserFacingError::with_category(
+                        "Restack blocked",
+                        "Working tree must be clean before restacking.",
+                        None,
+                        ErrorCategory::Validation,
+                    ));
+                }
+                let state = self.store.snapshot().branch_stacks.clone();
+                let stack_id = args
+                    .first()
+                    .cloned()
+                    .or_else(|| state.active_stack_id.clone())
+                    .ok_or_else(|| invalid_input_error("stack.restack requires stack id"))?;
+                let stack = state
+                    .stacks
+                    .iter()
+                    .find(|stack| stack.id == stack_id || stack.name == stack_id)
+                    .cloned()
+                    .ok_or_else(|| invalid_input_error("branch stack was not found"))?;
+                for entry in &stack.entries {
+                    self.execute_in_open_repo(
+                        "stack.restack_branch",
+                        vec![entry.branch.clone(), entry.base_branch.clone()],
+                        false,
+                    )?;
+                }
+                let refreshed_entries = stack
+                    .entries
+                    .iter()
+                    .map(|entry| build_stack_entry(&repo_dir, &entry.base_branch, &entry.branch))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let mut refreshed_state = self.store.snapshot().branch_stacks.clone();
+                upsert_stack(
+                    &mut refreshed_state,
+                    BranchStack {
+                        id: stack.id.clone(),
+                        name: stack.name.clone(),
+                        entries: refreshed_entries,
+                    },
+                );
+                refreshed_state.active_stack_id = Some(stack.id.clone());
+                refreshed_state.last_error = None;
+                self.store.update_branch_stack_state(refreshed_state);
+                Ok(format!("restacked branch stack {}", stack.name))
+            }
+            _ => Err(invalid_input_error("unsupported stack operation")),
+        }
+    }
+
+    fn persist_workspace_state(&self) -> Result<(), UserFacingError> {
+        self.persist_workspace_state_to(&workspace_store_path_for(&self.config.cwd))
+    }
+
+    fn persist_workspace_state_to(&self, path: &Path) -> Result<(), UserFacingError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|err| {
+                UserFacingError::with_category(
+                    "Workspace persist failed",
+                    "Could not create workspace state directory.",
+                    Some(err.to_string()),
+                    ErrorCategory::System,
+                )
+            })?;
+        }
+        self.store.persist_workspaces(path).map_err(|err| {
+            UserFacingError::with_category(
+                "Workspace persist failed",
+                "Could not persist workspace state.",
+                Some(err),
+                ErrorCategory::System,
+            )
+        })
+    }
+
+    fn detect_provider_for_repo(
+        &self,
+        repo_dir: &Path,
+    ) -> Result<(ProviderRepository, String), UserFacingError> {
+        let remotes = git_service::remote_list(repo_dir).map_err(|err| {
+            UserFacingError::with_category(
+                "Provider detection failed",
+                "Could not list remotes.",
+                Some(format!("{err:?}")),
+                ErrorCategory::Git,
+            )
+        })?;
+        remotes
+            .iter()
+            .filter_map(|remote| {
+                remote
+                    .fetch_url
+                    .as_ref()
+                    .or(remote.push_url.as_ref())
+                    .and_then(|url| git_service::detect_remote_provider(url))
+                    .map(|provider| (map_provider_repository(provider), remote.name.clone()))
+            })
+            .find(|(provider, _)| provider.provider != state_store::ProviderKind::Unknown)
+            .or_else(|| {
+                remotes.iter().find_map(|remote| {
+                    remote
+                        .fetch_url
+                        .as_ref()
+                        .or(remote.push_url.as_ref())
+                        .and_then(|url| git_service::detect_remote_provider(url))
+                        .map(|provider| (map_provider_repository(provider), remote.name.clone()))
+                })
+            })
+            .ok_or_else(|| {
+                invalid_input_error("no GitHub/GitLab-style remote URL detected for this repo")
+            })
+    }
+
+    fn current_branch_pr_summary(
+        &self,
+        repo_dir: &Path,
+        provider: &ProviderRepository,
+        args: &[String],
+    ) -> Result<Option<PullRequestSummary>, UserFacingError> {
+        let head = self
+            .store
+            .snapshot()
+            .repo
+            .as_ref()
+            .and_then(|repo| repo.head.clone())
+            .or_else(|| {
+                git_service::upstream_status(repo_dir)
+                    .ok()
+                    .and_then(|s| s.current_branch)
+            });
+        let Some(head) = head else {
+            return Ok(None);
+        };
+        let base = args.first().map(String::as_str).unwrap_or("main");
+        let url = create_pull_request_url(provider, base, &head, None);
+        Ok(Some(pull_request_summary_for_url(
+            provider, base, &head, url,
+        )))
     }
 
     fn run_plugin_op(&mut self, op: PluginOp, confirmed: bool) -> Result<String, UserFacingError> {
@@ -2783,6 +3347,310 @@ fn looks_like_path_arg(arg: &str) -> bool {
     arg.contains('/') || arg.contains('.') || arg.starts_with("./")
 }
 
+fn workspace_store_path_for(cwd: &Path) -> PathBuf {
+    cwd.join("target/tmp/branchforge-workspaces.json")
+}
+
+fn current_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn unique_workspace_id(state: &WorkspaceState, name: &str) -> String {
+    let base = slug_identifier("workspace", name);
+    if !state
+        .workspaces
+        .iter()
+        .any(|workspace| workspace.id == base)
+    {
+        return base;
+    }
+    let mut idx = 2usize;
+    loop {
+        let candidate = format!("{base}-{idx}");
+        if !state
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.id == candidate)
+        {
+            return candidate;
+        }
+        idx += 1;
+    }
+}
+
+fn stack_id_for(name: &str) -> String {
+    slug_identifier("stack", name)
+}
+
+fn slug_identifier(prefix: &str, value: &str) -> String {
+    let slug = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if slug.is_empty() {
+        prefix.to_string()
+    } else {
+        format!("{prefix}-{slug}")
+    }
+}
+
+fn ensure_active_workspace(state: &mut WorkspaceState) -> usize {
+    if let Some(idx) = active_workspace_index(state) {
+        return idx;
+    }
+    if state.workspaces.is_empty() {
+        state.workspaces.push(Workspace {
+            id: "workspace-default".to_string(),
+            name: "Default Workspace".to_string(),
+            repos: Vec::new(),
+            groups: Vec::new(),
+            last_opened_ms: current_millis(),
+        });
+    }
+    state.active_workspace_id = Some(state.workspaces[0].id.clone());
+    0
+}
+
+fn active_workspace_index(state: &WorkspaceState) -> Option<usize> {
+    state
+        .active_workspace_id
+        .as_ref()
+        .and_then(|id| find_workspace_index(state, id))
+        .or_else(|| (!state.workspaces.is_empty()).then_some(0))
+}
+
+fn find_workspace_index(state: &WorkspaceState, value: &str) -> Option<usize> {
+    state
+        .workspaces
+        .iter()
+        .position(|workspace| workspace.id == value || workspace.name == value)
+}
+
+fn find_workspace_repo(state: &WorkspaceState, value: &str) -> Option<(usize, WorkspaceRepo)> {
+    state
+        .workspaces
+        .iter()
+        .enumerate()
+        .find_map(|(workspace_idx, workspace)| {
+            workspace
+                .repos
+                .iter()
+                .find(|repo| {
+                    repo.repo_id == value || repo.path == value || repo.display_name == value
+                })
+                .cloned()
+                .map(|repo| (workspace_idx, repo))
+        })
+}
+
+fn workspace_repo_record(
+    root: &Path,
+    group_id: Option<String>,
+) -> Result<WorkspaceRepo, UserFacingError> {
+    let (status_summary, branch_summary) =
+        summarize_workspace_repo(root).unwrap_or_else(|message| {
+            (
+                RepoStatusSummary {
+                    last_error: Some(message),
+                    ..RepoStatusSummary::default()
+                },
+                RepoBranchSummary::default(),
+            )
+        });
+    let display_name = root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("repository")
+        .to_string();
+    let path = root.to_string_lossy().to_string();
+    Ok(WorkspaceRepo {
+        repo_id: path.clone(),
+        path,
+        display_name,
+        group_id,
+        status_summary,
+        branch_summary,
+    })
+}
+
+fn summarize_workspace_repo(path: &Path) -> Result<(RepoStatusSummary, RepoBranchSummary), String> {
+    let repo = git_service::repo_open(path).map_err(|err| format!("{err:?}"))?;
+    let status = git_service::status_refresh(path).map_err(|err| format!("{err:?}"))?;
+    let upstream = git_service::upstream_status(path).unwrap_or_default();
+    Ok((
+        RepoStatusSummary {
+            dirty: !status.staged.is_empty()
+                || !status.unstaged.is_empty()
+                || !status.untracked.is_empty()
+                || repo.conflict_state.is_some(),
+            staged: status.staged.len(),
+            unstaged: status.unstaged.len(),
+            untracked: status.untracked.len(),
+            conflicts: repo.conflict_state.is_some(),
+            detached: repo.detached,
+            last_error: None,
+        },
+        RepoBranchSummary {
+            current_branch: upstream.current_branch.or(repo.head),
+            upstream: upstream.upstream,
+            ahead: upstream.ahead,
+            behind: upstream.behind,
+        },
+    ))
+}
+
+fn map_provider_repository(provider: git_service::ProviderRepository) -> ProviderRepository {
+    ProviderRepository {
+        provider: match provider.provider {
+            git_service::ProviderKind::GitHub => state_store::ProviderKind::GitHub,
+            git_service::ProviderKind::GitLab => state_store::ProviderKind::GitLab,
+            git_service::ProviderKind::Unknown => state_store::ProviderKind::Unknown,
+        },
+        host: provider.host,
+        owner: provider.owner,
+        repo: provider.repo,
+        web_url: provider.web_url,
+    }
+}
+
+fn map_provider_kind_for_git(provider: &state_store::ProviderKind) -> git_service::ProviderKind {
+    match provider {
+        state_store::ProviderKind::GitHub => git_service::ProviderKind::GitHub,
+        state_store::ProviderKind::GitLab => git_service::ProviderKind::GitLab,
+        state_store::ProviderKind::Unknown => git_service::ProviderKind::Unknown,
+    }
+}
+
+fn create_pull_request_url(
+    provider: &ProviderRepository,
+    base: &str,
+    head: &str,
+    title: Option<&str>,
+) -> String {
+    match provider.provider {
+        state_store::ProviderKind::GitHub => {
+            let mut url = format!("{}/compare/{base}...{head}?expand=1", provider.web_url);
+            if let Some(title) = title.filter(|title| !title.trim().is_empty()) {
+                url.push_str("&title=");
+                url.push_str(&url_query_escape(title));
+            }
+            url
+        }
+        state_store::ProviderKind::GitLab => {
+            let mut url = format!(
+                "{}/-/merge_requests/new?merge_request[source_branch]={}&merge_request[target_branch]={}",
+                provider.web_url,
+                url_query_escape(head),
+                url_query_escape(base)
+            );
+            if let Some(title) = title.filter(|title| !title.trim().is_empty()) {
+                url.push_str("&merge_request[title]=");
+                url.push_str(&url_query_escape(title));
+            }
+            url
+        }
+        state_store::ProviderKind::Unknown => {
+            format!("{}/compare/{base}...{head}", provider.web_url)
+        }
+    }
+}
+
+fn url_query_escape(value: &str) -> String {
+    let mut escaped = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            escaped.push(byte as char);
+        } else {
+            escaped.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    escaped
+}
+
+fn pull_request_summary_for_url(
+    provider: &ProviderRepository,
+    base: &str,
+    head: &str,
+    url: String,
+) -> PullRequestSummary {
+    PullRequestSummary {
+        provider: provider.provider.clone(),
+        repo: format!("{}/{}", provider.owner, provider.repo),
+        number: 0,
+        title: format!("Create PR for {head}"),
+        author: "local".to_string(),
+        source_branch: head.to_string(),
+        target_branch: base.to_string(),
+        state: PullRequestState::Draft,
+        checks: vec![state_store::CheckSummary {
+            name: "provider-api".to_string(),
+            status: CheckStatus::Pending,
+            detail: Some(
+                "Provider API foundation is ready; token-backed listing is pending.".to_string(),
+            ),
+        }],
+        review_state: Some(ReviewState::ReviewRequired),
+        web_url: Some(url),
+    }
+}
+
+fn build_stack_entry(
+    repo_dir: &Path,
+    base_branch: &str,
+    branch: &str,
+) -> Result<BranchStackEntry, UserFacingError> {
+    let head_oid = git_service::resolve_ref_oid(repo_dir, branch).map_err(|err| {
+        UserFacingError::with_category(
+            "Stack branch failed",
+            "Could not resolve stack branch.",
+            Some(format!("{err:?}")),
+            ErrorCategory::Git,
+        )
+    })?;
+    let compare = git_service::compare_refs(repo_dir, base_branch, branch, 50).map_err(|err| {
+        UserFacingError::with_category(
+            "Stack comparison failed",
+            "Could not compare stack branch with its base.",
+            Some(format!("{err:?}")),
+            ErrorCategory::Git,
+        )
+    })?;
+    Ok(BranchStackEntry {
+        branch: branch.to_string(),
+        base_branch: base_branch.to_string(),
+        head_oid,
+        upstream_pr: None,
+        status: if compare.behind > 0 {
+            StackEntryStatus::NeedsRestack
+        } else {
+            StackEntryStatus::Clean
+        },
+        ahead: compare.ahead,
+        behind: compare.behind,
+    })
+}
+
+fn upsert_stack(state: &mut BranchStackState, stack: BranchStack) {
+    if let Some(existing) = state.stacks.iter_mut().find(|item| item.id == stack.id) {
+        *existing = stack;
+    } else {
+        state.stacks.push(stack);
+    }
+}
+
 fn impact(level: ImpactLevel, summary: impl Into<String>) -> ImpactSummary {
     ImpactSummary {
         level,
@@ -2924,6 +3792,32 @@ pub fn explain_template_for_action(action_id: &str) -> Option<ExplainTemplate> {
             &["Remote history can be rewritten for collaborators if the lease matches."],
             &[
                 "Fetch first, inspect ahead/behind counts, and recover local refs from the journal or reflog.",
+            ],
+        ),
+        "workspace.fetch_all" => explain(
+            action_id,
+            "This fetches every repository in the active workspace.",
+            &["git fetch --all"],
+            &["Each repository can prompt for credentials or fail independently."],
+            &["Review per-repository workspace results before pulling or rebasing."],
+        ),
+        "pr.checkout" => explain(
+            action_id,
+            "This fetches a provider pull request ref into a local branch and checks it out.",
+            &[
+                "git fetch <remote> pull/<number>/head:<branch>",
+                "git checkout <branch>",
+            ],
+            &["The working tree and current branch change; provider refs require network access."],
+            &["Return to the previous branch or use reflog if checkout was not intended."],
+        ),
+        "stack.restack" | "stack.restack_branch" => explain(
+            action_id,
+            "This rebases stack branches onto their configured parent branches.",
+            &["git checkout <branch>", "git rebase <base>"],
+            &["Stack branch history is rewritten and conflicts can interrupt the sequence."],
+            &[
+                "Each branch restack is journaled with a backup ref so the previous branch tip can be recovered.",
             ],
         ),
         "file.discard" | "file.discard_hunk" | "file.discard_lines" => explain(
@@ -3482,6 +4376,160 @@ fn host_plugin_action_specs() -> Vec<ActionSpec> {
             ConfirmPolicy::Never,
         ),
         host_action_spec(
+            "workspace.create",
+            "Create Workspace",
+            Some("always"),
+            None,
+            ActionEffects::default(),
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "workspace.add_repo",
+            "Add Repo To Workspace",
+            Some("always"),
+            Some(DangerLevel::Low),
+            ActionEffects {
+                danger_level: DangerLevel::Low,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "workspace.remove_repo",
+            "Remove Repo From Workspace",
+            Some("always"),
+            Some(DangerLevel::Medium),
+            ActionEffects {
+                danger_level: DangerLevel::Medium,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::OnDanger,
+        ),
+        host_action_spec(
+            "workspace.switch",
+            "Switch Workspace",
+            Some("always"),
+            None,
+            ActionEffects::read_only(),
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "workspace.switch_repo",
+            "Switch Workspace Repo",
+            Some("always"),
+            None,
+            ActionEffects::read_only(),
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "workspace.refresh_all",
+            "Refresh Workspace Repos",
+            Some("always"),
+            None,
+            ActionEffects::read_only(),
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "workspace.fetch_all",
+            "Fetch Workspace Repos",
+            Some("always"),
+            Some(DangerLevel::Low),
+            ActionEffects {
+                network: true,
+                danger_level: DangerLevel::Low,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "pr.detect_provider",
+            "Detect PR Provider",
+            Some("repo.is_open"),
+            None,
+            ActionEffects::read_only(),
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "pr.list",
+            "List Pull Requests",
+            Some("repo.is_open"),
+            None,
+            ActionEffects::read_only(),
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "pr.create_url",
+            "Create Pull Request URL",
+            Some("repo.is_open"),
+            None,
+            ActionEffects::read_only(),
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "pr.open",
+            "Open Pull Request",
+            Some("repo.is_open"),
+            None,
+            ActionEffects::read_only(),
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "pr.checkout",
+            "Checkout Pull Request",
+            Some("repo.is_open"),
+            Some(DangerLevel::Medium),
+            ActionEffects {
+                writes_refs: true,
+                writes_worktree: true,
+                network: true,
+                danger_level: DangerLevel::Medium,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::OnDanger,
+        ),
+        host_action_spec(
+            "stack.create",
+            "Create Branch Stack",
+            Some("repo.is_open"),
+            None,
+            ActionEffects::read_only(),
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "stack.detect",
+            "Detect Branch Stack",
+            Some("repo.is_open"),
+            None,
+            ActionEffects::read_only(),
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "stack.restack",
+            "Restack Branch Stack",
+            Some("repo.is_open"),
+            Some(DangerLevel::High),
+            ActionEffects {
+                writes_refs: true,
+                writes_worktree: true,
+                danger_level: DangerLevel::High,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::Always,
+        ),
+        host_action_spec(
+            "stack.restack_branch",
+            "Restack Single Branch",
+            Some("repo.is_open"),
+            Some(DangerLevel::High),
+            ActionEffects {
+                writes_refs: true,
+                writes_worktree: true,
+                danger_level: DangerLevel::High,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::Always,
+        ),
+        host_action_spec(
             "journal.restore_ref",
             "Restore Ref From Journal",
             Some("repo.is_open"),
@@ -3848,6 +4896,29 @@ fn ops_text() -> String {
         "remote.push_force_with_lease [remote] [branch]",
         "remote.branch_list",
         "",
+        "[workspaces]",
+        "workspace.create [name]",
+        "workspace.add_repo <path> [group]",
+        "workspace.remove_repo <repo_id|path|name>",
+        "workspace.switch [workspace_id|name]",
+        "workspace.switch_repo <repo_id|path|name>",
+        "workspace.refresh_all",
+        "workspace.fetch_all",
+        "workspace.persist [out_file]",
+        "workspace.restore [in_file]",
+        "",
+        "[pull-requests]",
+        "pr.detect_provider",
+        "pr.list [base_branch]",
+        "pr.create_url [base_branch] [head_branch] [title...]",
+        "pr.open [url]",
+        "pr.checkout <number> [local_branch]",
+        "",
+        "[branch-stacks]",
+        "stack.create <name> <base_ref> <branch...>",
+        "stack.detect [base_ref]",
+        "stack.restack <stack_id|name>",
+        "",
         "[history]",
         "history.page <offset> <limit> [author] [text] [hash_prefix]",
         "history.load_more",
@@ -4095,6 +5166,12 @@ fn lock_for_op(op: &str, _args: &[String]) -> Result<JobLock, UserFacingError> {
         | "diagnostics.lfs_status"
         | "remote.refresh"
         | "remote.branch_list"
+        | "pr.detect_provider"
+        | "pr.list"
+        | "pr.create_url"
+        | "pr.open"
+        | "stack.create"
+        | "stack.detect"
         | "diff.worktree"
         | "diff.index"
         | "diff.commit"
@@ -4150,6 +5227,8 @@ fn lock_for_op(op: &str, _args: &[String]) -> Result<JobLock, UserFacingError> {
         | "remote.add"
         | "remote.remove"
         | "remote.rename"
+        | "stack.restack"
+        | "stack.restack_branch"
         | "file.discard"
         | "conflict.continue"
         | "conflict.abort"
@@ -4253,6 +5332,7 @@ fn is_supported_direct_op(op: &str) -> bool {
             | "remote.push_set_upstream"
             | "remote.push_force_with_lease"
             | "remote.branch_list"
+            | "stack.restack_branch"
             | "journal.open_entry"
             | "journal.copy_details"
             | "journal.export"
@@ -4946,6 +6026,9 @@ mod tests {
         assert!(ops.contains("history.search <author> <text> [hash_prefix]"));
         assert!(ops.contains("remote.fetch_all"));
         assert!(ops.contains("remote.push_force_with_lease [remote] [branch]"));
+        assert!(ops.contains("workspace.add_repo <path> [group]"));
+        assert!(ops.contains("pr.create_url [base_branch] [head_branch] [title...]"));
+        assert!(ops.contains("stack.restack <stack_id|name>"));
         assert!(ops.contains("commit.amend <message>"));
         assert!(ops.contains("stash.list"));
         assert!(ops.contains("worktree.create <path> <branch>"));
@@ -4973,6 +6056,194 @@ mod tests {
         assert!(ops.contains("verify.sprint22"));
         assert!(ops.contains("verify.sprint23 [out_dir]"));
         assert!(ops.contains("verify.sprint24 [out_dir] [channel] [rollback_from]"));
+    }
+
+    #[test]
+    fn workspace_ops_persist_and_refresh_repo_summaries() {
+        let root = unique_temp_dir("workspace-ops");
+        let repo_dir = root.join("repo");
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+        assert!(std::fs::write(repo_dir.join("README.md"), "base\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["README.md".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "base").is_ok());
+
+        let mut runner = ConsoleRunner::new(test_config(&root));
+        assert!(
+            runner
+                .execute(ConsoleCommand::Run {
+                    target: "workspace.create".to_string(),
+                    args: vec!["Team".to_string()],
+                    confirmed: false,
+                })
+                .is_ok()
+        );
+        assert!(
+            runner
+                .execute(ConsoleCommand::Run {
+                    target: "workspace.add_repo".to_string(),
+                    args: vec![repo_dir.to_string_lossy().to_string()],
+                    confirmed: false,
+                })
+                .is_ok()
+        );
+        assert!(
+            runner
+                .execute(ConsoleCommand::Run {
+                    target: "workspace.refresh_all".to_string(),
+                    args: Vec::new(),
+                    confirmed: false,
+                })
+                .is_ok()
+        );
+        let snapshot = runner.store.snapshot();
+        assert_eq!(snapshot.workspace.workspaces.len(), 1);
+        assert_eq!(snapshot.workspace.workspaces[0].repos.len(), 1);
+        assert!(
+            !snapshot.workspace.workspaces[0].repos[0]
+                .status_summary
+                .dirty
+        );
+        assert!(workspace_store_path_for(&root).exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pr_ops_detect_provider_and_create_provider_url() {
+        let root = unique_temp_dir("pr-ops");
+        let repo_dir = root.join("repo");
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+        assert!(std::fs::write(repo_dir.join("README.md"), "base\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["README.md".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "base").is_ok());
+        assert!(
+            git_service::remote_add(
+                &repo_dir,
+                "origin",
+                "https://github.com/branchforge/app.git"
+            )
+            .is_ok()
+        );
+
+        let mut runner = ConsoleRunner::new(test_config(&root));
+        assert!(
+            runner
+                .execute(ConsoleCommand::Open {
+                    path: repo_dir.to_string_lossy().to_string(),
+                })
+                .is_ok()
+        );
+        let created = runner
+            .execute(ConsoleCommand::Run {
+                target: "pr.create_url".to_string(),
+                args: vec![
+                    "main".to_string(),
+                    "feature/collab".to_string(),
+                    "Collaboration".to_string(),
+                    "Layer".to_string(),
+                ],
+                confirmed: false,
+            })
+            .expect("create pr url");
+        let message = created.message.unwrap_or_default();
+        assert!(
+            message.contains("https://github.com/branchforge/app/compare/main...feature/collab")
+        );
+        assert_eq!(
+            runner
+                .store
+                .snapshot()
+                .pull_requests
+                .detected_provider
+                .as_ref()
+                .map(|provider| provider.provider.clone()),
+            Some(state_store::ProviderKind::GitHub)
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn branch_stack_ops_create_detect_and_journal_restack() {
+        let root = unique_temp_dir("stack-ops");
+        let repo_dir = root.join("repo");
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+        assert!(std::fs::write(repo_dir.join("README.md"), "base\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["README.md".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "base").is_ok());
+        let base = git_service::run_git(&repo_dir, &["branch", "--show-current"])
+            .ok()
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty())
+            .unwrap_or_else(|| "master".to_string());
+        assert!(git_service::create_branch(&repo_dir, "feature/stack").is_ok());
+        assert!(git_service::checkout_branch(&repo_dir, "feature/stack").is_ok());
+        assert!(std::fs::write(repo_dir.join("stack.txt"), "stack\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["stack.txt".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "stack change").is_ok());
+        assert!(git_service::checkout_branch(&repo_dir, &base).is_ok());
+
+        let mut runner = ConsoleRunner::new(test_config(&root));
+        assert!(
+            runner
+                .execute(ConsoleCommand::Open {
+                    path: repo_dir.to_string_lossy().to_string(),
+                })
+                .is_ok()
+        );
+        assert!(
+            runner
+                .execute(ConsoleCommand::Run {
+                    target: "stack.create".to_string(),
+                    args: vec![
+                        "Demo".to_string(),
+                        base.clone(),
+                        "feature/stack".to_string()
+                    ],
+                    confirmed: false,
+                })
+                .is_ok()
+        );
+        assert_eq!(
+            runner.store.snapshot().branch_stacks.stacks[0].entries[0].ahead,
+            1
+        );
+        assert!(
+            runner
+                .execute(ConsoleCommand::Run {
+                    target: "stack.restack".to_string(),
+                    args: vec!["stack-demo".to_string()],
+                    confirmed: true,
+                })
+                .is_ok()
+        );
+        assert!(
+            runner
+                .store
+                .snapshot()
+                .journal
+                .entries
+                .iter()
+                .any(|entry| entry.op == "stack.restack_branch")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

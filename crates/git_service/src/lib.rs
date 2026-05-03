@@ -2425,6 +2425,37 @@ pub fn detect_remote_provider(url: &str) -> Option<ProviderRepository> {
     parse_remote_provider_url(url)
 }
 
+pub fn checkout_pull_request(
+    cwd: &Path,
+    provider: ProviderKind,
+    remote: &str,
+    number: u64,
+    local_branch: &str,
+) -> Result<(), GitServiceError> {
+    if number == 0 {
+        return Err(GitServiceError::ParseError(
+            "pull request number must be greater than zero".to_string(),
+        ));
+    }
+    if local_branch.trim().is_empty() {
+        return Err(GitServiceError::ParseError(
+            "local branch name cannot be empty".to_string(),
+        ));
+    }
+    let source_ref = match provider {
+        ProviderKind::GitHub => format!("pull/{number}/head:{local_branch}"),
+        ProviderKind::GitLab => format!("merge-requests/{number}/head:{local_branch}"),
+        ProviderKind::Unknown => {
+            return Err(GitServiceError::ParseError(
+                "pull request checkout requires a GitHub or GitLab remote".to_string(),
+            ));
+        }
+    };
+    let _ = run_git(cwd, &["fetch", remote, &source_ref])?;
+    let _ = run_git(cwd, &["checkout", local_branch])?;
+    Ok(())
+}
+
 pub fn worktree_is_clean(cwd: &Path) -> Result<bool, GitServiceError> {
     let out = run_git(cwd, &["status", "--porcelain"])?;
     Ok(out.stdout.is_empty())
@@ -2433,6 +2464,21 @@ pub fn worktree_is_clean(cwd: &Path) -> Result<bool, GitServiceError> {
 pub fn checkout_branch(cwd: &Path, name: &str) -> Result<(), GitServiceError> {
     let _ = run_git(cwd, &["checkout", name])?;
     Ok(())
+}
+
+pub fn rebase_branch_onto(cwd: &Path, branch: &str, new_base: &str) -> Result<(), GitServiceError> {
+    if branch.trim().is_empty() || new_base.trim().is_empty() {
+        return Err(GitServiceError::ParseError(
+            "stack restack requires branch and base".to_string(),
+        ));
+    }
+    let original_branch = current_branch(cwd).ok();
+    checkout_branch(cwd, branch)?;
+    let result = run_git(cwd, &["rebase", new_base]).map(|_| ());
+    if let Some(original_branch) = original_branch.filter(|name| name != branch) {
+        let _ = checkout_branch(cwd, &original_branch);
+    }
+    result
 }
 
 pub fn create_branch(cwd: &Path, name: &str) -> Result<(), GitServiceError> {
