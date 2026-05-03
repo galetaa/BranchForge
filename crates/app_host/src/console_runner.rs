@@ -2762,6 +2762,41 @@ pub fn explain_template_for_action(action_id: &str) -> Option<ExplainTemplate> {
                 "Use the operation journal backup ref or reflog for committed work; stash or patch snapshots are needed for uncommitted work.",
             ],
         ),
+        "commit.create" => explain(
+            action_id,
+            "This creates a new commit from the staged index.",
+            &["git commit -m <message>"],
+            &["The commit records exactly what is staged; unstaged changes are left out."],
+            &["Use revert for published commits or reset/reflog for local-only history recovery."],
+        ),
+        "commit.amend" => explain(
+            action_id,
+            "This replaces the latest commit with a new commit using the staged index and message.",
+            &["git commit --amend"],
+            &["The previous commit hash is replaced; published history may need coordination."],
+            &["Restore the previous HEAD from the operation journal or reflog."],
+        ),
+        "branch.checkout" => explain(
+            action_id,
+            "This switches the working tree and index to another branch.",
+            &["git checkout <branch>"],
+            &["Dirty files can block checkout or be affected by branch content changes."],
+            &["Return to the previous branch or use reflog for recent branch movements."],
+        ),
+        "branch.create" => explain(
+            action_id,
+            "This creates a new branch ref.",
+            &["git branch <name> [base]"],
+            &["Creating from the wrong base can start work from an unintended commit."],
+            &["Delete or rename the branch, or recreate it from the intended base."],
+        ),
+        "branch.rename" => explain(
+            action_id,
+            "This renames a local branch ref.",
+            &["git branch -m <old> <new>"],
+            &["Automation or remotes may still refer to the old branch name."],
+            &["Rename back or recreate the old branch from the journal snapshot."],
+        ),
         "branch.delete" => explain(
             action_id,
             "This removes a local branch ref.",
@@ -2776,6 +2811,15 @@ pub fn explain_template_for_action(action_id: &str) -> Option<ExplainTemplate> {
             &["Deleted tags no longer protect or name the tagged object."],
             &["Restore the tag ref from the operation journal backup ref if available."],
         ),
+        "tag.checkout" => explain(
+            action_id,
+            "This checks out a tag and usually leaves the repository in detached HEAD state.",
+            &["git checkout <tag>"],
+            &[
+                "New commits made from detached HEAD can become hard to find unless a branch is created.",
+            ],
+            &["Create a branch from the detached commit or use reflog to recover work."],
+        ),
         "file.discard" | "file.discard_hunk" | "file.discard_lines" => explain(
             action_id,
             "This discards selected working tree changes.",
@@ -2785,40 +2829,20 @@ pub fn explain_template_for_action(action_id: &str) -> Option<ExplainTemplate> {
                 "Recover from a patch snapshot when available; otherwise inspect editor history or filesystem backups.",
             ],
         ),
-        "merge.execute" => explain(
+        "stash.create" => explain(
             action_id,
-            "This merges the selected source ref into the current branch.",
-            &["git merge <source>"],
-            &["Conflicts may stop the merge; a merge commit can change branch history."],
-            &["Abort an active merge or restore the pre-merge branch tip from the journal."],
+            "This saves local work as a stash entry and cleans the working tree.",
+            &["git stash push --include-untracked"],
+            &["Untracked and staged context moves into the stash entry."],
+            &["Apply or pop the stash later; inspect stash reflog if an entry is lost."],
         ),
-        "merge.abort" => explain(
+        "stash.apply" => explain(
             action_id,
-            "This aborts the active merge session.",
-            &["git merge --abort"],
-            &["Conflict resolution edits made during the merge can be overwritten."],
+            "This applies a stash entry to the working tree without dropping it.",
+            &["git stash apply <stash>"],
+            &["Overlapping changes can conflict."],
             &[
-                "Use the journal or reflog if the abort does not return the repository to the expected state.",
-            ],
-        ),
-        "rebase.execute" | "rebase.interactive" => explain(
-            action_id,
-            "This rewrites selected commits on top of the chosen base. Commit hashes will change.",
-            &["git rebase -i <base>"],
-            &[
-                "Published history may require force push coordination; conflicts can pause the rebase.",
-            ],
-            &[
-                "Abort while active, or create a recovery branch from the backup ref after completion.",
-            ],
-        ),
-        "rebase.abort" => explain(
-            action_id,
-            "This aborts the active rebase session.",
-            &["git rebase --abort"],
-            &["Conflict resolution edits made during the rebase can be overwritten."],
-            &[
-                "Use the journal backup ref or reflog if the abort cannot restore the expected branch tip.",
+                "Abort by resolving or resetting affected files, then inspect the journal if needed.",
             ],
         ),
         "stash.pop" => explain(
@@ -2838,6 +2862,118 @@ pub fn explain_template_for_action(action_id: &str) -> Option<ExplainTemplate> {
             &["git stash drop <stash>"],
             &["Dropped stash entries are not shown in the stash list."],
             &["Use reflog entries for stash refs when available."],
+        ),
+        "worktree.create" => explain(
+            action_id,
+            "This creates an additional working tree for a branch.",
+            &["git worktree add <path> <branch>"],
+            &["A new checkout path is created on disk."],
+            &["Remove the worktree when finished; the main repository refs remain recoverable."],
+        ),
+        "worktree.remove" => explain(
+            action_id,
+            "This removes a linked working tree path.",
+            &["git worktree remove <path>"],
+            &["Uncommitted files in that worktree can be lost."],
+            &["Inspect or stash the linked worktree before removal."],
+        ),
+        "submodule.init_update" => explain(
+            action_id,
+            "This initializes or updates submodule checkouts.",
+            &["git submodule update --init --recursive"],
+            &["Submodule working trees can change on disk and may require network access."],
+            &["Use submodule status and reflog inside the submodule for recovery."],
+        ),
+        "merge.execute" => explain(
+            action_id,
+            "This merges the selected source ref into the current branch.",
+            &["git merge <source>"],
+            &["Conflicts may stop the merge; a merge commit can change branch history."],
+            &["Abort an active merge or restore the pre-merge branch tip from the journal."],
+        ),
+        "merge.abort" => explain(
+            action_id,
+            "This aborts the active merge session.",
+            &["git merge --abort"],
+            &["Conflict resolution edits made during the merge can be overwritten."],
+            &[
+                "Use the journal or reflog if the abort does not return the repository to the expected state.",
+            ],
+        ),
+        "rebase.plan.create" => explain(
+            action_id,
+            "This prepares an interactive rebase plan for review.",
+            &["git log <base>..HEAD"],
+            &["Choosing the wrong base can select an unintended commit range."],
+            &["Clear the plan or regenerate it from the intended base."],
+        ),
+        "rebase.execute" | "rebase.interactive" => explain(
+            action_id,
+            "This rewrites selected commits on top of the chosen base. Commit hashes will change.",
+            &["git rebase -i <base>"],
+            &[
+                "Published history may require force push coordination; conflicts can pause the rebase.",
+            ],
+            &[
+                "Abort while active, or create a recovery branch from the backup ref after completion.",
+            ],
+        ),
+        "rebase.continue" => explain(
+            action_id,
+            "This continues an active rebase after conflicts or edit steps.",
+            &["git rebase --continue"],
+            &["Continuing records the current index as the next rewritten commit."],
+            &["Abort while active or restore from the pre-rebase backup branch afterward."],
+        ),
+        "rebase.skip" => explain(
+            action_id,
+            "This skips the current commit during an active rebase.",
+            &["git rebase --skip"],
+            &["Skipping drops the current commit from the rebased history."],
+            &[
+                "Restore from the pre-rebase backup branch or reflog if the skipped commit is needed.",
+            ],
+        ),
+        "rebase.abort" => explain(
+            action_id,
+            "This aborts the active rebase session.",
+            &["git rebase --abort"],
+            &["Conflict resolution edits made during the rebase can be overwritten."],
+            &[
+                "Use the journal backup ref or reflog if the abort cannot restore the expected branch tip.",
+            ],
+        ),
+        "conflict.resolve.ours" => explain(
+            action_id,
+            "This resolves selected conflicted files by taking our side.",
+            &["git checkout --ours -- <path>", "git add <path>"],
+            &["The other side of the conflict is discarded for those files."],
+            &["Use the operation journal and file history to inspect or redo resolution choices."],
+        ),
+        "conflict.resolve.theirs" => explain(
+            action_id,
+            "This resolves selected conflicted files by taking their side.",
+            &["git checkout --theirs -- <path>", "git add <path>"],
+            &["Your side of the conflict is discarded for those files."],
+            &["Use the operation journal and file history to inspect or redo resolution choices."],
+        ),
+        "conflict.mark_resolved" => explain(
+            action_id,
+            "This stages selected conflicted files as resolved.",
+            &["git add <path>"],
+            &["Unresolved markers can be committed if the file was not inspected."],
+            &["Use diff and conflict marker checks before continuing."],
+        ),
+        "conflict.continue" => explain(
+            action_id,
+            "This continues the active merge, rebase, or cherry-pick after conflicts are resolved.",
+            &[
+                "git merge --continue",
+                "git rebase --continue",
+                "git cherry-pick --continue",
+            ],
+            &["Continuing with unresolved files can fail or record an unintended resolution."],
+            &["Use abort while the session is active, or journal backup refs afterward."],
         ),
         "conflict.abort" => explain(
             action_id,
@@ -2863,6 +2999,41 @@ pub fn explain_template_for_action(action_id: &str) -> Option<ExplainTemplate> {
             &["git revert --no-edit <commit>"],
             &["Conflicts may pause the revert; merge commits require extra parent selection."],
             &["Abort an active revert/cherry-pick session or revert the revert commit."],
+        ),
+        "journal.clear_old_entries" => explain(
+            action_id,
+            "This removes older operation journal entries while keeping the newest entries.",
+            &["branchforge run journal.clear_old_entries <keep_latest>"],
+            &["Cleared entries no longer appear as recovery starting points in the UI."],
+            &["Export the journal before clearing if audit history is needed."],
+        ),
+        "journal.restore_ref" | "recovery.restore_ref" => explain(
+            action_id,
+            "This moves a Git ref back to a saved object id.",
+            &["git update-ref <ref> <oid>"],
+            &["Moving a ref changes what branch or tag name points to."],
+            &["The recovery operation is journaled with pre/post ref snapshots."],
+        ),
+        "journal.recover_operation" | "recovery.create_branch_from_backup" => explain(
+            action_id,
+            "This creates a recovery branch from a BranchForge backup ref.",
+            &["git branch <name> <backup-ref>"],
+            &["The new branch name must not already exist."],
+            &["Use the branch to inspect or cherry-pick recovered commits."],
+        ),
+        "recovery.create_branch_from_reflog" => explain(
+            action_id,
+            "This creates a branch at a selected reflog entry.",
+            &["git branch <name> <reflog-oid>"],
+            &["The reflog entry may point to an older state that lacks later work."],
+            &["Use the branch to inspect recovered history before merging or resetting."],
+        ),
+        "plugin.remove" => explain(
+            action_id,
+            "This removes an installed plugin package from the configured plugins root.",
+            &["branchforge plugin remove <plugin-id>"],
+            &["Removing a plugin disables its actions and local package files."],
+            &["Reinstall the plugin from the original package or registry if needed."],
         ),
         _ => return None,
     };
@@ -4438,6 +4609,27 @@ mod tests {
         assert!(preview.summary.contains("may contain commits not merged"));
 
         let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn high_and_always_confirm_actions_have_explain_templates() {
+        let root = unique_temp_dir("explain-coverage");
+        assert!(std::fs::create_dir_all(&root).is_ok());
+        let runner = ConsoleRunner::new(test_config(&root));
+        let missing = runner
+            .action_catalog_items()
+            .into_iter()
+            .filter(|item| {
+                matches!(item.confirm_policy, ConfirmPolicy::Always)
+                    || (matches!(item.confirm_policy, ConfirmPolicy::OnDanger)
+                        && matches!(item.danger, DangerLevel::High))
+            })
+            .filter(|item| item.explain.is_none())
+            .map(|item| item.action_id)
+            .collect::<Vec<_>>();
+
+        assert!(missing.is_empty(), "missing explain templates: {missing:?}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -3058,6 +3058,180 @@ mod tests {
     }
 
     #[test]
+    fn deleted_branch_can_be_recreated_from_backup_ref() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+        assert!(std::fs::write(repo_dir.join("README.md"), "base\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["README.md".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "base").is_ok());
+        assert!(git_service::create_branch(&repo_dir, "recoverable").is_ok());
+        let branch_oid = git_service::resolve_ref_oid(&repo_dir, "recoverable").expect("branch");
+
+        let mut store = StateStore::new();
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "repo.open".to_string(),
+                    lock: JobLock::Read,
+                    paths: Vec::new(),
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "branch.delete".to_string(),
+                    lock: JobLock::RefsWrite,
+                    paths: vec!["recoverable".to_string()],
+                    job_id: Some(51),
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert!(git_service::resolve_ref_oid(&repo_dir, "recoverable").is_err());
+        let backup = store
+            .snapshot()
+            .journal
+            .entries
+            .iter()
+            .find(|entry| entry.op == "branch.delete")
+            .and_then(|entry| entry.backup_refs.first())
+            .expect("backup")
+            .clone();
+
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "recovery.create_branch_from_backup".to_string(),
+                    lock: JobLock::RefsWrite,
+                    paths: vec!["recoverable".to_string(), backup.name],
+                    job_id: Some(52),
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            git_service::resolve_ref_oid(&repo_dir, "recoverable").expect("recreated"),
+            branch_oid
+        );
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn completed_rebase_can_create_recovery_branch_from_backup() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+        assert!(std::fs::write(repo_dir.join("base.txt"), "base\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["base.txt".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "base").is_ok());
+        let base_branch = git_service::repo_open(&repo_dir)
+            .expect("repo")
+            .head
+            .expect("head");
+        assert!(git_service::create_branch(&repo_dir, "topic").is_ok());
+        assert!(git_service::checkout_branch(&repo_dir, "topic").is_ok());
+        assert!(std::fs::write(repo_dir.join("topic.txt"), "topic\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["topic.txt".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "topic").is_ok());
+        let pre_rebase = git_service::resolve_ref_oid(&repo_dir, "HEAD").expect("topic head");
+        assert!(git_service::checkout_branch(&repo_dir, &base_branch).is_ok());
+        assert!(std::fs::write(repo_dir.join("main.txt"), "main\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["main.txt".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "main").is_ok());
+        assert!(git_service::checkout_branch(&repo_dir, "topic").is_ok());
+
+        let mut store = StateStore::new();
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "repo.open".to_string(),
+                    lock: JobLock::Read,
+                    paths: Vec::new(),
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "rebase.plan.create".to_string(),
+                    lock: JobLock::RefsWrite,
+                    paths: vec![base_branch],
+                    job_id: Some(61),
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "rebase.execute".to_string(),
+                    lock: JobLock::RefsWrite,
+                    paths: Vec::new(),
+                    job_id: Some(62),
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        let backup = store
+            .snapshot()
+            .journal
+            .entries
+            .iter()
+            .find(|entry| entry.op == "rebase.execute")
+            .and_then(|entry| entry.backup_refs.first())
+            .expect("rebase backup")
+            .clone();
+        assert_eq!(backup.target_oid, pre_rebase);
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "recovery.create_branch_from_backup".to_string(),
+                    lock: JobLock::RefsWrite,
+                    paths: vec!["branchforge/pre-rebase-topic".to_string(), backup.name],
+                    job_id: Some(63),
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            git_service::resolve_ref_oid(&repo_dir, "branchforge/pre-rebase-topic")
+                .expect("recovery branch"),
+            pre_rebase
+        );
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
     fn checkout_blocked_when_dirty() {
         let repo_dir = unique_temp_dir();
         assert!(std::fs::create_dir_all(&repo_dir).is_ok());
