@@ -72,6 +72,25 @@ The GUI reuses the existing host runtime for `open`, `panel`, `select`, `run`, `
 The current revision exposes the full `app_host` direct-op surface through dedicated GUI widgets, panel actions, selection shortcuts, or the command box, including history search, stash/worktree/submodule flows, branch/tag management, merge/cherry-pick/revert/reset, rebase/conflict recovery, plugin registry/install lifecycle, LFS diagnostics, release/sign/verify runtime operations, and diff hunk or line actions.
 Enabled external plugins join that same shared runtime catalog; their action ids are available through the GUI command box after install/enable from diagnostics.
 
+## Desktop runtime
+
+The Product UI layer starts with a native desktop shell in `crates/app_desktop`:
+
+```bash
+cargo run -p app_desktop
+```
+
+The desktop app uses `eframe`/`egui` for the native window and talks to the existing `app_host` runtime through a desktop runtime adapter. It opens repositories, renders runtime snapshots for status/history/diff/branches/tags/compare/diagnostics/journal panels, exposes the shared action catalog in a command palette, and keeps Git command execution inside `git_service`.
+
+Desktop packaging foundations:
+
+```bash
+./scripts/package-desktop-alpha.sh
+./scripts/verify-desktop-alpha.sh
+```
+
+The alpha package contains the desktop binary, bundled plugins, icon resource, Linux desktop entry, Windows zip-layout notes, macOS `.app` skeleton, and config/log/crashlog directories.
+
 ## Local dev helpers
 
 ```bash
@@ -93,6 +112,8 @@ Compatibility shell wrappers remain in `scripts/`, but they now delegate to runt
 ## Workspace layout
 
 - `crates/` host-side crates
+- `crates/app_desktop` native desktop GUI shell
+- `crates/graph_model` renderer-independent commit graph lane model
 - `crates/app_gui` browser-based GUI host
 - `plugins/` bundled plugin executables
 - `docs/` architecture and delivery rules
