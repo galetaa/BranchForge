@@ -756,10 +756,15 @@ mod tests {
             tags: state_store::TagsState::default(),
             commit_message: state_store::CommitMessageState::default(),
             rebase: state_store::RebaseState::default(),
+            remotes: state_store::RemoteState::default(),
+            workspace: state_store::WorkspaceState::default(),
+            pull_requests: state_store::PullRequestStateSnapshot::default(),
+            branch_stacks: state_store::BranchStackState::default(),
             journal: state_store::OperationJournalState::default(),
             active_view: None,
             plugins: Vec::new(),
             installed_plugins: Vec::new(),
+            plugin_security: Vec::new(),
             version: 1,
         };
 
@@ -789,10 +794,15 @@ mod tests {
             tags: state_store::TagsState::default(),
             commit_message: state_store::CommitMessageState::default(),
             rebase: state_store::RebaseState::default(),
+            remotes: state_store::RemoteState::default(),
+            workspace: state_store::WorkspaceState::default(),
+            pull_requests: state_store::PullRequestStateSnapshot::default(),
+            branch_stacks: state_store::BranchStackState::default(),
             journal: state_store::OperationJournalState::default(),
             active_view: None,
             plugins: Vec::new(),
             installed_plugins: Vec::new(),
+            plugin_security: Vec::new(),
             version: 1,
         };
 
@@ -821,10 +831,15 @@ mod tests {
             tags: state_store::TagsState::default(),
             commit_message: state_store::CommitMessageState::default(),
             rebase: state_store::RebaseState::default(),
+            remotes: state_store::RemoteState::default(),
+            workspace: state_store::WorkspaceState::default(),
+            pull_requests: state_store::PullRequestStateSnapshot::default(),
+            branch_stacks: state_store::BranchStackState::default(),
             journal: state_store::OperationJournalState::default(),
             active_view: None,
             plugins: Vec::new(),
             installed_plugins: Vec::new(),
+            plugin_security: Vec::new(),
             version: 1,
         };
 
@@ -853,6 +868,10 @@ mod tests {
             tags: state_store::TagsState::default(),
             commit_message: state_store::CommitMessageState::default(),
             rebase: state_store::RebaseState::default(),
+            remotes: state_store::RemoteState::default(),
+            workspace: state_store::WorkspaceState::default(),
+            pull_requests: state_store::PullRequestStateSnapshot::default(),
+            branch_stacks: state_store::BranchStackState::default(),
             journal: state_store::OperationJournalState {
                 entries: vec![
                     state_store::OperationJournalEntry {
@@ -898,6 +917,7 @@ mod tests {
             active_view: None,
             plugins: Vec::new(),
             installed_plugins: Vec::new(),
+            plugin_security: Vec::new(),
             version: 1,
         };
 
@@ -928,6 +948,10 @@ mod tests {
             tags: state_store::TagsState::default(),
             commit_message: state_store::CommitMessageState::default(),
             rebase: state_store::RebaseState::default(),
+            remotes: state_store::RemoteState::default(),
+            workspace: state_store::WorkspaceState::default(),
+            pull_requests: state_store::PullRequestStateSnapshot::default(),
+            branch_stacks: state_store::BranchStackState::default(),
             journal: state_store::OperationJournalState {
                 entries: vec![state_store::OperationJournalEntry {
                     id: 1,
@@ -951,6 +975,7 @@ mod tests {
             active_view: None,
             plugins: Vec::new(),
             installed_plugins: Vec::new(),
+            plugin_security: Vec::new(),
             version: 1,
         };
 
@@ -1019,6 +1044,7 @@ mod tests {
             active_view: None,
             plugins: Vec::new(),
             installed_plugins: Vec::new(),
+            plugin_security: Vec::new(),
             version: 1,
         };
 
@@ -1072,10 +1098,15 @@ mod tests {
             },
             commit_message: state_store::CommitMessageState::default(),
             rebase: state_store::RebaseState::default(),
+            remotes: state_store::RemoteState::default(),
+            workspace: state_store::WorkspaceState::default(),
+            pull_requests: state_store::PullRequestStateSnapshot::default(),
+            branch_stacks: state_store::BranchStackState::default(),
             journal: state_store::OperationJournalState::default(),
             active_view: None,
             plugins: Vec::new(),
             installed_plugins: Vec::new(),
+            plugin_security: Vec::new(),
             version: 1,
         };
 
@@ -1123,10 +1154,15 @@ mod tests {
             tags: state_store::TagsState::default(),
             commit_message: state_store::CommitMessageState::default(),
             rebase: state_store::RebaseState::default(),
+            remotes: state_store::RemoteState::default(),
+            workspace: state_store::WorkspaceState::default(),
+            pull_requests: state_store::PullRequestStateSnapshot::default(),
+            branch_stacks: state_store::BranchStackState::default(),
             journal: state_store::OperationJournalState::default(),
             active_view: None,
             plugins: Vec::new(),
             installed_plugins: Vec::new(),
+            plugin_security: Vec::new(),
             version: 1,
         };
 
@@ -1173,10 +1209,15 @@ mod tests {
             tags: state_store::TagsState::default(),
             commit_message: state_store::CommitMessageState::default(),
             rebase: state_store::RebaseState::default(),
+            remotes: state_store::RemoteState::default(),
+            workspace: state_store::WorkspaceState::default(),
+            pull_requests: state_store::PullRequestStateSnapshot::default(),
+            branch_stacks: state_store::BranchStackState::default(),
             journal: state_store::OperationJournalState::default(),
             active_view: None,
             plugins: Vec::new(),
             installed_plugins: Vec::new(),
+            plugin_security: Vec::new(),
             version: 1,
         };
 
@@ -1217,10 +1258,15 @@ mod tests {
             tags: state_store::TagsState::default(),
             commit_message: state_store::CommitMessageState::default(),
             rebase: state_store::RebaseState::default(),
+            remotes: state_store::RemoteState::default(),
+            workspace: state_store::WorkspaceState::default(),
+            pull_requests: state_store::PullRequestStateSnapshot::default(),
+            branch_stacks: state_store::BranchStackState::default(),
             journal: state_store::OperationJournalState::default(),
             active_view: None,
             plugins: Vec::new(),
             installed_plugins: Vec::new(),
+            plugin_security: Vec::new(),
             version: 1,
         };
 

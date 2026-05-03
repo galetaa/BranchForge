@@ -151,6 +151,53 @@ pub struct TagsState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RemoteInfo {
+    pub name: String,
+    pub fetch_url: Option<String>,
+    pub push_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RemoteBranchInfo {
+    pub remote: String,
+    pub name: String,
+    pub oid: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UpstreamStatus {
+    pub current_branch: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: usize,
+    pub behind: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AuthStatus {
+    pub ssh_agent_available: bool,
+    pub https_helper_configured: bool,
+    pub accounts: Vec<AuthAccountRecord>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AuthAccountRecord {
+    pub host: String,
+    pub provider: Option<ProviderKind>,
+    pub username: Option<String>,
+    pub token_present: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RemoteState {
+    pub remotes: Vec<RemoteInfo>,
+    pub remote_branches: Vec<RemoteBranchInfo>,
+    pub upstream: Option<UpstreamStatus>,
+    pub auth: AuthStatus,
+    pub last_sync_message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CommitMessageState {
     pub draft: String,
     pub error: Option<String>,
@@ -199,6 +246,174 @@ pub struct RebaseSessionSnapshot {
 pub struct RebaseState {
     pub plan: Option<RebasePlan>,
     pub session: Option<RebaseSessionSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Workspace {
+    pub id: String,
+    pub name: String,
+    pub repos: Vec<WorkspaceRepo>,
+    pub groups: Vec<RepoGroup>,
+    pub last_opened_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceRepo {
+    pub repo_id: String,
+    pub path: String,
+    pub display_name: String,
+    pub group_id: Option<String>,
+    pub status_summary: RepoStatusSummary,
+    pub branch_summary: RepoBranchSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoGroup {
+    pub group_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct RepoStatusSummary {
+    pub dirty: bool,
+    pub staged: usize,
+    pub unstaged: usize,
+    pub untracked: usize,
+    pub conflicts: bool,
+    pub detached: bool,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct RepoBranchSummary {
+    pub current_branch: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: usize,
+    pub behind: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct WorkspaceJobResult {
+    pub repo_id: String,
+    pub op: String,
+    pub success: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct WorkspaceState {
+    pub workspaces: Vec<Workspace>,
+    pub active_workspace_id: Option<String>,
+    pub active_repo_id: Option<String>,
+    pub last_results: Vec<WorkspaceJobResult>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderKind {
+    GitHub,
+    GitLab,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderRepository {
+    pub provider: ProviderKind,
+    pub host: String,
+    pub owner: String,
+    pub repo: String,
+    pub web_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PullRequestSummary {
+    pub provider: ProviderKind,
+    pub repo: String,
+    pub number: u64,
+    pub title: String,
+    pub author: String,
+    pub source_branch: String,
+    pub target_branch: String,
+    pub state: PullRequestState,
+    pub checks: Vec<CheckSummary>,
+    pub review_state: Option<ReviewState>,
+    pub web_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PullRequestState {
+    Open,
+    Closed,
+    Merged,
+    Draft,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckSummary {
+    pub name: String,
+    pub status: CheckStatus,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckStatus {
+    Pending,
+    Success,
+    Failure,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewState {
+    Approved,
+    ChangesRequested,
+    ReviewRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PullRequestStateSnapshot {
+    pub detected_provider: Option<ProviderRepository>,
+    pub pull_requests: Vec<PullRequestSummary>,
+    pub current_branch_pr: Option<PullRequestSummary>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchStack {
+    pub id: String,
+    pub name: String,
+    pub entries: Vec<BranchStackEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchStackEntry {
+    pub branch: String,
+    pub base_branch: String,
+    pub head_oid: String,
+    pub upstream_pr: Option<String>,
+    pub status: StackEntryStatus,
+    pub ahead: usize,
+    pub behind: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StackEntryStatus {
+    Clean,
+    NeedsRestack,
+    Conflicted,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BranchStackState {
+    pub stacks: Vec<BranchStack>,
+    pub active_stack_id: Option<String>,
+    pub last_preview: Option<OperationPreview>,
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -388,6 +603,27 @@ pub struct InstalledPluginRecord {
     pub install_dir: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginTrustLevel {
+    Bundled,
+    SignedCommunity,
+    UnsignedLocal,
+    ExperimentalSandboxed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginSecurityRecord {
+    pub plugin_id: String,
+    pub trust_level: PluginTrustLevel,
+    pub signed: bool,
+    pub permissions: Vec<String>,
+    pub contributed_actions: Vec<String>,
+    pub contributed_views: Vec<String>,
+    pub warnings: Vec<String>,
+    pub update_available: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RepoCapabilitiesSnapshot {
     pub is_linked_worktree: bool,
@@ -411,10 +647,15 @@ pub struct StoreSnapshot {
     pub tags: TagsState,
     pub commit_message: CommitMessageState,
     pub rebase: RebaseState,
+    pub remotes: RemoteState,
+    pub workspace: WorkspaceState,
+    pub pull_requests: PullRequestStateSnapshot,
+    pub branch_stacks: BranchStackState,
     pub journal: OperationJournalState,
     pub active_view: Option<String>,
     pub plugins: Vec<PluginStatus>,
     pub installed_plugins: Vec<InstalledPluginRecord>,
+    pub plugin_security: Vec<PluginSecurityRecord>,
     pub version: StoreVersion,
 }
 
@@ -831,6 +1072,36 @@ impl StateStore {
         self.bump_version();
     }
 
+    pub fn update_remote_state(&mut self, remotes: RemoteState) {
+        self.snapshot.remotes = remotes;
+        self.bump_version();
+    }
+
+    pub fn set_remote_sync_message(&mut self, message: Option<String>) {
+        self.snapshot.remotes.last_sync_message = message;
+        self.bump_version();
+    }
+
+    pub fn update_workspace_state(&mut self, workspace: WorkspaceState) {
+        self.snapshot.workspace = workspace;
+        self.bump_version();
+    }
+
+    pub fn update_pull_request_state(&mut self, state: PullRequestStateSnapshot) {
+        self.snapshot.pull_requests = state;
+        self.bump_version();
+    }
+
+    pub fn update_branch_stack_state(&mut self, state: BranchStackState) {
+        self.snapshot.branch_stacks = state;
+        self.bump_version();
+    }
+
+    pub fn update_plugin_security(&mut self, records: Vec<PluginSecurityRecord>) {
+        self.snapshot.plugin_security = records;
+        self.bump_version();
+    }
+
     pub fn update_commit_message(&mut self, draft: String, error: Option<String>) {
         self.snapshot.commit_message.draft = draft;
         self.snapshot.commit_message.error = error;
@@ -953,6 +1224,22 @@ impl StateStore {
             .max()
             .map(|id| id + 1)
             .unwrap_or(1);
+        self.bump_version();
+        Ok(())
+    }
+
+    pub fn persist_workspaces(&self, path: &Path) -> Result<(), String> {
+        let payload = serde_json::to_string_pretty(&self.snapshot.workspace)
+            .map_err(|err| err.to_string())?;
+        std::fs::write(path, payload).map_err(|err| err.to_string())
+    }
+
+    pub fn restore_workspaces(&mut self, path: &Path) -> Result<(), String> {
+        if !path.exists() {
+            return Ok(());
+        }
+        let payload = std::fs::read_to_string(path).map_err(|err| err.to_string())?;
+        self.snapshot.workspace = serde_json::from_str(&payload).map_err(|err| err.to_string())?;
         self.bump_version();
         Ok(())
     }
