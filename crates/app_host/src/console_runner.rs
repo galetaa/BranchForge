@@ -19,7 +19,7 @@ use plugin_host::{
 use state_store::{
     CommitImpact, DiffSource, DiffState, ExplainTemplate, FileImpact, ImpactLevel, ImpactSummary,
     InstalledPluginRecord, OperationPreview, PreviewWarning, PreviewWarningLevel, RefImpact,
-    StateStore,
+    RemoteImpact, StateStore,
 };
 
 use crate::errors::{ErrorCategory, UserFacingError, translate_job_error};
@@ -770,10 +770,72 @@ impl ConsoleRunner {
             "conflict.abort" | "rebase.abort" | "merge.abort" => {
                 self.enrich_abort_preview(action_id, &mut preview);
             }
+            "remote.push_force_with_lease" | "remote.remove" => {
+                self.enrich_remote_preview(action_id, args, &mut preview);
+            }
             _ => {}
         }
 
         Ok(preview)
+    }
+
+    fn enrich_remote_preview(
+        &self,
+        action_id: &str,
+        args: &[String],
+        preview: &mut OperationPreview,
+    ) {
+        match action_id {
+            "remote.push_force_with_lease" => {
+                let branch = args
+                    .get(1)
+                    .cloned()
+                    .or_else(|| {
+                        self.store
+                            .snapshot()
+                            .repo
+                            .as_ref()
+                            .and_then(|repo| repo.head.clone())
+                    })
+                    .unwrap_or_else(|| "current branch".to_string());
+                let remote = args
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "configured upstream".to_string());
+                preview.summary =
+                    format!("Force push {branch} to {remote} using --force-with-lease.");
+                preview.remote_impact = Some(RemoteImpact {
+                    remote,
+                    summary: "Remote branch history can be rewritten if the lease still matches."
+                        .to_string(),
+                });
+                preview.warnings.push(warning(
+                    PreviewWarningLevel::Danger,
+                    "Coordinate with collaborators before rewriting a shared branch.",
+                ));
+                preview.recommended_action = Some(
+                    "Fetch first, inspect ahead/behind counts, and keep the journal backup ref."
+                        .to_string(),
+                );
+            }
+            "remote.remove" => {
+                let remote = args
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "selected remote".to_string());
+                preview.summary = format!("Remove remote `{remote}` from local repository config.");
+                preview.remote_impact = Some(RemoteImpact {
+                    remote,
+                    summary: "Local remote configuration is removed; remote branches may disappear after pruning."
+                        .to_string(),
+                });
+                preview.warnings.push(warning(
+                    PreviewWarningLevel::Warning,
+                    "Fetch/push shortcuts that reference this remote will stop working.",
+                ));
+            }
+            _ => {}
+        }
     }
 
     fn enrich_reset_preview(
@@ -2820,6 +2882,50 @@ pub fn explain_template_for_action(action_id: &str) -> Option<ExplainTemplate> {
             ],
             &["Create a branch from the detached commit or use reflog to recover work."],
         ),
+        "remote.fetch" | "remote.fetch_all" => explain(
+            action_id,
+            "This contacts configured remotes and updates remote-tracking refs.",
+            &["git fetch <remote>", "git fetch --all"],
+            &["Network auth can fail; remote-tracking refs can move after fetch."],
+            &["Inspect remote branches and ahead/behind counts before merging or rebasing."],
+        ),
+        "remote.pull" => explain(
+            action_id,
+            "This fetches and fast-forwards the current branch from its upstream.",
+            &["git pull --ff-only"],
+            &["The working tree and current branch can change when a fast-forward is available."],
+            &["Use the operation journal and reflog if the branch moved unexpectedly."],
+        ),
+        "remote.push" => explain(
+            action_id,
+            "This publishes the current branch to its configured upstream.",
+            &["git push"],
+            &["Remote rejects can happen when the branch is behind or credentials are missing."],
+            &["Fetch first and inspect ahead/behind counts before retrying."],
+        ),
+        "remote.push_set_upstream" => explain(
+            action_id,
+            "This pushes a branch and records its upstream remote tracking configuration.",
+            &["git push -u <remote> <branch>"],
+            &["The chosen remote becomes the branch's default push/pull target."],
+            &["Use git branch --unset-upstream or set a different upstream if needed."],
+        ),
+        "remote.remove" => explain(
+            action_id,
+            "This removes a local remote configuration entry.",
+            &["git remote remove <name>"],
+            &["Fetch/push shortcuts and remote branch views for that remote stop working locally."],
+            &["Add the remote again with the same URL if it was removed by mistake."],
+        ),
+        "remote.push_force_with_lease" => explain(
+            action_id,
+            "This force pushes only if the remote branch still matches the last known remote-tracking ref.",
+            &["git push --force-with-lease <remote> <branch>"],
+            &["Remote history can be rewritten for collaborators if the lease matches."],
+            &[
+                "Fetch first, inspect ahead/behind counts, and recover local refs from the journal or reflog.",
+            ],
+        ),
         "file.discard" | "file.discard_hunk" | "file.discard_lines" => explain(
             action_id,
             "This discards selected working tree changes.",
@@ -3252,6 +3358,130 @@ fn host_plugin_action_specs() -> Vec<ActionSpec> {
             ConfirmPolicy::OnDanger,
         ),
         host_action_spec(
+            "remote.refresh",
+            "Refresh Remotes",
+            Some("repo.is_open"),
+            None,
+            ActionEffects::read_only(),
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "remote.add",
+            "Add Remote",
+            Some("repo.is_open"),
+            Some(DangerLevel::Medium),
+            ActionEffects {
+                writes_refs: true,
+                danger_level: DangerLevel::Medium,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::OnDanger,
+        ),
+        host_action_spec(
+            "remote.remove",
+            "Remove Remote",
+            Some("repo.is_open"),
+            Some(DangerLevel::High),
+            ActionEffects::mutating_refs(),
+            ConfirmPolicy::Always,
+        ),
+        host_action_spec(
+            "remote.rename",
+            "Rename Remote",
+            Some("repo.is_open"),
+            Some(DangerLevel::Medium),
+            ActionEffects {
+                writes_refs: true,
+                danger_level: DangerLevel::Medium,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::OnDanger,
+        ),
+        host_action_spec(
+            "remote.fetch",
+            "Fetch Remote",
+            Some("repo.is_open"),
+            Some(DangerLevel::Low),
+            ActionEffects {
+                network: true,
+                danger_level: DangerLevel::Low,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "remote.fetch_all",
+            "Fetch All Remotes",
+            Some("repo.is_open"),
+            Some(DangerLevel::Low),
+            ActionEffects {
+                network: true,
+                danger_level: DangerLevel::Low,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "remote.pull",
+            "Pull Current Branch",
+            Some("repo.is_open"),
+            Some(DangerLevel::Medium),
+            ActionEffects {
+                writes_refs: true,
+                writes_worktree: true,
+                network: true,
+                danger_level: DangerLevel::Medium,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::OnDanger,
+        ),
+        host_action_spec(
+            "remote.push",
+            "Push Current Branch",
+            Some("repo.is_open"),
+            Some(DangerLevel::Medium),
+            ActionEffects {
+                network: true,
+                danger_level: DangerLevel::Medium,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::OnDanger,
+        ),
+        host_action_spec(
+            "remote.push_set_upstream",
+            "Push And Set Upstream",
+            Some("repo.is_open"),
+            Some(DangerLevel::Medium),
+            ActionEffects {
+                writes_refs: true,
+                network: true,
+                danger_level: DangerLevel::Medium,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::OnDanger,
+        ),
+        host_action_spec(
+            "remote.push_force_with_lease",
+            "Force Push With Lease",
+            Some("repo.is_open"),
+            Some(DangerLevel::High),
+            ActionEffects {
+                writes_refs: true,
+                network: true,
+                danger_level: DangerLevel::High,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::Always,
+        ),
+        host_action_spec(
+            "remote.branch_list",
+            "List Remote Branches",
+            Some("repo.is_open"),
+            None,
+            ActionEffects::read_only(),
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
             "journal.restore_ref",
             "Restore Ref From Journal",
             Some("repo.is_open"),
@@ -3605,6 +3835,19 @@ fn ops_text() -> String {
         "status.refresh",
         "refs.refresh",
         "",
+        "[remotes]",
+        "remote.refresh",
+        "remote.add <name> <url>",
+        "remote.remove <name>",
+        "remote.rename <old> <new>",
+        "remote.fetch [remote]",
+        "remote.fetch_all",
+        "remote.pull",
+        "remote.push",
+        "remote.push_set_upstream [remote] [branch]",
+        "remote.push_force_with_lease [remote] [branch]",
+        "remote.branch_list",
+        "",
         "[history]",
         "history.page <offset> <limit> [author] [text] [hash_prefix]",
         "history.load_more",
@@ -3850,6 +4093,8 @@ fn lock_for_op(op: &str, _args: &[String]) -> Result<JobLock, UserFacingError> {
         | "submodule.open"
         | "diagnostics.repo_capabilities"
         | "diagnostics.lfs_status"
+        | "remote.refresh"
+        | "remote.branch_list"
         | "diff.worktree"
         | "diff.index"
         | "diff.commit"
@@ -3872,7 +4117,14 @@ fn lock_for_op(op: &str, _args: &[String]) -> Result<JobLock, UserFacingError> {
         | "conflict.resolve.ours"
         | "conflict.resolve.theirs"
         | "conflict.mark_resolved" => JobLock::IndexWrite,
-        "diagnostics.lfs_fetch" | "diagnostics.lfs_pull" => JobLock::Network,
+        "diagnostics.lfs_fetch"
+        | "diagnostics.lfs_pull"
+        | "remote.fetch"
+        | "remote.fetch_all"
+        | "remote.pull"
+        | "remote.push"
+        | "remote.push_set_upstream"
+        | "remote.push_force_with_lease" => JobLock::Network,
         "commit.create"
         | "commit.amend"
         | "worktree.create"
@@ -3895,6 +4147,9 @@ fn lock_for_op(op: &str, _args: &[String]) -> Result<JobLock, UserFacingError> {
         | "tag.create"
         | "tag.delete"
         | "tag.checkout"
+        | "remote.add"
+        | "remote.remove"
+        | "remote.rename"
         | "file.discard"
         | "conflict.continue"
         | "conflict.abort"
@@ -3987,6 +4242,17 @@ fn is_supported_direct_op(op: &str) -> bool {
             | "tag.create"
             | "tag.delete"
             | "tag.checkout"
+            | "remote.refresh"
+            | "remote.add"
+            | "remote.remove"
+            | "remote.rename"
+            | "remote.fetch"
+            | "remote.fetch_all"
+            | "remote.pull"
+            | "remote.push"
+            | "remote.push_set_upstream"
+            | "remote.push_force_with_lease"
+            | "remote.branch_list"
             | "journal.open_entry"
             | "journal.copy_details"
             | "journal.export"
@@ -4678,6 +4944,8 @@ mod tests {
     fn ops_text_lists_advanced_and_productivity_features() {
         let ops = ops_text();
         assert!(ops.contains("history.search <author> <text> [hash_prefix]"));
+        assert!(ops.contains("remote.fetch_all"));
+        assert!(ops.contains("remote.push_force_with_lease [remote] [branch]"));
         assert!(ops.contains("commit.amend <message>"));
         assert!(ops.contains("stash.list"));
         assert!(ops.contains("worktree.create <path> <branch>"));

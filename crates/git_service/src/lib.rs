@@ -216,6 +216,50 @@ pub struct BranchInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RemoteInfo {
+    pub name: String,
+    pub fetch_url: Option<String>,
+    pub push_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RemoteBranchInfo {
+    pub remote: String,
+    pub name: String,
+    pub oid: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UpstreamStatus {
+    pub current_branch: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: usize,
+    pub behind: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GitAuthStatus {
+    pub ssh_agent_available: bool,
+    pub https_helper_configured: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderKind {
+    GitHub,
+    GitLab,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderRepository {
+    pub provider: ProviderKind,
+    pub host: String,
+    pub owner: String,
+    pub repo: String,
+    pub web_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct StatusSummary {
     pub staged: Vec<String>,
     pub unstaged: Vec<String>,
@@ -1674,6 +1718,182 @@ pub fn resolve_ref_oid(cwd: &Path, reference: &str) -> Result<String, GitService
         .map_err(|_| GitServiceError::Utf8Decode)
 }
 
+fn current_branch(cwd: &Path) -> Result<String, GitServiceError> {
+    let out = run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    String::from_utf8(out.stdout)
+        .map(|text| text.trim().to_string())
+        .map_err(|_| GitServiceError::Utf8Decode)
+}
+
+fn ahead_behind(cwd: &Path, left: &str, right: &str) -> Result<(usize, usize), GitServiceError> {
+    let range = format!("{left}...{right}");
+    let out = run_git(cwd, &["rev-list", "--left-right", "--count", &range])?;
+    let text = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+    let parts = text.split_whitespace().collect::<Vec<_>>();
+    if parts.len() != 2 {
+        return Err(GitServiceError::ParseError(
+            "invalid ahead/behind output".to_string(),
+        ));
+    }
+    let ahead = parts[0]
+        .parse::<usize>()
+        .map_err(|_| GitServiceError::ParseError("invalid ahead count".to_string()))?;
+    let behind = parts[1]
+        .parse::<usize>()
+        .map_err(|_| GitServiceError::ParseError("invalid behind count".to_string()))?;
+    Ok((ahead, behind))
+}
+
+fn git_output_text(out: GitRunResult) -> Result<String, GitServiceError> {
+    let stdout = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+    let stderr = String::from_utf8(out.stderr).map_err(|_| GitServiceError::Utf8Decode)?;
+    let combined = [stdout.trim(), stderr.trim()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(redact_secret_text(&combined))
+}
+
+pub fn redact_secret_text(raw: &str) -> String {
+    let mut redacted = Vec::new();
+    let mut redact_authorization_tail = 0usize;
+
+    for part in raw.split_whitespace() {
+        if redact_authorization_tail > 0 {
+            redacted.push("<redacted>".to_string());
+            redact_authorization_tail -= 1;
+            continue;
+        }
+
+        let lower = part.to_ascii_lowercase();
+        if lower == "authorization:" || lower == "authorization" {
+            redacted.push("authorization:<redacted>".to_string());
+            redact_authorization_tail = 2;
+            continue;
+        }
+        if lower.starts_with("authorization:") {
+            redacted.push("authorization:<redacted>".to_string());
+            redact_authorization_tail = 1;
+            continue;
+        }
+        if lower.contains("x-oauth-basic") {
+            redacted.push("<redacted>".to_string());
+            continue;
+        }
+
+        let part = redact_url_userinfo(part);
+        redacted.push(redact_keyed_secrets(&part));
+    }
+
+    redacted.join(" ")
+}
+
+fn parse_remote_provider_url(url: &str) -> Option<ProviderRepository> {
+    let trimmed = url.trim().trim_end_matches(".git");
+    let (host, owner, repo) = if let Some(rest) = trimmed.strip_prefix("https://") {
+        parse_https_provider_path(rest)?
+    } else if let Some(rest) = trimmed.strip_prefix("http://") {
+        parse_https_provider_path(rest)?
+    } else if let Some(rest) = trimmed.strip_prefix("git@") {
+        let (host, path) = rest.split_once(':')?;
+        let (owner, repo) = path.split_once('/')?;
+        (
+            strip_url_userinfo(host).to_string(),
+            owner.to_string(),
+            repo.to_string(),
+        )
+    } else if let Some((host, path)) = trimmed.split_once(':') {
+        let (owner, repo) = path.split_once('/')?;
+        (
+            strip_url_userinfo(host).to_string(),
+            owner.to_string(),
+            repo.to_string(),
+        )
+    } else {
+        return None;
+    };
+    let provider = match host.as_str() {
+        "github.com" => ProviderKind::GitHub,
+        "gitlab.com" => ProviderKind::GitLab,
+        _ => ProviderKind::Unknown,
+    };
+    let web_url = format!("https://{host}/{owner}/{repo}");
+    Some(ProviderRepository {
+        provider,
+        host,
+        owner,
+        repo,
+        web_url,
+    })
+}
+
+fn parse_https_provider_path(rest: &str) -> Option<(String, String, String)> {
+    let (host, path) = rest.split_once('/')?;
+    let mut parts = path.split('/');
+    let owner = parts.next()?.to_string();
+    let repo = parts.next()?.to_string();
+    Some((strip_url_userinfo(host).to_string(), owner, repo))
+}
+
+fn strip_url_userinfo(host: &str) -> &str {
+    host.rsplit_once('@').map(|(_, host)| host).unwrap_or(host)
+}
+
+fn redact_url_userinfo(part: &str) -> String {
+    let Some(scheme_end) = part.find("://") else {
+        return part.to_string();
+    };
+    let authority_start = scheme_end + 3;
+    let authority_end = part[authority_start..]
+        .find('/')
+        .map(|offset| authority_start + offset)
+        .unwrap_or(part.len());
+    let Some(at_offset) = part[authority_start..authority_end].find('@') else {
+        return part.to_string();
+    };
+    let at = authority_start + at_offset;
+    format!("{}<redacted>@{}", &part[..authority_start], &part[at + 1..])
+}
+
+fn redact_keyed_secrets(part: &str) -> String {
+    let keys = [
+        "token=",
+        "access_token=",
+        "refresh_token=",
+        "oauth_token=",
+        "password=",
+    ];
+    let mut output = String::new();
+    let mut cursor = 0usize;
+
+    while cursor < part.len() {
+        let lower_tail = part[cursor..].to_ascii_lowercase();
+        let next = keys
+            .iter()
+            .filter_map(|key| lower_tail.find(key).map(|offset| (offset, *key)))
+            .min_by_key(|(offset, _)| *offset);
+
+        let Some((offset, key)) = next else {
+            output.push_str(&part[cursor..]);
+            break;
+        };
+
+        let key_start = cursor + offset;
+        let value_start = key_start + key.len();
+        output.push_str(&part[cursor..value_start]);
+
+        let value_len = part[value_start..]
+            .find(|ch: char| ch == '&' || ch == ';')
+            .unwrap_or(part.len() - value_start);
+        let value_end = value_start + value_len;
+        output.push_str("<redacted>");
+        cursor = value_end;
+    }
+
+    output
+}
+
 pub fn list_recoverable_refs(cwd: &Path) -> Result<Vec<GitRef>, GitServiceError> {
     let out = run_git(
         cwd,
@@ -2032,6 +2252,179 @@ pub fn list_local_branches(cwd: &Path) -> Result<Vec<BranchInfo>, GitServiceErro
     Ok(branches)
 }
 
+pub fn remote_list(cwd: &Path) -> Result<Vec<RemoteInfo>, GitServiceError> {
+    let out = run_git(cwd, &["remote", "-v"])?;
+    let text = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+    let mut remotes: Vec<RemoteInfo> = Vec::new();
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let parts = line.split_whitespace().collect::<Vec<_>>();
+        if parts.len() < 3 {
+            continue;
+        }
+        let name = parts[0];
+        let url = parts[1].to_string();
+        let kind = parts[2].trim_matches(['(', ')']);
+        let entry = if let Some(existing) = remotes.iter_mut().find(|item| item.name == name) {
+            existing
+        } else {
+            remotes.push(RemoteInfo {
+                name: name.to_string(),
+                fetch_url: None,
+                push_url: None,
+            });
+            remotes
+                .last_mut()
+                .ok_or_else(|| GitServiceError::ParseError("remote list failed".to_string()))?
+        };
+        match kind {
+            "fetch" => entry.fetch_url = Some(url),
+            "push" => entry.push_url = Some(url),
+            _ => {}
+        }
+    }
+    Ok(remotes)
+}
+
+pub fn remote_add(cwd: &Path, name: &str, url: &str) -> Result<(), GitServiceError> {
+    let _ = run_git(cwd, &["remote", "add", name, url])?;
+    Ok(())
+}
+
+pub fn remote_remove(cwd: &Path, name: &str) -> Result<(), GitServiceError> {
+    let _ = run_git(cwd, &["remote", "remove", name])?;
+    Ok(())
+}
+
+pub fn remote_rename(cwd: &Path, old: &str, new: &str) -> Result<(), GitServiceError> {
+    let _ = run_git(cwd, &["remote", "rename", old, new])?;
+    Ok(())
+}
+
+pub fn fetch(cwd: &Path, remote: Option<&str>) -> Result<String, GitServiceError> {
+    let out = if let Some(remote) = remote.filter(|value| !value.trim().is_empty()) {
+        run_git(cwd, &["fetch", remote])?
+    } else {
+        run_git(cwd, &["fetch"])?
+    };
+    git_output_text(out)
+}
+
+pub fn fetch_all(cwd: &Path) -> Result<String, GitServiceError> {
+    let out = run_git(cwd, &["fetch", "--all"])?;
+    git_output_text(out)
+}
+
+pub fn pull_current(cwd: &Path) -> Result<String, GitServiceError> {
+    let out = run_git(cwd, &["pull", "--ff-only"])?;
+    git_output_text(out)
+}
+
+pub fn push_current(cwd: &Path) -> Result<String, GitServiceError> {
+    let out = run_git(cwd, &["push"])?;
+    git_output_text(out)
+}
+
+pub fn push_set_upstream(
+    cwd: &Path,
+    remote: &str,
+    branch: &str,
+) -> Result<String, GitServiceError> {
+    let out = run_git(cwd, &["push", "-u", remote, branch])?;
+    git_output_text(out)
+}
+
+pub fn push_force_with_lease(
+    cwd: &Path,
+    remote: Option<&str>,
+    branch: Option<&str>,
+) -> Result<String, GitServiceError> {
+    let mut args = vec!["push", "--force-with-lease"];
+    if let Some(remote) = remote.filter(|value| !value.trim().is_empty()) {
+        args.push(remote);
+    }
+    if let Some(branch) = branch.filter(|value| !value.trim().is_empty()) {
+        args.push(branch);
+    }
+    let out = run_git(cwd, &args)?;
+    git_output_text(out)
+}
+
+pub fn remote_branch_list(cwd: &Path) -> Result<Vec<RemoteBranchInfo>, GitServiceError> {
+    let out = run_git(
+        cwd,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)%00%(objectname)",
+            "refs/remotes",
+        ],
+    )?;
+    let text = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
+    let mut branches = Vec::new();
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let parts = line.split('\0').collect::<Vec<_>>();
+        if parts.len() != 2 {
+            return Err(GitServiceError::ParseError(
+                "invalid remote branch record".to_string(),
+            ));
+        }
+        if parts[0].ends_with("/HEAD") {
+            continue;
+        }
+        let (remote, name) = parts[0].split_once('/').unwrap_or((parts[0], ""));
+        branches.push(RemoteBranchInfo {
+            remote: remote.to_string(),
+            name: name.to_string(),
+            oid: parts[1].to_string(),
+        });
+    }
+    Ok(branches)
+}
+
+pub fn upstream_status(cwd: &Path) -> Result<UpstreamStatus, GitServiceError> {
+    let current_branch = current_branch(cwd).ok();
+    let upstream = run_git(
+        cwd,
+        &[
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ],
+    )
+    .ok()
+    .and_then(|out| String::from_utf8(out.stdout).ok())
+    .map(|text| text.trim().to_string())
+    .filter(|text| !text.is_empty());
+    let (ahead, behind) = if upstream.is_some() {
+        ahead_behind(cwd, "HEAD", "@{upstream}").unwrap_or((0, 0))
+    } else {
+        (0, 0)
+    };
+    Ok(UpstreamStatus {
+        current_branch,
+        upstream,
+        ahead,
+        behind,
+    })
+}
+
+pub fn auth_status(cwd: &Path) -> Result<GitAuthStatus, GitServiceError> {
+    let helper = run_git(cwd, &["config", "--get", "credential.helper"])
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty());
+    Ok(GitAuthStatus {
+        ssh_agent_available: std::env::var_os("SSH_AUTH_SOCK").is_some()
+            || std::env::var_os("SSH_AGENT_PID").is_some(),
+        https_helper_configured: helper.is_some(),
+    })
+}
+
+pub fn detect_remote_provider(url: &str) -> Option<ProviderRepository> {
+    parse_remote_provider_url(url)
+}
+
 pub fn worktree_is_clean(cwd: &Path) -> Result<bool, GitServiceError> {
     let out = run_git(cwd, &["status", "--porcelain"])?;
     Ok(out.stdout.is_empty())
@@ -2301,6 +2694,16 @@ mod tests {
         std::env::temp_dir().join(format!("branchforge-git-service-{nanos}-{seq}"))
     }
 
+    fn init_basic_repo(repo_dir: &std::path::Path) {
+        assert!(std::fs::create_dir_all(repo_dir).is_ok());
+        assert!(run_git(repo_dir, &["init"]).is_ok());
+        assert!(run_git(repo_dir, &["config", "user.email", "dev@example.com"]).is_ok());
+        assert!(run_git(repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+        assert!(std::fs::write(repo_dir.join("README.md"), "base\n").is_ok());
+        assert!(stage_paths(repo_dir, &["README.md".to_string()]).is_ok());
+        assert!(commit_create(repo_dir, "base").is_ok());
+    }
+
     fn git_lfs_available() -> bool {
         std::process::Command::new("git")
             .args(["lfs", "version"])
@@ -2389,6 +2792,120 @@ mod tests {
         assert!(run_git(&clone, &["lfs", "install", "--local"]).is_ok());
 
         Some((clone, payload))
+    }
+
+    #[test]
+    fn remote_sync_primitives_round_trip_against_local_bare_remote() {
+        let root = unique_temp_dir();
+        let source = root.join("source");
+        let clone = root.join("clone");
+        let origin = root.join("origin.git");
+        assert!(std::fs::create_dir_all(&root).is_ok());
+        init_basic_repo(&source);
+        assert!(
+            run_git(
+                &root,
+                &["init", "--bare", origin.to_string_lossy().as_ref()]
+            )
+            .is_ok()
+        );
+
+        assert!(remote_add(&source, "origin", origin.to_string_lossy().as_ref()).is_ok());
+        let branch = current_branch(&source).unwrap_or_else(|_| "master".to_string());
+        assert!(push_set_upstream(&source, "origin", &branch).is_ok());
+
+        let remotes = remote_list(&source).expect("remotes");
+        assert_eq!(remotes.len(), 1);
+        assert_eq!(remotes[0].name, "origin");
+        assert_eq!(
+            remotes[0].fetch_url.as_deref(),
+            Some(origin.to_string_lossy().as_ref())
+        );
+
+        let upstream = upstream_status(&source).expect("upstream");
+        assert_eq!(upstream.current_branch.as_deref(), Some(branch.as_str()));
+        assert_eq!(
+            upstream.upstream.as_deref(),
+            Some(format!("origin/{branch}").as_str())
+        );
+        assert_eq!((upstream.ahead, upstream.behind), (0, 0));
+
+        let remote_branches = remote_branch_list(&source).expect("remote branches");
+        assert!(
+            remote_branches
+                .iter()
+                .any(|item| item.remote == "origin" && item.name == branch)
+        );
+
+        assert!(
+            run_git(
+                &root,
+                &[
+                    "clone",
+                    origin.to_string_lossy().as_ref(),
+                    clone.to_string_lossy().as_ref()
+                ]
+            )
+            .is_ok()
+        );
+        assert!(run_git(&clone, &["config", "user.email", "dev@example.com"]).is_ok());
+        assert!(run_git(&clone, &["config", "user.name", "Dev User"]).is_ok());
+        assert!(std::fs::write(clone.join("remote.txt"), "remote\n").is_ok());
+        assert!(stage_paths(&clone, &["remote.txt".to_string()]).is_ok());
+        assert!(commit_create(&clone, "remote change").is_ok());
+        assert!(push_current(&clone).is_ok());
+
+        assert!(fetch(&source, Some("origin")).is_ok());
+        let behind = upstream_status(&source).expect("behind");
+        assert_eq!(behind.behind, 1);
+        assert!(pull_current(&source).is_ok());
+        assert!(source.join("remote.txt").exists());
+
+        assert!(std::fs::write(source.join("local.txt"), "local\n").is_ok());
+        assert!(stage_paths(&source, &["local.txt".to_string()]).is_ok());
+        assert!(commit_create(&source, "local change").is_ok());
+        assert!(push_current(&source).is_ok());
+        assert!(fetch(&source, Some("origin")).is_ok());
+        assert!(run_git(&source, &["reset", "--hard", "HEAD~1"]).is_ok());
+        assert!(push_force_with_lease(&source, Some("origin"), Some(&branch)).is_ok());
+
+        assert!(remote_rename(&source, "origin", "upstream").is_ok());
+        assert!(
+            remote_list(&source)
+                .expect("renamed remotes")
+                .iter()
+                .any(|remote| remote.name == "upstream")
+        );
+        assert!(remote_remove(&source, "upstream").is_ok());
+        assert!(remote_list(&source).expect("removed remotes").is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn remote_provider_detection_and_redaction_hide_auth_material() {
+        let github = detect_remote_provider("git@github.com:branchforge/app.git").expect("github");
+        assert_eq!(github.provider, ProviderKind::GitHub);
+        assert_eq!(github.host, "github.com");
+        assert_eq!(github.owner, "branchforge");
+        assert_eq!(github.repo, "app");
+        assert_eq!(github.web_url, "https://github.com/branchforge/app");
+
+        let gitlab =
+            detect_remote_provider("https://oauth-token@gitlab.com/group/app.git").expect("gitlab");
+        assert_eq!(gitlab.provider, ProviderKind::GitLab);
+        assert_eq!(gitlab.host, "gitlab.com");
+        assert_eq!(gitlab.web_url, "https://gitlab.com/group/app");
+
+        let text = redact_secret_text(
+            "token=abc password=def Authorization: Bearer secret https://ghp_x@gitlab.com/g/r.git access_token=ghi",
+        );
+        assert!(!text.contains("abc"));
+        assert!(!text.contains("def"));
+        assert!(!text.contains("secret"));
+        assert!(!text.contains("ghp_x"));
+        assert!(!text.contains("ghi"));
+        assert!(text.contains("<redacted>"));
     }
 
     #[test]

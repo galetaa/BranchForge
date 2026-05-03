@@ -7,7 +7,8 @@ use state_store::{
     BackupRefSummary, BlameLine, BranchInfo, CommitDetails, DiffChunk, DiffDescriptor,
     DiffLoadRequest, DiffSource, DiffState, HistoryCursor, JournalStatus, OperationSessionKind,
     OperationSessionState, RebaseEntryAction, RebasePlan, RebasePlanEntry, RebaseSessionSnapshot,
-    RefSnapshotEntry, RefSnapshotSummary, RepoCapabilitiesSnapshot, StateStore, StatusSnapshot,
+    RefSnapshotEntry, RefSnapshotSummary, RemoteBranchInfo, RemoteInfo, RemoteState,
+    RepoCapabilitiesSnapshot, StateStore, StatusSnapshot, UpstreamStatus,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -402,6 +403,180 @@ pub fn execute_job_op(
         }
         "refs.refresh" => {
             refresh_refs(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "remote.refresh" => {
+            refresh_remotes(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "remote.add" => {
+            let name = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "remote.add requires name in request.paths[0]".to_string(),
+                }
+            })?;
+            let url = request.paths.get(1).map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "remote.add requires url in request.paths[1]".to_string(),
+                }
+            })?;
+            git_service::remote_add(cwd, name, url)?;
+            refresh_remotes(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "remote.remove" => {
+            let name = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "remote.remove requires name in request.paths[0]".to_string(),
+                }
+            })?;
+            git_service::remote_remove(cwd, name)?;
+            refresh_remotes(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "remote.rename" => {
+            let old = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "remote.rename requires old name in request.paths[0]".to_string(),
+                }
+            })?;
+            let new = request.paths.get(1).map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "remote.rename requires new name in request.paths[1]".to_string(),
+                }
+            })?;
+            git_service::remote_rename(cwd, old, new)?;
+            refresh_remotes(cwd, store)?;
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "remote.fetch" => {
+            let remote = request.paths.first().map(String::as_str);
+            let text = git_service::fetch(cwd, remote)?;
+            refresh_remotes(cwd, store)?;
+            store.set_remote_sync_message(Some(if text.is_empty() {
+                "fetch completed".to_string()
+            } else {
+                text
+            }));
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "remote.fetch_all" => {
+            let text = git_service::fetch_all(cwd)?;
+            refresh_remotes(cwd, store)?;
+            store.set_remote_sync_message(Some(if text.is_empty() {
+                "fetch --all completed".to_string()
+            } else {
+                text
+            }));
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "remote.pull" => {
+            let text = git_service::pull_current(cwd)?;
+            refresh_repo_and_status(cwd, store)?;
+            refresh_remotes(cwd, store)?;
+            store.set_remote_sync_message(Some(if text.is_empty() {
+                "pull completed".to_string()
+            } else {
+                text
+            }));
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "remote.push" => {
+            let text = git_service::push_current(cwd)?;
+            refresh_remotes(cwd, store)?;
+            store.set_remote_sync_message(Some(if text.is_empty() {
+                "push completed".to_string()
+            } else {
+                text
+            }));
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "remote.push_set_upstream" => {
+            let remote = request
+                .paths
+                .first()
+                .map(String::as_str)
+                .unwrap_or("origin");
+            let branch = request
+                .paths
+                .get(1)
+                .cloned()
+                .or_else(|| {
+                    git_service::upstream_status(cwd)
+                        .ok()
+                        .and_then(|s| s.current_branch)
+                })
+                .ok_or_else(|| JobExecutionError::InvalidInput {
+                    message: "remote.push_set_upstream requires branch when HEAD is detached"
+                        .to_string(),
+                })?;
+            let text = git_service::push_set_upstream(cwd, remote, &branch)?;
+            refresh_remotes(cwd, store)?;
+            store.set_remote_sync_message(Some(if text.is_empty() {
+                format!("pushed {branch} with upstream {remote}")
+            } else {
+                text
+            }));
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "remote.push_force_with_lease" => {
+            let remote = request.paths.first().map(String::as_str);
+            let branch = request.paths.get(1).map(String::as_str);
+            let text = git_service::push_force_with_lease(cwd, remote, branch)?;
+            refresh_remotes(cwd, store)?;
+            store.set_remote_sync_message(Some(if text.is_empty() {
+                "force-with-lease push completed".to_string()
+            } else {
+                text
+            }));
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
+        "remote.branch_list" => {
+            refresh_remotes(cwd, store)?;
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -1591,6 +1766,49 @@ fn refresh_refs(cwd: &Path, store: &mut StateStore) -> Result<(), JobExecutionEr
     Ok(())
 }
 
+fn refresh_remotes(cwd: &Path, store: &mut StateStore) -> Result<(), JobExecutionError> {
+    let remotes = git_service::remote_list(cwd)?
+        .into_iter()
+        .map(|remote| RemoteInfo {
+            name: remote.name,
+            fetch_url: remote.fetch_url,
+            push_url: remote.push_url,
+        })
+        .collect::<Vec<_>>();
+    let remote_branches = git_service::remote_branch_list(cwd)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|branch| RemoteBranchInfo {
+            remote: branch.remote,
+            name: branch.name,
+            oid: branch.oid,
+        })
+        .collect::<Vec<_>>();
+    let upstream = git_service::upstream_status(cwd)
+        .ok()
+        .map(|status| UpstreamStatus {
+            current_branch: status.current_branch,
+            upstream: status.upstream,
+            ahead: status.ahead,
+            behind: status.behind,
+        });
+    let auth = git_service::auth_status(cwd).unwrap_or_default();
+    let previous_message = store.snapshot().remotes.last_sync_message.clone();
+    store.update_remote_state(RemoteState {
+        remotes,
+        remote_branches,
+        upstream,
+        auth: state_store::AuthStatus {
+            ssh_agent_available: auth.ssh_agent_available,
+            https_helper_configured: auth.https_helper_configured,
+            accounts: store.snapshot().remotes.auth.accounts.clone(),
+            last_error: None,
+        },
+        last_sync_message: previous_message,
+    });
+    Ok(())
+}
+
 fn refresh_after_advanced_op(cwd: &Path, store: &mut StateStore) -> Result<(), JobExecutionError> {
     refresh_repo_and_status(cwd, store)?;
     refresh_refs(cwd, store)?;
@@ -2159,10 +2377,29 @@ fn needs_backup_ref(op: &str) -> bool {
 
 fn risk_for_op(op: &str) -> Option<DangerLevel> {
     match op {
-        "reset.refs" | "rebase.execute" | "merge.execute" | "merge.abort" | "rebase.abort"
-        | "conflict.abort" | "branch.delete" | "tag.delete" | "stash.drop" | "stash.pop"
-        | "file.discard" | "file.discard_hunk" | "file.discard_lines" => Some(DangerLevel::High),
-        "commit.amend" | "branch.rename" | "worktree.remove" => Some(DangerLevel::Medium),
+        "reset.refs"
+        | "rebase.execute"
+        | "merge.execute"
+        | "merge.abort"
+        | "rebase.abort"
+        | "conflict.abort"
+        | "branch.delete"
+        | "tag.delete"
+        | "stash.drop"
+        | "stash.pop"
+        | "file.discard"
+        | "file.discard_hunk"
+        | "file.discard_lines"
+        | "remote.remove"
+        | "remote.push_force_with_lease" => Some(DangerLevel::High),
+        "commit.amend"
+        | "branch.rename"
+        | "worktree.remove"
+        | "remote.add"
+        | "remote.rename"
+        | "remote.pull"
+        | "remote.push"
+        | "remote.push_set_upstream" => Some(DangerLevel::Medium),
         _ => None,
     }
 }
@@ -2251,6 +2488,17 @@ fn is_journaled_op(op: &str) -> bool {
             | "diagnostics.lfs_status"
             | "diagnostics.lfs_fetch"
             | "diagnostics.lfs_pull"
+            | "remote.refresh"
+            | "remote.add"
+            | "remote.remove"
+            | "remote.rename"
+            | "remote.fetch"
+            | "remote.fetch_all"
+            | "remote.pull"
+            | "remote.push"
+            | "remote.push_set_upstream"
+            | "remote.push_force_with_lease"
+            | "remote.branch_list"
             | "tag.create"
             | "tag.delete"
             | "tag.checkout"
@@ -2279,10 +2527,123 @@ mod tests {
         std::env::temp_dir().join(format!("branchforge-job-system-{nanos}-{seq}"))
     }
 
+    fn init_basic_repo(repo_dir: &std::path::Path) {
+        assert!(std::fs::create_dir_all(repo_dir).is_ok());
+        assert!(git_service::run_git(repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+        assert!(std::fs::write(repo_dir.join("README.md"), "base\n").is_ok());
+        assert!(git_service::stage_paths(repo_dir, &["README.md".to_string()]).is_ok());
+        assert!(git_service::commit_create(repo_dir, "base").is_ok());
+    }
+
     #[test]
     fn maps_status_refresh() {
         let result = map_to_git_command("status.refresh");
         assert!(result.is_some());
+    }
+
+    #[test]
+    fn remote_jobs_update_store_remote_state_and_journal() {
+        let root = unique_temp_dir();
+        let repo_dir = root.join("repo");
+        let origin = root.join("origin.git");
+        assert!(std::fs::create_dir_all(&root).is_ok());
+        init_basic_repo(&repo_dir);
+        assert!(
+            git_service::run_git(
+                &root,
+                &["init", "--bare", origin.to_string_lossy().as_ref()]
+            )
+            .is_ok()
+        );
+
+        let mut store = StateStore::new();
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "remote.add".to_string(),
+                    lock: JobLock::RefsWrite,
+                    paths: vec!["origin".to_string(), origin.to_string_lossy().to_string()],
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert!(
+            store
+                .snapshot()
+                .remotes
+                .remotes
+                .iter()
+                .any(|remote| remote.name == "origin")
+        );
+
+        let branch = git_service::run_git(&repo_dir, &["branch", "--show-current"])
+            .ok()
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty())
+            .unwrap_or_else(|| "master".to_string());
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "remote.push_set_upstream".to_string(),
+                    lock: JobLock::Network,
+                    paths: vec!["origin".to_string(), branch.clone()],
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        let snapshot = store.snapshot();
+        let expected_upstream = format!("origin/{branch}");
+        assert_eq!(
+            snapshot
+                .remotes
+                .upstream
+                .as_ref()
+                .and_then(|state| state.upstream.as_deref()),
+            Some(expected_upstream.as_str())
+        );
+        assert!(snapshot.remotes.last_sync_message.is_some());
+        assert!(
+            snapshot
+                .journal
+                .entries
+                .iter()
+                .any(|entry| entry.op == "remote.push_set_upstream")
+        );
+
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "remote.branch_list".to_string(),
+                    lock: JobLock::Read,
+                    paths: Vec::new(),
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert!(
+            store
+                .snapshot()
+                .remotes
+                .remote_branches
+                .iter()
+                .any(|item| item.remote == "origin" && item.name == branch)
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
