@@ -1884,7 +1884,7 @@ fn redact_keyed_secrets(part: &str) -> String {
         output.push_str(&part[cursor..value_start]);
 
         let value_len = part[value_start..]
-            .find(|ch: char| ch == '&' || ch == ';')
+            .find(['&', ';'])
             .unwrap_or(part.len() - value_start);
         let value_end = value_start + value_len;
         output.push_str("<redacted>");

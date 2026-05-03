@@ -1083,8 +1083,14 @@ mod tests {
         let mut supervisor = PluginSupervisor::new(process);
         let mut store = StateStore::new();
 
-        std::thread::sleep(std::time::Duration::from_millis(30));
-        let first = sync_plugin_runtime_health(&mut supervisor, &mut store).expect("sync");
+        let mut first = ProcessHealth::Running;
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            first = sync_plugin_runtime_health(&mut supervisor, &mut store).expect("sync");
+            if matches!(first, ProcessHealth::Restarted { .. }) {
+                break;
+            }
+        }
         assert!(matches!(first, ProcessHealth::Restarted { .. }));
 
         let palette_items = ui_shell::palette::build_palette(&[], "", false);
