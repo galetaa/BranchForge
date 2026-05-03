@@ -570,6 +570,7 @@ impl BranchForgeDesktopApp {
     ) {
         ui.label(RichText::new(format!("{title} ({})", files.len())).strong());
         egui::ScrollArea::vertical()
+            .id_salt(format!("status-file-bucket-{title}"))
             .max_height(240.0)
             .auto_shrink([false, false])
             .show(ui, |ui| {
