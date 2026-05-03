@@ -53,6 +53,17 @@ pub struct BranchForgeDesktopApp {
     branch_name_input: String,
     compare_base_input: String,
     compare_head_input: String,
+    remote_name_input: String,
+    remote_url_input: String,
+    workspace_name_input: String,
+    workspace_repo_input: String,
+    pr_base_input: String,
+    pr_head_input: String,
+    pr_title_input: String,
+    pr_number_input: String,
+    stack_name_input: String,
+    stack_base_input: String,
+    stack_branches_input: String,
     ui_error: Option<String>,
 }
 
@@ -75,6 +86,17 @@ impl BranchForgeDesktopApp {
             branch_name_input: String::new(),
             compare_base_input: String::new(),
             compare_head_input: String::new(),
+            remote_name_input: "origin".to_string(),
+            remote_url_input: String::new(),
+            workspace_name_input: "Default Workspace".to_string(),
+            workspace_repo_input: String::new(),
+            pr_base_input: "main".to_string(),
+            pr_head_input: String::new(),
+            pr_title_input: String::new(),
+            pr_number_input: String::new(),
+            stack_name_input: "Feature Stack".to_string(),
+            stack_base_input: "main".to_string(),
+            stack_branches_input: String::new(),
             ui_error,
         }
     }
@@ -418,6 +440,10 @@ impl BranchForgeDesktopApp {
                 PanelId::Branches => self.render_branches_panel(ui, state),
                 PanelId::Tags => self.render_tags_panel(ui, state),
                 PanelId::Compare => self.render_compare_panel(ui, state),
+                PanelId::Remotes => self.render_remotes_panel(ui, state),
+                PanelId::Workspaces => self.render_workspaces_panel(ui, state),
+                PanelId::PullRequests => self.render_pull_requests_panel(ui, state),
+                PanelId::BranchStacks => self.render_branch_stacks_panel(ui, state),
                 PanelId::Stash => self.render_simple_action_panel(
                     ui,
                     state,
@@ -992,6 +1018,573 @@ impl BranchForgeDesktopApp {
         ));
         for commit in snapshot.compare.commits.iter().take(30) {
             ui.label(format!("{} {}", short_oid(&commit.oid), commit.summary));
+        }
+    }
+
+    fn render_remotes_panel(&mut self, ui: &mut egui::Ui, state: &RuntimeAdapterState) {
+        let snapshot = &state.snapshot;
+        ui.horizontal(|ui| {
+            ui.heading("Remotes");
+            if ui
+                .add_enabled(!state.busy, egui::Button::new("Refresh"))
+                .clicked()
+            {
+                self.execute_action_direct("remote.refresh", Vec::new(), false);
+            }
+            if ui
+                .add_enabled(!state.busy, egui::Button::new("Fetch all"))
+                .clicked()
+            {
+                self.execute_action_direct("remote.fetch_all", Vec::new(), false);
+            }
+            if ui
+                .add_enabled(!state.busy, egui::Button::new("Pull"))
+                .clicked()
+            {
+                self.preview_or_confirm(
+                    "remote.pull",
+                    Vec::new(),
+                    "Preview pull".to_string(),
+                    "Pull current branch from upstream?".to_string(),
+                );
+            }
+            if ui
+                .add_enabled(!state.busy, egui::Button::new("Push"))
+                .clicked()
+            {
+                self.preview_or_confirm(
+                    "remote.push",
+                    Vec::new(),
+                    "Preview push".to_string(),
+                    "Push current branch to upstream?".to_string(),
+                );
+            }
+        });
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.remote_name_input)
+                    .desired_width(120.0)
+                    .hint_text("name"),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut self.remote_url_input)
+                    .desired_width(360.0)
+                    .hint_text("remote URL"),
+            );
+            if ui
+                .add_enabled(
+                    !self.remote_name_input.trim().is_empty()
+                        && !self.remote_url_input.trim().is_empty()
+                        && !state.busy,
+                    egui::Button::new("Add"),
+                )
+                .clicked()
+            {
+                self.preview_or_confirm(
+                    "remote.add",
+                    vec![
+                        self.remote_name_input.trim().to_string(),
+                        self.remote_url_input.trim().to_string(),
+                    ],
+                    "Preview add remote".to_string(),
+                    "Add this remote to the repository?".to_string(),
+                );
+            }
+            let current_branch = snapshot
+                .repo
+                .as_ref()
+                .and_then(|repo| repo.head.clone())
+                .unwrap_or_default();
+            if ui
+                .add_enabled(
+                    !self.remote_name_input.trim().is_empty()
+                        && !current_branch.is_empty()
+                        && !state.busy,
+                    egui::Button::new("Set upstream"),
+                )
+                .clicked()
+            {
+                self.preview_or_confirm(
+                    "remote.push_set_upstream",
+                    vec![self.remote_name_input.trim().to_string(), current_branch],
+                    "Preview upstream push".to_string(),
+                    "Push current branch and set upstream?".to_string(),
+                );
+            }
+        });
+
+        if let Some(upstream) = snapshot.remotes.upstream.as_ref() {
+            ui.separator();
+            ui.label(format!(
+                "Current: {} -> {} (+{} / -{})",
+                upstream.current_branch.as_deref().unwrap_or("<detached>"),
+                upstream.upstream.as_deref().unwrap_or("<none>"),
+                upstream.ahead,
+                upstream.behind
+            ));
+        }
+        ui.label(format!(
+            "Auth: ssh-agent={} credential-helper={}",
+            snapshot.remotes.auth.ssh_agent_available,
+            snapshot.remotes.auth.https_helper_configured
+        ));
+        if let Some(message) = snapshot.remotes.last_sync_message.as_deref() {
+            ui.label(message);
+        }
+
+        ui.separator();
+        egui::Grid::new("remotes.rows")
+            .striped(true)
+            .show(ui, |ui| {
+                ui.label(RichText::new("Name").strong());
+                ui.label(RichText::new("Fetch").strong());
+                ui.label(RichText::new("Push").strong());
+                ui.label(RichText::new("Actions").strong());
+                ui.end_row();
+                for remote in &snapshot.remotes.remotes {
+                    ui.label(remote.name.as_str());
+                    ui.label(remote.fetch_url.as_deref().unwrap_or(""));
+                    ui.label(remote.push_url.as_deref().unwrap_or(""));
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(!state.busy, egui::Button::new("Fetch"))
+                            .clicked()
+                        {
+                            self.execute_action_direct(
+                                "remote.fetch",
+                                vec![remote.name.clone()],
+                                false,
+                            );
+                        }
+                        if ui
+                            .add_enabled(!state.busy, egui::Button::new("Remove"))
+                            .clicked()
+                        {
+                            self.preview_or_confirm(
+                                "remote.remove",
+                                vec![remote.name.clone()],
+                                "Preview remote remove".to_string(),
+                                format!("Remove remote {}?", remote.name),
+                            );
+                        }
+                        let branch = snapshot
+                            .repo
+                            .as_ref()
+                            .and_then(|repo| repo.head.clone())
+                            .unwrap_or_default();
+                        if ui
+                            .add_enabled(
+                                !branch.is_empty() && !state.busy,
+                                egui::Button::new("Lease"),
+                            )
+                            .clicked()
+                        {
+                            self.preview_or_confirm(
+                                "remote.push_force_with_lease",
+                                vec![remote.name.clone(), branch],
+                                "Preview force-with-lease".to_string(),
+                                "Force push with lease?".to_string(),
+                            );
+                        }
+                    });
+                    ui.end_row();
+                }
+            });
+
+        if !snapshot.remotes.remote_branches.is_empty() {
+            ui.separator();
+            ui.label(RichText::new("Remote Branches").strong());
+            for branch in snapshot.remotes.remote_branches.iter().take(80) {
+                ui.label(format!(
+                    "{}/{} {}",
+                    branch.remote,
+                    branch.name,
+                    short_oid(&branch.oid)
+                ));
+            }
+        }
+    }
+
+    fn render_workspaces_panel(&mut self, ui: &mut egui::Ui, state: &RuntimeAdapterState) {
+        let snapshot = &state.snapshot;
+        ui.heading("Workspaces");
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.workspace_name_input)
+                    .desired_width(220.0)
+                    .hint_text("Workspace name"),
+            );
+            if ui
+                .add_enabled(
+                    !self.workspace_name_input.trim().is_empty() && !state.busy,
+                    egui::Button::new("Create"),
+                )
+                .clicked()
+            {
+                self.execute_action_direct(
+                    "workspace.create",
+                    vec![self.workspace_name_input.trim().to_string()],
+                    false,
+                );
+            }
+            if ui
+                .add_enabled(!state.busy, egui::Button::new("Refresh all"))
+                .clicked()
+            {
+                self.execute_action_direct("workspace.refresh_all", Vec::new(), false);
+            }
+            if ui
+                .add_enabled(!state.busy, egui::Button::new("Fetch all"))
+                .clicked()
+            {
+                self.execute_action_direct("workspace.fetch_all", Vec::new(), false);
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.workspace_repo_input)
+                    .desired_width(420.0)
+                    .hint_text("Repository path"),
+            );
+            if ui
+                .add_enabled(
+                    !self.workspace_repo_input.trim().is_empty() && !state.busy,
+                    egui::Button::new("Add repo"),
+                )
+                .clicked()
+            {
+                self.execute_action_direct(
+                    "workspace.add_repo",
+                    vec![self.workspace_repo_input.trim().to_string()],
+                    false,
+                );
+            }
+            if let Some(repo) = snapshot.repo.as_ref()
+                && ui
+                    .add_enabled(!state.busy, egui::Button::new("Add current"))
+                    .clicked()
+            {
+                self.execute_action_direct("workspace.add_repo", vec![repo.root.clone()], false);
+            }
+        });
+
+        ui.separator();
+        for workspace in &snapshot.workspace.workspaces {
+            let active =
+                snapshot.workspace.active_workspace_id.as_deref() == Some(workspace.id.as_str());
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("{} ({})", workspace.name, workspace.repos.len()))
+                        .strong(),
+                );
+                if active {
+                    ui.label("active");
+                }
+                if ui
+                    .add_enabled(!active && !state.busy, egui::Button::new("Switch"))
+                    .clicked()
+                {
+                    self.execute_action_direct(
+                        "workspace.switch",
+                        vec![workspace.id.clone()],
+                        false,
+                    );
+                }
+            });
+            egui::Grid::new(format!("workspace.{}.repos", workspace.id))
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.label(RichText::new("Repo").strong());
+                    ui.label(RichText::new("Branch").strong());
+                    ui.label(RichText::new("Status").strong());
+                    ui.label(RichText::new("Ahead").strong());
+                    ui.label(RichText::new("Actions").strong());
+                    ui.end_row();
+                    for repo in &workspace.repos {
+                        ui.label(repo.display_name.as_str());
+                        ui.label(repo.branch_summary.current_branch.as_deref().unwrap_or(""));
+                        ui.label(if repo.status_summary.dirty {
+                            "dirty"
+                        } else {
+                            "clean"
+                        });
+                        ui.label(format!(
+                            "+{} / -{}",
+                            repo.branch_summary.ahead, repo.branch_summary.behind
+                        ));
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(!state.busy, egui::Button::new("Open"))
+                                .clicked()
+                            {
+                                self.execute_action_direct(
+                                    "workspace.switch_repo",
+                                    vec![repo.repo_id.clone()],
+                                    false,
+                                );
+                            }
+                            if ui
+                                .add_enabled(!state.busy, egui::Button::new("Remove"))
+                                .clicked()
+                            {
+                                self.preview_or_confirm(
+                                    "workspace.remove_repo",
+                                    vec![repo.repo_id.clone()],
+                                    "Preview workspace removal".to_string(),
+                                    "Remove repository from this workspace?".to_string(),
+                                );
+                            }
+                        });
+                        ui.end_row();
+                    }
+                });
+        }
+        if !snapshot.workspace.last_results.is_empty() {
+            ui.separator();
+            ui.label(RichText::new("Last Results").strong());
+            for result in snapshot.workspace.last_results.iter().take(30) {
+                ui.label(format!(
+                    "{} {} {}",
+                    result.repo_id,
+                    result.op,
+                    if result.success {
+                        "ok"
+                    } else {
+                        result.message.as_str()
+                    }
+                ));
+            }
+        }
+    }
+
+    fn render_pull_requests_panel(&mut self, ui: &mut egui::Ui, state: &RuntimeAdapterState) {
+        let snapshot = &state.snapshot;
+        ui.heading("Pull Requests");
+        ui.separator();
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(!state.busy, egui::Button::new("Detect provider"))
+                .clicked()
+            {
+                self.execute_action_direct("pr.detect_provider", Vec::new(), false);
+            }
+            if ui
+                .add_enabled(!state.busy, egui::Button::new("List"))
+                .clicked()
+            {
+                let args = if self.pr_base_input.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    vec![self.pr_base_input.trim().to_string()]
+                };
+                self.execute_action_direct("pr.list", args, false);
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.pr_base_input)
+                    .desired_width(120.0)
+                    .hint_text("base"),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut self.pr_head_input)
+                    .desired_width(180.0)
+                    .hint_text("head"),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut self.pr_title_input)
+                    .desired_width(260.0)
+                    .hint_text("title"),
+            );
+            if ui
+                .add_enabled(!state.busy, egui::Button::new("Create URL"))
+                .clicked()
+            {
+                let mut args = Vec::new();
+                if !self.pr_base_input.trim().is_empty() {
+                    args.push(self.pr_base_input.trim().to_string());
+                }
+                if !self.pr_head_input.trim().is_empty() {
+                    args.push(self.pr_head_input.trim().to_string());
+                } else if !self.pr_title_input.trim().is_empty()
+                    && let Some(head) = snapshot.repo.as_ref().and_then(|repo| repo.head.clone())
+                {
+                    args.push(head);
+                }
+                if !self.pr_title_input.trim().is_empty() {
+                    args.push(self.pr_title_input.trim().to_string());
+                }
+                self.execute_action_direct("pr.create_url", args, false);
+            }
+            if ui
+                .add_enabled(!state.busy, egui::Button::new("Open URL"))
+                .clicked()
+            {
+                self.execute_action_direct("pr.open", Vec::new(), false);
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.pr_number_input)
+                    .desired_width(120.0)
+                    .hint_text("PR/MR #"),
+            );
+            if ui
+                .add_enabled(
+                    !self.pr_number_input.trim().is_empty() && !state.busy,
+                    egui::Button::new("Checkout"),
+                )
+                .clicked()
+            {
+                self.preview_or_confirm(
+                    "pr.checkout",
+                    vec![self.pr_number_input.trim().to_string()],
+                    "Preview PR checkout".to_string(),
+                    "Fetch and checkout this pull request?".to_string(),
+                );
+            }
+        });
+        if let Some(provider) = snapshot.pull_requests.detected_provider.as_ref() {
+            ui.separator();
+            ui.label(format!(
+                "Provider: {:?} {}",
+                provider.provider, provider.web_url
+            ));
+        }
+        ui.separator();
+        for pr in &snapshot.pull_requests.pull_requests {
+            ui.horizontal(|ui| {
+                ui.label(format!("{} -> {}", pr.source_branch, pr.target_branch));
+                ui.label(format!("{:?}", pr.state));
+                if let Some(url) = pr.web_url.as_deref() {
+                    ui.label(url);
+                }
+            });
+            for check in &pr.checks {
+                ui.weak(format!("{} {:?}", check.name, check.status));
+            }
+        }
+        if let Some(error) = snapshot.pull_requests.last_error.as_deref() {
+            ui.colored_label(Color32::from_rgb(248, 113, 113), error);
+        }
+    }
+
+    fn render_branch_stacks_panel(&mut self, ui: &mut egui::Ui, state: &RuntimeAdapterState) {
+        let snapshot = &state.snapshot;
+        ui.heading("Branch Stacks");
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.stack_base_input)
+                    .desired_width(140.0)
+                    .hint_text("base"),
+            );
+            if ui
+                .add_enabled(!state.busy, egui::Button::new("Detect"))
+                .clicked()
+            {
+                let args = if self.stack_base_input.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    vec![self.stack_base_input.trim().to_string()]
+                };
+                self.execute_action_direct("stack.detect", args, false);
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.stack_name_input)
+                    .desired_width(180.0)
+                    .hint_text("stack name"),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut self.stack_branches_input)
+                    .desired_width(360.0)
+                    .hint_text("branch1 branch2"),
+            );
+            if ui
+                .add_enabled(
+                    !self.stack_name_input.trim().is_empty()
+                        && !self.stack_base_input.trim().is_empty()
+                        && !self.stack_branches_input.trim().is_empty()
+                        && !state.busy,
+                    egui::Button::new("Create"),
+                )
+                .clicked()
+            {
+                let mut args = vec![
+                    self.stack_name_input.trim().to_string(),
+                    self.stack_base_input.trim().to_string(),
+                ];
+                args.extend(
+                    self.stack_branches_input
+                        .split_whitespace()
+                        .map(str::to_string),
+                );
+                self.execute_action_direct("stack.create", args, false);
+            }
+            if ui
+                .add_enabled(
+                    snapshot.branch_stacks.active_stack_id.is_some() && !state.busy,
+                    egui::Button::new("Restack active"),
+                )
+                .clicked()
+            {
+                let stack_id = snapshot
+                    .branch_stacks
+                    .active_stack_id
+                    .clone()
+                    .unwrap_or_default();
+                self.preview_or_confirm(
+                    "stack.restack",
+                    vec![stack_id],
+                    "Preview stack restack".to_string(),
+                    "Restack active branch stack?".to_string(),
+                );
+            }
+        });
+        ui.separator();
+        for stack in &snapshot.branch_stacks.stacks {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("{} ({})", stack.name, stack.entries.len())).strong(),
+                );
+                if snapshot.branch_stacks.active_stack_id.as_deref() == Some(stack.id.as_str()) {
+                    ui.label("active");
+                }
+                if ui
+                    .add_enabled(!state.busy, egui::Button::new("Restack"))
+                    .clicked()
+                {
+                    self.preview_or_confirm(
+                        "stack.restack",
+                        vec![stack.id.clone()],
+                        "Preview stack restack".to_string(),
+                        format!("Restack {}?", stack.name),
+                    );
+                }
+            });
+            egui::Grid::new(format!("stack.{}.entries", stack.id))
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.label(RichText::new("Branch").strong());
+                    ui.label(RichText::new("Base").strong());
+                    ui.label(RichText::new("Ahead").strong());
+                    ui.label(RichText::new("Status").strong());
+                    ui.end_row();
+                    for entry in &stack.entries {
+                        ui.label(entry.branch.as_str());
+                        ui.label(entry.base_branch.as_str());
+                        ui.label(format!("+{} / -{}", entry.ahead, entry.behind));
+                        ui.label(format!("{:?}", entry.status));
+                        ui.end_row();
+                    }
+                });
+        }
+        if let Some(error) = snapshot.branch_stacks.last_error.as_deref() {
+            ui.colored_label(Color32::from_rgb(248, 113, 113), error);
         }
     }
 

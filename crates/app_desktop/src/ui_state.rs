@@ -6,6 +6,10 @@ pub enum PanelId {
     Branches,
     Tags,
     Compare,
+    Remotes,
+    Workspaces,
+    PullRequests,
+    BranchStacks,
     Stash,
     Worktrees,
     Submodules,
@@ -15,13 +19,17 @@ pub enum PanelId {
 }
 
 impl PanelId {
-    pub const ALL: [PanelId; 12] = [
+    pub const ALL: [PanelId; 16] = [
         PanelId::Status,
         PanelId::History,
         PanelId::Diff,
         PanelId::Branches,
         PanelId::Tags,
         PanelId::Compare,
+        PanelId::Remotes,
+        PanelId::Workspaces,
+        PanelId::PullRequests,
+        PanelId::BranchStacks,
         PanelId::Stash,
         PanelId::Worktrees,
         PanelId::Submodules,
@@ -38,6 +46,10 @@ impl PanelId {
             Self::Branches => "Branches",
             Self::Tags => "Tags",
             Self::Compare => "Compare",
+            Self::Remotes => "Remotes",
+            Self::Workspaces => "Workspaces",
+            Self::PullRequests => "Pull Requests",
+            Self::BranchStacks => "Branch Stacks",
             Self::Stash => "Stash",
             Self::Worktrees => "Worktrees",
             Self::Submodules => "Submodules",
@@ -56,6 +68,10 @@ impl PanelId {
             Self::Compare => Some("compare"),
             Self::Diagnostics => Some("diagnostics"),
             Self::Diff
+            | Self::Remotes
+            | Self::Workspaces
+            | Self::PullRequests
+            | Self::BranchStacks
             | Self::Stash
             | Self::Worktrees
             | Self::Submodules
