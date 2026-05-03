@@ -4,9 +4,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use app_host::{ConsoleRunnerConfig, HostActionCatalogItem, HostRuntime, HostRuntimeError};
+use app_host::{
+    ConsoleRunnerConfig, HostActionCatalogItem, HostReflogEntry, HostRuntime, HostRuntimeError,
+};
 use graph_model::GraphCommit;
-use state_store::StoreSnapshot;
+use state_store::{OperationPreview, StoreSnapshot};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopRuntimeError {
@@ -50,6 +52,7 @@ pub struct RuntimeAdapterState {
     pub snapshot: StoreSnapshot,
     pub action_catalog: Vec<HostActionCatalogItem>,
     pub graph_rows: Vec<GraphCommit>,
+    pub reflog_entries: Vec<HostReflogEntry>,
     pub busy: bool,
     pub current_operation: Option<String>,
     pub last_message: Option<String>,
@@ -66,7 +69,20 @@ impl RuntimeAdapterState {
 }
 
 enum RuntimeCommand {
-    SubmitLine { line: String, label: String },
+    SubmitLine {
+        line: String,
+        label: String,
+    },
+    Preview {
+        action_id: String,
+        args: Vec<String>,
+        response: Sender<Result<OperationPreview, DesktopRuntimeError>>,
+    },
+    LoadReflog {
+        reference: String,
+        limit: usize,
+        response: Sender<Result<Vec<HostReflogEntry>, DesktopRuntimeError>>,
+    },
     Shutdown,
 }
 
@@ -166,6 +182,42 @@ impl DesktopRuntimeAdapter {
         self.submit_line(tokens.join(" "), format!("Run {action_id}"))
     }
 
+    pub fn preview_action(
+        &self,
+        action_id: &str,
+        args: &[String],
+    ) -> Result<OperationPreview, DesktopRuntimeError> {
+        let (response, receiver) = mpsc::channel();
+        self.sender
+            .send(RuntimeCommand::Preview {
+                action_id: action_id.to_string(),
+                args: args.to_vec(),
+                response,
+            })
+            .map_err(|_| DesktopRuntimeError::system("runtime worker stopped"))?;
+        receiver
+            .recv()
+            .map_err(|_| DesktopRuntimeError::system("runtime preview response dropped"))?
+    }
+
+    pub fn load_reflog(
+        &self,
+        reference: &str,
+        limit: usize,
+    ) -> Result<Vec<HostReflogEntry>, DesktopRuntimeError> {
+        let (response, receiver) = mpsc::channel();
+        self.sender
+            .send(RuntimeCommand::LoadReflog {
+                reference: reference.to_string(),
+                limit,
+                response,
+            })
+            .map_err(|_| DesktopRuntimeError::system("runtime worker stopped"))?;
+        receiver
+            .recv()
+            .map_err(|_| DesktopRuntimeError::system("runtime reflog response dropped"))?
+    }
+
     pub fn wait_for_idle(&self, timeout: Duration) -> bool {
         let started = Instant::now();
         loop {
@@ -212,6 +264,31 @@ fn worker_loop(
     while let Ok(command) = receiver.recv() {
         match command {
             RuntimeCommand::Shutdown => break,
+            RuntimeCommand::Preview {
+                action_id,
+                args,
+                response,
+            } => {
+                let result = runtime
+                    .preview_action(&action_id, &args)
+                    .map_err(DesktopRuntimeError::from);
+                let _ = response.send(result);
+            }
+            RuntimeCommand::LoadReflog {
+                reference,
+                limit,
+                response,
+            } => {
+                let result = runtime
+                    .reflog_entries(&reference, limit)
+                    .map_err(DesktopRuntimeError::from);
+                if let Ok(entries) = result.as_ref()
+                    && let Ok(mut state) = state.lock()
+                {
+                    state.reflog_entries = entries.clone();
+                }
+                let _ = response.send(result);
+            }
             RuntimeCommand::SubmitLine { line, label } => {
                 if let Ok(mut state) = state.lock() {
                     state.busy = true;
@@ -332,6 +409,37 @@ mod tests {
                 .iter()
                 .any(|item| item.action_id == "commit.amend" && item.enabled)
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn previews_and_loads_reflog_through_host_runtime() {
+        let root = unique_temp_dir("safety-runtime");
+        let repo_dir = root.join("repo");
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+        assert!(std::fs::write(repo_dir.join("README.md"), "hello\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["README.md".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "base").is_ok());
+
+        let adapter = DesktopRuntimeAdapter::new(test_config(&root));
+        assert!(adapter.open_repo(&repo_dir).is_ok());
+        assert!(adapter.wait_for_idle(Duration::from_secs(5)));
+
+        let preview = adapter
+            .preview_action("reset.hard", &["HEAD".to_string()])
+            .expect("preview");
+        assert_eq!(preview.operation, "reset.hard");
+        assert!(!preview.git_commands.is_empty());
+
+        let reflog = adapter.load_reflog("HEAD", 10).expect("reflog");
+        assert!(!reflog.is_empty());
+        assert_eq!(adapter.state().reflog_entries, reflog);
 
         let _ = std::fs::remove_dir_all(&root);
     }

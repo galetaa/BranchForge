@@ -10,8 +10,11 @@ use graph_model::{
 };
 use plugin_api::{ConfirmPolicy, DangerLevel};
 use runtime_adapter::{DesktopRuntimeAdapter, DesktopRuntimeError, RuntimeAdapterState};
-use state_store::{DiffSource, JournalStatus, OperationJournalEntry, StoreSnapshot};
-use ui_state::{ConfirmationDialog, DesktopUiState, PanelId};
+use state_store::{
+    DiffSource, ImpactLevel, JournalStatus, OperationJournalEntry, OperationPreview,
+    PreviewWarningLevel, StoreSnapshot,
+};
+use ui_state::{ConfirmationDialog, DesktopUiState, PanelId, PreviewDialog};
 
 const MAX_RENDERED_DIFF_LINES: usize = 900;
 
@@ -151,21 +154,50 @@ impl BranchForgeDesktopApp {
         title: impl Into<String>,
     ) {
         if action_requires_confirmation(item) {
-            self.ui_state.pending_confirmation = Some(ConfirmationDialog {
-                action_id: item.action_id.clone(),
+            let action_id = item.action_id.clone();
+            self.preview_or_confirm(
+                action_id.as_str(),
                 args,
-                title: title.into(),
-                message: format!(
+                title.into(),
+                format!(
                     "{} requires confirmation because its danger level is {}.",
-                    item.action_id,
+                    action_id,
                     format_danger(&item.danger)
                 ),
-            });
+            );
             return;
         }
 
         let result = self.runtime.execute_action(&item.action_id, &args, false);
         self.record_submit(result);
+    }
+
+    fn preview_or_confirm(
+        &mut self,
+        action_id: &str,
+        args: Vec<String>,
+        title: String,
+        fallback_message: String,
+    ) {
+        match self.runtime.preview_action(action_id, &args) {
+            Ok(preview) => {
+                self.ui_state.pending_preview = Some(PreviewDialog {
+                    action_id: action_id.to_string(),
+                    args,
+                    title,
+                    preview,
+                    understood: false,
+                });
+            }
+            Err(error) => {
+                self.ui_state.pending_confirmation = Some(ConfirmationDialog {
+                    action_id: action_id.to_string(),
+                    args,
+                    title,
+                    message: format!("{fallback_message}\nPreview unavailable: {error}"),
+                });
+            }
+        }
     }
 
     fn execute_action_direct(&mut self, action_id: &str, args: Vec<String>, confirmed: bool) {
@@ -740,12 +772,12 @@ impl BranchForgeDesktopApp {
                             .add_enabled(!busy, egui::Button::new("Discard hunk"))
                             .clicked()
                         {
-                            self.ui_state.pending_confirmation = Some(ConfirmationDialog {
-                                action_id: "file.discard_hunk".to_string(),
-                                args: vec![hunk.file_path.clone(), hunk.hunk_index.to_string()],
-                                title: "Confirm discard".to_string(),
-                                message: "Discarding a hunk writes to the worktree.".to_string(),
-                            });
+                            self.preview_or_confirm(
+                                "file.discard_hunk",
+                                vec![hunk.file_path.clone(), hunk.hunk_index.to_string()],
+                                "Preview discard hunk".to_string(),
+                                "Discarding a hunk writes to the worktree.".to_string(),
+                            );
                         }
                         if ui
                             .add_enabled(
@@ -757,13 +789,12 @@ impl BranchForgeDesktopApp {
                             let mut args =
                                 vec![hunk.file_path.clone(), hunk.hunk_index.to_string()];
                             args.extend(selected_lines.iter().map(usize::to_string));
-                            self.ui_state.pending_confirmation = Some(ConfirmationDialog {
-                                action_id: "file.discard_lines".to_string(),
+                            self.preview_or_confirm(
+                                "file.discard_lines",
                                 args,
-                                title: "Confirm discard".to_string(),
-                                message: "Discarding selected lines writes to the worktree."
-                                    .to_string(),
-                            });
+                                "Preview discard selected lines".to_string(),
+                                "Discarding selected lines writes to the worktree.".to_string(),
+                            );
                         }
                     }
                     Some(DiffSource::Index { .. }) => {
@@ -843,12 +874,12 @@ impl BranchForgeDesktopApp {
                     .add_enabled(!state.busy, egui::Button::new("Delete"))
                     .clicked()
                 {
-                    self.ui_state.pending_confirmation = Some(ConfirmationDialog {
-                        action_id: "branch.delete".to_string(),
-                        args: vec![branch.to_string()],
-                        title: "Confirm branch delete".to_string(),
-                        message: format!("Delete branch {branch}?"),
-                    });
+                    self.preview_or_confirm(
+                        "branch.delete",
+                        vec![branch.to_string()],
+                        "Preview branch delete".to_string(),
+                        format!("Delete branch {branch}?"),
+                    );
                 }
             }
         });
@@ -904,12 +935,12 @@ impl BranchForgeDesktopApp {
                     .add_enabled(!state.busy, egui::Button::new("Delete"))
                     .clicked()
                 {
-                    self.ui_state.pending_confirmation = Some(ConfirmationDialog {
-                        action_id: "tag.delete".to_string(),
-                        args: vec![tag.name.clone()],
-                        title: "Confirm tag delete".to_string(),
-                        message: format!("Delete tag {}?", tag.name),
-                    });
+                    self.preview_or_confirm(
+                        "tag.delete",
+                        vec![tag.name.clone()],
+                        "Preview tag delete".to_string(),
+                        format!("Delete tag {}?", tag.name),
+                    );
                 }
             });
         }
@@ -1090,12 +1121,12 @@ impl BranchForgeDesktopApp {
                 .add_enabled(!state.busy, egui::Button::new("Abort"))
                 .clicked()
             {
-                self.ui_state.pending_confirmation = Some(ConfirmationDialog {
-                    action_id: "conflict.abort".to_string(),
-                    args: Vec::new(),
-                    title: "Confirm abort".to_string(),
-                    message: "Abort the active conflict session?".to_string(),
-                });
+                self.preview_or_confirm(
+                    "conflict.abort",
+                    Vec::new(),
+                    "Preview abort".to_string(),
+                    "Abort the active conflict session?".to_string(),
+                );
             }
         });
 
@@ -1163,13 +1194,208 @@ impl BranchForgeDesktopApp {
     fn render_journal_panel(&mut self, ui: &mut egui::Ui, state: &RuntimeAdapterState) {
         ui.heading("Journal");
         ui.separator();
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.ui_state.journal_view_state.filter)
+                    .desired_width(220.0)
+                    .hint_text("Filter"),
+            );
+            ui.checkbox(
+                &mut self.ui_state.journal_view_state.recovery_only,
+                "Recovery available",
+            );
+            if ui
+                .add_enabled(!state.busy, egui::Button::new("Export"))
+                .clicked()
+            {
+                self.execute_action_direct("journal.export", Vec::new(), false);
+            }
+            if ui
+                .add_enabled(!state.busy, egui::Button::new("Keep latest 50"))
+                .clicked()
+            {
+                self.execute_action_direct(
+                    "journal.clear_old_entries",
+                    vec!["50".to_string()],
+                    false,
+                );
+            }
+        });
+        ui.separator();
+
         if state.snapshot.journal.entries.is_empty() {
             ui.weak("<empty>");
-            return;
+        } else {
+            let filter = self.ui_state.journal_view_state.filter.to_lowercase();
+            let entries = state
+                .snapshot
+                .journal
+                .entries
+                .iter()
+                .rev()
+                .filter(|entry| {
+                    (filter.is_empty()
+                        || entry.op.to_lowercase().contains(&filter)
+                        || entry
+                            .error
+                            .as_deref()
+                            .unwrap_or_default()
+                            .to_lowercase()
+                            .contains(&filter))
+                        && (!self.ui_state.journal_view_state.recovery_only
+                            || !entry.backup_refs.is_empty())
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+
+            egui::Grid::new("journal.entries")
+                .striped(true)
+                .min_col_width(80.0)
+                .show(ui, |ui| {
+                    ui.label(RichText::new("Time").strong());
+                    ui.label(RichText::new("Operation").strong());
+                    ui.label(RichText::new("Status").strong());
+                    ui.label(RichText::new("Risk").strong());
+                    ui.label(RichText::new("Recovery").strong());
+                    ui.label(RichText::new("Actions").strong());
+                    ui.end_row();
+
+                    for entry in &entries {
+                        let selected =
+                            self.ui_state.journal_view_state.selected_entry_id == Some(entry.id);
+                        if ui
+                            .selectable_label(selected, entry.started_at_ms.to_string())
+                            .clicked()
+                        {
+                            self.ui_state.journal_view_state.selected_entry_id = Some(entry.id);
+                        }
+                        ui.label(entry.op.as_str());
+                        ui.colored_label(
+                            journal_status_color(entry),
+                            format!("{:?}", entry.status),
+                        );
+                        ui.label(entry.risk.as_ref().map(format_danger).unwrap_or("unknown"));
+                        ui.label(if entry.backup_refs.is_empty() {
+                            ""
+                        } else {
+                            "available"
+                        });
+                        ui.horizontal(|ui| {
+                            if ui.button("Details").clicked() {
+                                self.ui_state.journal_view_state.selected_entry_id = Some(entry.id);
+                                self.execute_action_direct(
+                                    "journal.open_entry",
+                                    vec![entry.id.to_string()],
+                                    false,
+                                );
+                            }
+                            if ui
+                                .add_enabled(
+                                    !entry.backup_refs.is_empty() && !state.busy,
+                                    egui::Button::new("Restore ref"),
+                                )
+                                .clicked()
+                            {
+                                self.preview_or_confirm(
+                                    "journal.restore_ref",
+                                    vec![entry.id.to_string()],
+                                    "Preview ref restore".to_string(),
+                                    "Restore the saved ref from this journal entry?".to_string(),
+                                );
+                            }
+                            if ui
+                                .add_enabled(
+                                    !entry.backup_refs.is_empty() && !state.busy,
+                                    egui::Button::new("Recovery branch"),
+                                )
+                                .clicked()
+                            {
+                                let branch = recovery_branch_name(
+                                    &self.ui_state.journal_view_state.recovery_branch_name,
+                                    entry.id,
+                                );
+                                self.preview_or_confirm(
+                                    "journal.recover_operation",
+                                    vec![entry.id.to_string(), branch],
+                                    "Preview recovery branch".to_string(),
+                                    "Create a recovery branch from the backup ref?".to_string(),
+                                );
+                            }
+                        });
+                        ui.end_row();
+                    }
+                });
         }
-        for entry in state.snapshot.journal.entries.iter().rev() {
-            render_journal_entry(ui, entry);
+
+        if let Some(entry) = self
+            .ui_state
+            .journal_view_state
+            .selected_entry_id
+            .and_then(|id| {
+                state
+                    .snapshot
+                    .journal
+                    .entries
+                    .iter()
+                    .find(|entry| entry.id == id)
+            })
+        {
             ui.separator();
+            render_journal_entry(ui, entry);
+        }
+
+        ui.separator();
+        ui.label(RichText::new("Reflog Recovery").strong());
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.ui_state.journal_view_state.reflog_reference)
+                    .desired_width(160.0)
+                    .hint_text("HEAD"),
+            );
+            ui.add(
+                egui::TextEdit::singleline(
+                    &mut self.ui_state.journal_view_state.recovery_branch_name,
+                )
+                .desired_width(220.0)
+                .hint_text("branchforge/recovery"),
+            );
+            if ui
+                .add_enabled(!state.busy, egui::Button::new("Load reflog"))
+                .clicked()
+            {
+                let reference = self.ui_state.journal_view_state.reflog_reference.clone();
+                match self.runtime.load_reflog(&reference, 40) {
+                    Ok(_) => {}
+                    Err(error) => self.ui_error = Some(error.to_string()),
+                }
+            }
+        });
+        for (idx, entry) in state.reflog_entries.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(short_oid(&entry.oid));
+                ui.label(entry.selector.as_str());
+                ui.label(entry.time.as_str());
+                ui.label(entry.message.as_str());
+                if ui
+                    .add_enabled(!state.busy, egui::Button::new("Branch here"))
+                    .clicked()
+                {
+                    let branch = format!(
+                        "{}-{}",
+                        recovery_branch_name(
+                            &self.ui_state.journal_view_state.recovery_branch_name,
+                            0
+                        ),
+                        idx + 1
+                    );
+                    self.preview_or_confirm(
+                        "recovery.create_branch_from_reflog",
+                        vec![branch, entry.oid.clone()],
+                        "Preview reflog branch".to_string(),
+                        "Create a branch at this reflog entry?".to_string(),
+                    );
+                }
+            });
         }
     }
 
@@ -1211,24 +1437,33 @@ impl BranchForgeDesktopApp {
                     .show(ui, |ui| {
                         for item in items.into_iter().take(80) {
                             let enabled = item.enabled && !state.busy;
-                            ui.horizontal(|ui| {
-                                let response = ui.add_enabled(
-                                    enabled,
-                                    egui::Button::new(format!(
-                                        "{}   {}",
-                                        item.title, item.action_id
-                                    )),
-                                );
-                                if response.clicked() {
-                                    self.run_palette_item(item);
-                                    close_after_select = true;
-                                }
-                                ui.label(item.owner.as_str());
-                                ui.label(format_danger(&item.danger));
-                                if let Some(reason) = item.disabled_reason.as_deref() {
-                                    ui.weak(reason);
+                            ui.vertical(|ui| {
+                                ui.horizontal(|ui| {
+                                    let response = ui.add_enabled(
+                                        enabled,
+                                        egui::Button::new(format!(
+                                            "{}   {}",
+                                            item.title, item.action_id
+                                        )),
+                                    );
+                                    if response.clicked() {
+                                        self.run_palette_item(item);
+                                        close_after_select = true;
+                                    }
+                                    ui.label(item.owner.as_str());
+                                    ui.label(format_danger(&item.danger));
+                                    if let Some(reason) = item.disabled_reason.as_deref() {
+                                        ui.weak(reason);
+                                    }
+                                });
+                                if let Some(explain) = item.explain.as_ref() {
+                                    ui.weak(explain.plain_summary.as_str());
+                                    if let Some(command) = explain.git_commands.first() {
+                                        ui.label(RichText::new(command).monospace());
+                                    }
                                 }
                             });
+                            ui.separator();
                         }
                     });
             });
@@ -1296,6 +1531,45 @@ impl BranchForgeDesktopApp {
             self.ui_state.pending_confirmation = None;
         }
     }
+
+    fn render_preview(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.ui_state.pending_preview.clone() else {
+            return;
+        };
+
+        let mut keep_open = true;
+        egui::Window::new(dialog.title.as_str())
+            .open(&mut keep_open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(680.0)
+            .show(ctx, |ui| {
+                render_operation_preview(ui, &dialog.preview);
+                ui.separator();
+                ui.checkbox(&mut dialog.understood, "I understand");
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        self.ui_state.pending_preview = None;
+                    }
+                    if ui
+                        .add_enabled(dialog.understood, egui::Button::new("Confirm"))
+                        .clicked()
+                    {
+                        let result =
+                            self.runtime
+                                .execute_action(&dialog.action_id, &dialog.args, true);
+                        self.record_submit(result);
+                        self.ui_state.pending_preview = None;
+                    }
+                });
+            });
+
+        if !keep_open {
+            self.ui_state.pending_preview = None;
+        } else if self.ui_state.pending_preview.is_some() {
+            self.ui_state.pending_preview = Some(dialog);
+        }
+    }
 }
 
 impl eframe::App for BranchForgeDesktopApp {
@@ -1310,6 +1584,7 @@ impl eframe::App for BranchForgeDesktopApp {
         self.render_main_panel(ui, &state);
         self.render_command_palette(&ctx, &state);
         self.render_confirmation(&ctx);
+        self.render_preview(&ctx);
 
         if state.busy {
             ctx.request_repaint_after(Duration::from_millis(80));
@@ -1340,6 +1615,102 @@ fn format_conflict_state(state: &plugin_api::ConflictState) -> &'static str {
         plugin_api::ConflictState::Merge => "merge",
         plugin_api::ConflictState::Rebase => "rebase",
         plugin_api::ConflictState::CherryPick => "cherry-pick",
+    }
+}
+
+fn render_operation_preview(ui: &mut egui::Ui, preview: &OperationPreview) {
+    ui.label(RichText::new(preview.summary.as_str()).strong());
+    ui.label(format!(
+        "Operation: {} | danger: {}",
+        preview.operation,
+        format_danger(&preview.danger)
+    ));
+    ui.separator();
+    ui.columns(2, |columns| {
+        columns[0].label(RichText::new("Worktree").strong());
+        columns[0].label(format_impact(&preview.worktree_impact));
+        columns[0].label(RichText::new("Index").strong());
+        columns[0].label(format_impact(&preview.index_impact));
+
+        columns[1].label(RichText::new("Git commands").strong());
+        for command in &preview.git_commands {
+            columns[1].label(RichText::new(command).monospace());
+        }
+    });
+
+    if !preview.affected_refs.is_empty() {
+        ui.separator();
+        ui.label(RichText::new("Affected Refs").strong());
+        for item in &preview.affected_refs {
+            ui.label(format!(
+                "{}: {} -> {} ({})",
+                item.name,
+                item.before.as_deref().unwrap_or("<none>"),
+                item.after.as_deref().unwrap_or("<none>"),
+                item.impact
+            ));
+        }
+    }
+
+    if !preview.affected_files.is_empty() {
+        ui.separator();
+        ui.label(RichText::new("Affected Files").strong());
+        for item in &preview.affected_files {
+            ui.label(format!(
+                "{}: {}{}",
+                item.path,
+                item.impact,
+                item.detail
+                    .as_deref()
+                    .map(|detail| format!(" ({detail})"))
+                    .unwrap_or_default()
+            ));
+        }
+    }
+
+    if !preview.commits_rewritten.is_empty() {
+        ui.separator();
+        ui.label(RichText::new("Commits Rewritten").strong());
+        for commit in &preview.commits_rewritten {
+            ui.label(format!(
+                "{} {} ({})",
+                short_oid(&commit.oid),
+                commit.summary,
+                commit.action
+            ));
+        }
+    }
+
+    if !preview.warnings.is_empty() {
+        ui.separator();
+        ui.label(RichText::new("Warnings").strong());
+        for warning in &preview.warnings {
+            ui.colored_label(warning_color(&warning.level), warning.message.as_str());
+        }
+    }
+
+    if let Some(recommended) = preview.recommended_action.as_deref() {
+        ui.separator();
+        ui.label(RichText::new("Recommended").strong());
+        ui.label(recommended);
+    }
+}
+
+fn format_impact(impact: &state_store::ImpactSummary) -> String {
+    let level = match impact.level {
+        ImpactLevel::None => "none",
+        ImpactLevel::Read => "read",
+        ImpactLevel::Write => "write",
+        ImpactLevel::Destructive => "destructive",
+    };
+    format!("{level}: {}", impact.summary)
+}
+
+fn warning_color(level: &PreviewWarningLevel) -> Color32 {
+    match level {
+        PreviewWarningLevel::Info => Color32::from_rgb(125, 211, 252),
+        PreviewWarningLevel::Warning => Color32::from_rgb(251, 191, 36),
+        PreviewWarningLevel::Danger => Color32::from_rgb(248, 113, 113),
     }
 }
 
@@ -1575,36 +1946,77 @@ fn is_conflict_marker_line(line: &str) -> bool {
 }
 
 fn render_journal_entry(ui: &mut egui::Ui, entry: &OperationJournalEntry) {
-    let color = match entry.status {
-        JournalStatus::Started => Color32::from_rgb(125, 211, 252),
-        JournalStatus::Succeeded => Color32::from_rgb(74, 222, 128),
-        JournalStatus::Failed => Color32::from_rgb(248, 113, 113),
-    };
     ui.horizontal(|ui| {
-        ui.colored_label(color, format!("{:?}", entry.status));
+        ui.colored_label(journal_status_color(entry), format!("{:?}", entry.status));
         ui.label(format!("#{} {}", entry.id, entry.op));
         if let Some(job_id) = entry.job_id {
             ui.label(format!("job {job_id}"));
         }
+        if let Some(risk) = entry.risk.as_ref() {
+            ui.label(format!("risk {}", format_danger(risk)));
+        }
     });
+    ui.label(format!(
+        "repo: {}",
+        entry.repo_root.as_deref().unwrap_or("<unknown>")
+    ));
+    if !entry.params.is_empty() {
+        ui.label(format!("params: {}", entry.params.join(" ")));
+    }
     if let Some(error) = entry.error.as_deref() {
         ui.colored_label(Color32::from_rgb(248, 113, 113), error);
     }
     if let Some(pre_refs) = entry.pre_refs.as_ref() {
         ui.label(format!(
-            "pre refs: head={} branches={} tags={}",
+            "pre refs: head={} oid={} branches={} tags={} tracked_refs={}",
             pre_refs.head.as_deref().unwrap_or("<none>"),
+            pre_refs.head_oid.as_deref().unwrap_or("<unknown>"),
             pre_refs.branch_count,
-            pre_refs.tag_count
+            pre_refs.tag_count,
+            pre_refs.refs.len()
         ));
     }
     if let Some(post_refs) = entry.post_refs.as_ref() {
         ui.label(format!(
-            "post refs: head={} branches={} tags={}",
+            "post refs: head={} oid={} branches={} tags={} tracked_refs={}",
             post_refs.head.as_deref().unwrap_or("<none>"),
+            post_refs.head_oid.as_deref().unwrap_or("<unknown>"),
             post_refs.branch_count,
-            post_refs.tag_count
+            post_refs.tag_count,
+            post_refs.refs.len()
         ));
+    }
+    if !entry.backup_refs.is_empty() {
+        ui.label(RichText::new("Recovery").strong());
+        for backup in &entry.backup_refs {
+            ui.label(format!(
+                "{} -> {} ({})",
+                backup.name,
+                short_oid(&backup.target_oid),
+                backup.target_ref
+            ));
+        }
+    }
+}
+
+fn journal_status_color(entry: &OperationJournalEntry) -> Color32 {
+    match entry.status {
+        JournalStatus::Started => Color32::from_rgb(125, 211, 252),
+        JournalStatus::Succeeded => Color32::from_rgb(74, 222, 128),
+        JournalStatus::Failed => Color32::from_rgb(248, 113, 113),
+    }
+}
+
+fn recovery_branch_name(raw: &str, entry_id: u64) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        format!("branchforge/recovery/{entry_id}")
+    } else if entry_id == 0 {
+        trimmed.to_string()
+    } else if trimmed.ends_with('/') {
+        format!("{trimmed}{entry_id}")
+    } else {
+        trimmed.to_string()
     }
 }
 

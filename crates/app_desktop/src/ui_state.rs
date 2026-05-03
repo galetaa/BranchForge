@@ -121,7 +121,19 @@ pub struct ConfirmationDialog {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreviewDialog {
     pub action_id: String,
-    pub summary: String,
+    pub args: Vec<String>,
+    pub title: String,
+    pub preview: state_store::OperationPreview,
+    pub understood: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct JournalViewState {
+    pub selected_entry_id: Option<u64>,
+    pub filter: String,
+    pub recovery_only: bool,
+    pub reflog_reference: String,
+    pub recovery_branch_name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,6 +145,7 @@ pub struct DesktopUiState {
     pub diff_view_state: DiffViewState,
     pub graph_view_state: GraphViewState,
     pub conflict_view_state: ConflictViewState,
+    pub journal_view_state: JournalViewState,
     pub pending_confirmation: Option<ConfirmationDialog>,
     pub pending_preview: Option<PreviewDialog>,
 }
@@ -147,6 +160,11 @@ impl Default for DesktopUiState {
             diff_view_state: DiffViewState::default(),
             graph_view_state: GraphViewState::default(),
             conflict_view_state: ConflictViewState::default(),
+            journal_view_state: JournalViewState {
+                reflog_reference: "HEAD".to_string(),
+                recovery_branch_name: "branchforge/recovery".to_string(),
+                ..JournalViewState::default()
+            },
             pending_confirmation: None,
             pending_preview: None,
         }
