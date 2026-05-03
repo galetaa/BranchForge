@@ -123,9 +123,9 @@ pub fn generate_release_notes(
 ) -> Result<String, String> {
     let version = env!("CARGO_PKG_VERSION");
     let generated_utc = current_utc_string(repo_root);
-    let release_notes = strip_first_heading(&read_file(repo_root.join(RELEASE_NOTES_DOC))?);
-    let changelog = strip_first_heading(&read_file(repo_root.join(CHANGELOG_DOC))?);
-    let support = strip_first_heading(&read_file(repo_root.join(SUPPORT_DOC))?);
+    let release_notes = read_doc_section(&repo_root.join(RELEASE_NOTES_DOC))?;
+    let changelog = read_doc_section(&repo_root.join(CHANGELOG_DOC))?;
+    let support = read_doc_section(&repo_root.join(SUPPORT_DOC))?;
 
     let content = format!(
         "# Branchforge {version} Release Notes\n\n- Channel: {channel}\n- Generated UTC: {generated_utc}\n- Source docs:\n  - {RELEASE_NOTES_DOC}\n  - {CHANGELOG_DOC}\n  - {SUPPORT_DOC}\n\n## Product Notes\n\n{release_notes}\n\n## Changelog\n\n{changelog}\n\n## Support\n\n{support}\n"
@@ -588,8 +588,14 @@ fn hash_file(path: &Path) -> Result<String, String> {
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-fn read_file(path: PathBuf) -> Result<String, String> {
-    fs::read_to_string(&path).map_err(|err| format!("{}: {}", path.display(), err))
+fn read_doc_section(path: &Path) -> Result<String, String> {
+    match fs::read_to_string(path) {
+        Ok(content) => Ok(strip_first_heading(&content)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            Ok(format!("_Missing doc: {}_", path.display()))
+        }
+        Err(err) => Err(format!("{}: {}", path.display(), err)),
+    }
 }
 
 fn strip_first_heading(content: &str) -> String {
