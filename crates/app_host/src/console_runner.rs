@@ -16,7 +16,11 @@ use plugin_host::{
     repo_manager_registration_payload, set_plugin_enabled, spawn_installed_plugin_process,
     status_registration_payload, tags_registration_payload,
 };
-use state_store::{DiffSource, DiffState, InstalledPluginRecord, StateStore};
+use state_store::{
+    CommitImpact, DiffSource, DiffState, ExplainTemplate, FileImpact, ImpactLevel, ImpactSummary,
+    InstalledPluginRecord, OperationPreview, PreviewWarning, PreviewWarningLevel, RefImpact,
+    StateStore,
+};
 
 use crate::errors::{ErrorCategory, UserFacingError, translate_job_error};
 use crate::operations;
@@ -341,6 +345,7 @@ pub struct HostActionCatalogItem {
     pub enabled: bool,
     pub disabled_reason: Option<String>,
     pub has_params: bool,
+    pub explain: Option<ExplainTemplate>,
 }
 
 impl HostRuntime {
@@ -381,6 +386,24 @@ impl HostRuntime {
 
     pub fn action_catalog(&self) -> Vec<HostActionCatalogItem> {
         self.runner.action_catalog_items()
+    }
+
+    pub fn preview_action(
+        &self,
+        action_id: &str,
+        args: &[String],
+    ) -> Result<OperationPreview, HostRuntimeError> {
+        self.runner
+            .preview_operation(action_id, args)
+            .map_err(|error| HostRuntimeError {
+                title: error.title,
+                message: error.message,
+                detail: error.detail,
+            })
+    }
+
+    pub fn explain_action(&self, action_id: &str) -> Option<ExplainTemplate> {
+        explain_template_for_action(action_id)
     }
 
     pub fn history_graph(&self) -> Result<Vec<GraphCommit>, HostRuntimeError> {
@@ -613,6 +636,7 @@ impl ConsoleRunner {
                     enabled,
                     disabled_reason,
                     has_params: action.spec.params_schema.is_some(),
+                    explain: explain_template_for_action(&action.spec.action_id),
                 }
             })
             .collect()
@@ -655,6 +679,353 @@ impl ConsoleRunner {
             .collect::<Vec<_>>();
 
         Ok(build_graph(&inputs, &refs))
+    }
+
+    fn preview_operation(
+        &self,
+        action_id: &str,
+        args: &[String],
+    ) -> Result<OperationPreview, UserFacingError> {
+        let Some(spec) = self.find_action(action_id) else {
+            return Err(UserFacingError::with_category(
+                "Preview unavailable",
+                &format!("Unknown action/op `{action_id}`."),
+                None,
+                ErrorCategory::System,
+            ));
+        };
+        let explain = explain_template_for_action(action_id);
+        let mut preview =
+            base_operation_preview(action_id, spec.effective_danger(), explain.as_ref(), args);
+
+        match action_id {
+            "reset.soft" | "reset.mixed" | "reset.hard" => {
+                self.enrich_reset_preview(action_id, args, &mut preview)?;
+            }
+            "branch.delete" => {
+                self.enrich_branch_delete_preview(args, &mut preview)?;
+            }
+            "tag.delete" => {
+                self.enrich_tag_delete_preview(args, &mut preview)?;
+            }
+            "file.discard" | "file.discard_hunk" | "file.discard_lines" => {
+                self.enrich_discard_preview(action_id, args, &mut preview)?;
+            }
+            "stash.pop" | "stash.drop" => {
+                self.enrich_stash_preview(action_id, args, &mut preview);
+            }
+            "merge.execute" => {
+                self.enrich_merge_preview(args, &mut preview)?;
+            }
+            "rebase.execute" | "rebase.interactive" => {
+                self.enrich_rebase_preview(args, &mut preview);
+            }
+            "conflict.abort" | "rebase.abort" | "merge.abort" => {
+                self.enrich_abort_preview(action_id, &mut preview);
+            }
+            _ => {}
+        }
+
+        Ok(preview)
+    }
+
+    fn enrich_reset_preview(
+        &self,
+        action_id: &str,
+        args: &[String],
+        preview: &mut OperationPreview,
+    ) -> Result<(), UserFacingError> {
+        let repo_dir = self.require_repo_dir()?;
+        let target = args.first().map(String::as_str).unwrap_or("HEAD");
+        let target_oid = git_service::resolve_ref_oid(&repo_dir, target).ok();
+        let current_oid = git_service::resolve_ref_oid(&repo_dir, "HEAD").ok();
+        let head_name = self
+            .store
+            .snapshot()
+            .repo
+            .as_ref()
+            .and_then(|repo| repo.head.clone())
+            .unwrap_or_else(|| "HEAD".to_string());
+        preview.summary = match action_id {
+            "reset.soft" => {
+                format!("Move {head_name} to {target}; keep index and working tree as-is.")
+            }
+            "reset.mixed" => {
+                format!("Move {head_name} to {target} and reset the index.")
+            }
+            "reset.hard" => {
+                format!("Move {head_name} to {target} and overwrite index and working tree.")
+            }
+            _ => preview.summary.clone(),
+        };
+        preview.affected_refs.push(RefImpact {
+            name: head_name,
+            before: current_oid,
+            after: target_oid,
+            impact: "branch tip moves".to_string(),
+        });
+        preview.index_impact = match action_id {
+            "reset.soft" => impact(ImpactLevel::None, "Index is preserved."),
+            "reset.mixed" => impact(ImpactLevel::Destructive, "Index changes are replaced."),
+            "reset.hard" => impact(ImpactLevel::Destructive, "Index changes are replaced."),
+            _ => preview.index_impact.clone(),
+        };
+        preview.worktree_impact = match action_id {
+            "reset.hard" => impact(
+                ImpactLevel::Destructive,
+                "Working tree changes may be lost.",
+            ),
+            _ => impact(ImpactLevel::None, "Working tree files are preserved."),
+        };
+        if action_id == "reset.hard" {
+            preview.warnings.push(warning(
+                PreviewWarningLevel::Danger,
+                "Uncommitted worktree and staged changes can be overwritten.",
+            ));
+            preview.recommended_action = Some(
+                "Create a backup ref or stash uncommitted work before continuing.".to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    fn enrich_branch_delete_preview(
+        &self,
+        args: &[String],
+        preview: &mut OperationPreview,
+    ) -> Result<(), UserFacingError> {
+        let repo_dir = self.require_repo_dir()?;
+        let branch = args
+            .first()
+            .cloned()
+            .or_else(|| self.store.snapshot().selection.selected_branch.clone())
+            .ok_or_else(|| invalid_input_error("branch.delete requires a branch name"))?;
+        let oid = git_service::resolve_ref_oid(&repo_dir, &branch).ok();
+        let merged = git_service::branch_is_merged(&repo_dir, &branch).unwrap_or(false);
+        preview.summary = if merged {
+            format!("Delete local branch {branch}. It appears merged into the current HEAD.")
+        } else {
+            format!(
+                "Delete local branch {branch}. It may contain commits not merged into the current HEAD."
+            )
+        };
+        preview.affected_refs.push(RefImpact {
+            name: format!("refs/heads/{branch}"),
+            before: oid,
+            after: None,
+            impact: "branch ref deleted".to_string(),
+        });
+        if !merged {
+            preview.warnings.push(warning(
+                PreviewWarningLevel::Danger,
+                "Branch is not merged into the current HEAD; commits may become hard to find without a backup ref.",
+            ));
+        }
+        preview.recommended_action = Some(
+            "A BranchForge backup ref will be created before delete when recovery is enabled."
+                .to_string(),
+        );
+        Ok(())
+    }
+
+    fn enrich_tag_delete_preview(
+        &self,
+        args: &[String],
+        preview: &mut OperationPreview,
+    ) -> Result<(), UserFacingError> {
+        let repo_dir = self.require_repo_dir()?;
+        let tag = args
+            .first()
+            .ok_or_else(|| invalid_input_error("tag.delete requires a tag name"))?;
+        preview.affected_refs.push(RefImpact {
+            name: format!("refs/tags/{tag}"),
+            before: git_service::resolve_ref_oid(&repo_dir, tag).ok(),
+            after: None,
+            impact: "tag ref deleted".to_string(),
+        });
+        preview.summary = format!("Delete local tag {tag}.");
+        preview.recommended_action = Some(
+            "A BranchForge backup ref will be created before delete when recovery is enabled."
+                .to_string(),
+        );
+        Ok(())
+    }
+
+    fn enrich_discard_preview(
+        &self,
+        action_id: &str,
+        args: &[String],
+        preview: &mut OperationPreview,
+    ) -> Result<(), UserFacingError> {
+        let files = if action_id == "file.discard" {
+            if args.is_empty() {
+                self.selected_files()?
+            } else {
+                args.to_vec()
+            }
+        } else {
+            vec![
+                args.first()
+                    .cloned()
+                    .ok_or_else(|| invalid_input_error("discard preview requires file path"))?,
+            ]
+        };
+        preview.affected_files = files
+            .into_iter()
+            .map(|path| FileImpact {
+                path,
+                impact: "worktree content discarded".to_string(),
+                detail: match action_id {
+                    "file.discard_hunk" => args.get(1).map(|idx| format!("hunk {idx}")),
+                    "file.discard_lines" => {
+                        Some(format!("{} selected line(s)", args.len().saturating_sub(2)))
+                    }
+                    _ => None,
+                },
+            })
+            .collect();
+        preview.worktree_impact = impact(
+            ImpactLevel::Destructive,
+            "Selected worktree changes are discarded.",
+        );
+        preview.warnings.push(warning(
+            PreviewWarningLevel::Danger,
+            "Discarding worktree changes cannot always be restored unless a patch snapshot exists.",
+        ));
+        Ok(())
+    }
+
+    fn enrich_stash_preview(
+        &self,
+        action_id: &str,
+        args: &[String],
+        preview: &mut OperationPreview,
+    ) {
+        let reference = args.first().map(String::as_str).unwrap_or("stash@{0}");
+        preview.summary = match action_id {
+            "stash.pop" => {
+                format!(
+                    "Apply {reference} to the working tree and remove it from the stash list if successful."
+                )
+            }
+            "stash.drop" => format!("Remove {reference} from the stash list."),
+            _ => preview.summary.clone(),
+        };
+        preview.affected_refs.push(RefImpact {
+            name: reference.to_string(),
+            before: None,
+            after: None,
+            impact: if action_id == "stash.pop" {
+                "stash applied and dropped".to_string()
+            } else {
+                "stash dropped".to_string()
+            },
+        });
+        preview.worktree_impact = if action_id == "stash.pop" {
+            impact(
+                ImpactLevel::Write,
+                "Stash contents will be applied to the working tree.",
+            )
+        } else {
+            impact(
+                ImpactLevel::None,
+                "Working tree is not changed by stash drop.",
+            )
+        };
+        preview.warnings.push(warning(
+            PreviewWarningLevel::Warning,
+            "Stash application can produce conflicts when changes overlap.",
+        ));
+    }
+
+    fn enrich_merge_preview(
+        &self,
+        args: &[String],
+        preview: &mut OperationPreview,
+    ) -> Result<(), UserFacingError> {
+        let source = args
+            .first()
+            .ok_or_else(|| invalid_input_error("merge.execute requires source ref"))?;
+        let target = self
+            .current_head_ref()
+            .unwrap_or_else(|_| "HEAD".to_string());
+        preview.summary = format!("Merge {source} into {target}.");
+        preview.affected_refs.push(RefImpact {
+            name: target,
+            before: self
+                .repo_dir
+                .as_ref()
+                .and_then(|repo| git_service::resolve_ref_oid(repo, "HEAD").ok()),
+            after: None,
+            impact: "target may advance or receive a merge commit".to_string(),
+        });
+        preview.worktree_impact = impact(
+            ImpactLevel::Write,
+            "Merge can update files and may leave conflict markers.",
+        );
+        preview.warnings.push(warning(
+            PreviewWarningLevel::Warning,
+            "Merge may stop for conflict resolution if branches touch the same lines.",
+        ));
+        Ok(())
+    }
+
+    fn enrich_rebase_preview(&self, args: &[String], preview: &mut OperationPreview) {
+        let plan = self.store.snapshot().rebase.plan.clone();
+        let base = plan
+            .as_ref()
+            .map(|plan| plan.base_ref.clone())
+            .or_else(|| args.first().cloned())
+            .unwrap_or_else(|| "<selected base>".to_string());
+        preview.summary = format!("Rewrite selected commits on top of {base}.");
+        if let Some(plan) = plan {
+            preview.commits_rewritten = plan
+                .entries
+                .into_iter()
+                .map(|entry| CommitImpact {
+                    oid: entry.oid,
+                    summary: entry.summary,
+                    action: format!("{:?}", entry.action).to_lowercase(),
+                })
+                .collect();
+            if let Some(warning_text) = plan.published_history_warning {
+                preview
+                    .warnings
+                    .push(warning(PreviewWarningLevel::Danger, warning_text));
+            }
+        }
+        preview.affected_refs.push(RefImpact {
+            name: self
+                .current_head_ref()
+                .unwrap_or_else(|_| "HEAD".to_string()),
+            before: self
+                .repo_dir
+                .as_ref()
+                .and_then(|repo| git_service::resolve_ref_oid(repo, "HEAD").ok()),
+            after: None,
+            impact: "branch tip will be rewritten".to_string(),
+        });
+        preview.warnings.push(warning(
+            PreviewWarningLevel::Danger,
+            "Commit hashes will change. Published history may require force push coordination.",
+        ));
+        preview.recommended_action =
+            Some("BranchForge will create a backup ref before executing the rebase.".to_string());
+    }
+
+    fn enrich_abort_preview(&self, action_id: &str, preview: &mut OperationPreview) {
+        preview.summary = format!(
+            "Abort the active {} session and return the repository to its pre-operation state if Git can do so.",
+            action_id.trim_end_matches(".abort")
+        );
+        preview.worktree_impact = impact(
+            ImpactLevel::Write,
+            "Git may rewrite index and worktree files while aborting the session.",
+        );
+        preview.warnings.push(warning(
+            PreviewWarningLevel::Warning,
+            "Local conflict-resolution edits made during the session can be overwritten.",
+        ));
     }
 
     fn action_availability(&self, spec: &ActionSpec) -> (bool, Option<String>) {
@@ -2079,6 +2450,221 @@ fn map_graph_ref_label(raw: &str) -> Option<GraphRefLabel> {
     })
 }
 
+fn base_operation_preview(
+    action_id: &str,
+    danger: DangerLevel,
+    explain: Option<&ExplainTemplate>,
+    args: &[String],
+) -> OperationPreview {
+    let summary = explain
+        .map(|template| template.plain_summary.clone())
+        .unwrap_or_else(|| format!("Run {action_id}."));
+    let git_commands = explain
+        .map(|template| template.git_commands.clone())
+        .unwrap_or_else(|| vec![format!("branchforge run --confirm {action_id}")]);
+    OperationPreview {
+        operation: action_id.to_string(),
+        danger,
+        summary,
+        affected_refs: Vec::new(),
+        affected_files: args
+            .iter()
+            .filter(|arg| looks_like_path_arg(arg))
+            .map(|path| FileImpact {
+                path: path.clone(),
+                impact: "may be affected".to_string(),
+                detail: None,
+            })
+            .collect(),
+        commits_rewritten: Vec::new(),
+        worktree_impact: impact(ImpactLevel::Read, "No direct worktree impact detected yet."),
+        index_impact: impact(ImpactLevel::Read, "No direct index impact detected yet."),
+        remote_impact: None,
+        warnings: explain
+            .map(|template| {
+                template
+                    .risks
+                    .iter()
+                    .map(|risk| warning(PreviewWarningLevel::Warning, risk.clone()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        recommended_action: explain.and_then(|template| template.recovery_notes.first().cloned()),
+        git_commands,
+    }
+}
+
+fn looks_like_path_arg(arg: &str) -> bool {
+    arg.contains('/') || arg.contains('.') || arg.starts_with("./")
+}
+
+fn impact(level: ImpactLevel, summary: impl Into<String>) -> ImpactSummary {
+    ImpactSummary {
+        level,
+        summary: summary.into(),
+    }
+}
+
+fn warning(level: PreviewWarningLevel, message: impl Into<String>) -> PreviewWarning {
+    PreviewWarning {
+        level,
+        message: message.into(),
+    }
+}
+
+pub fn explain_template_for_action(action_id: &str) -> Option<ExplainTemplate> {
+    let template = match action_id {
+        "reset.soft" => explain(
+            action_id,
+            "This moves the current branch to the target commit while preserving staged and working tree changes.",
+            &["git reset --soft <target>"],
+            &[
+                "Branch tip changes; commit hashes after the target may become unreachable from this branch.",
+            ],
+            &["Restore the previous branch tip from the operation journal backup ref or reflog."],
+        ),
+        "reset.mixed" => explain(
+            action_id,
+            "This moves the current branch to the target commit and makes the index match that commit.",
+            &["git reset --mixed <target>"],
+            &["Staged changes are unstaged or replaced; branch tip changes."],
+            &["Restore the previous branch tip from the operation journal backup ref or reflog."],
+        ),
+        "reset.hard" => explain(
+            action_id,
+            "This moves the current branch to the target commit and makes the index and working tree match it.",
+            &["git reset --hard <target>"],
+            &["Uncommitted worktree changes and staged changes can be overwritten."],
+            &[
+                "Use the operation journal backup ref or reflog for committed work; stash or patch snapshots are needed for uncommitted work.",
+            ],
+        ),
+        "branch.delete" => explain(
+            action_id,
+            "This removes a local branch ref.",
+            &["git branch -d <branch>", "git branch -D <branch>"],
+            &["Unmerged branch commits can become hard to find after deletion."],
+            &["Recreate the branch from the BranchForge backup ref or from a reflog entry."],
+        ),
+        "tag.delete" => explain(
+            action_id,
+            "This removes a local tag ref.",
+            &["git tag -d <tag>"],
+            &["Deleted tags no longer protect or name the tagged object."],
+            &["Restore the tag ref from the operation journal backup ref if available."],
+        ),
+        "file.discard" | "file.discard_hunk" | "file.discard_lines" => explain(
+            action_id,
+            "This discards selected working tree changes.",
+            &["git checkout -- <path>", "git apply -R <patch>"],
+            &["Uncommitted work can be lost if no patch snapshot exists."],
+            &[
+                "Recover from a patch snapshot when available; otherwise inspect editor history or filesystem backups.",
+            ],
+        ),
+        "merge.execute" => explain(
+            action_id,
+            "This merges the selected source ref into the current branch.",
+            &["git merge <source>"],
+            &["Conflicts may stop the merge; a merge commit can change branch history."],
+            &["Abort an active merge or restore the pre-merge branch tip from the journal."],
+        ),
+        "merge.abort" => explain(
+            action_id,
+            "This aborts the active merge session.",
+            &["git merge --abort"],
+            &["Conflict resolution edits made during the merge can be overwritten."],
+            &[
+                "Use the journal or reflog if the abort does not return the repository to the expected state.",
+            ],
+        ),
+        "rebase.execute" | "rebase.interactive" => explain(
+            action_id,
+            "This rewrites selected commits on top of the chosen base. Commit hashes will change.",
+            &["git rebase -i <base>"],
+            &[
+                "Published history may require force push coordination; conflicts can pause the rebase.",
+            ],
+            &[
+                "Abort while active, or create a recovery branch from the backup ref after completion.",
+            ],
+        ),
+        "rebase.abort" => explain(
+            action_id,
+            "This aborts the active rebase session.",
+            &["git rebase --abort"],
+            &["Conflict resolution edits made during the rebase can be overwritten."],
+            &[
+                "Use the journal backup ref or reflog if the abort cannot restore the expected branch tip.",
+            ],
+        ),
+        "stash.pop" => explain(
+            action_id,
+            "This applies a stash to the working tree and drops it if the apply succeeds.",
+            &["git stash pop <stash>"],
+            &[
+                "Overlapping changes can conflict; the stash entry is removed after a successful pop.",
+            ],
+            &[
+                "If a pop succeeds but the result is unwanted, recover with the operation journal or reflog where possible.",
+            ],
+        ),
+        "stash.drop" => explain(
+            action_id,
+            "This removes a stash entry.",
+            &["git stash drop <stash>"],
+            &["Dropped stash entries are not shown in the stash list."],
+            &["Use reflog entries for stash refs when available."],
+        ),
+        "conflict.abort" => explain(
+            action_id,
+            "This aborts the active conflict-producing operation.",
+            &[
+                "git merge --abort",
+                "git rebase --abort",
+                "git cherry-pick --abort",
+            ],
+            &["Conflict resolution edits made during the session can be overwritten."],
+            &["Use operation journal backup refs for committed history recovery."],
+        ),
+        "cherry_pick.commit" => explain(
+            action_id,
+            "This applies the selected commit onto the current branch.",
+            &["git cherry-pick <commit>"],
+            &["Conflicts may pause the cherry-pick."],
+            &["Abort an active cherry-pick or reset to the pre-operation backup ref."],
+        ),
+        "revert.commit" => explain(
+            action_id,
+            "This creates a new commit that reverses the selected commit.",
+            &["git revert --no-edit <commit>"],
+            &["Conflicts may pause the revert; merge commits require extra parent selection."],
+            &["Abort an active revert/cherry-pick session or revert the revert commit."],
+        ),
+        _ => return None,
+    };
+    Some(template)
+}
+
+fn explain(
+    action_id: &str,
+    plain_summary: &str,
+    git_commands: &[&str],
+    risks: &[&str],
+    recovery_notes: &[&str],
+) -> ExplainTemplate {
+    ExplainTemplate {
+        action_id: action_id.to_string(),
+        plain_summary: plain_summary.to_string(),
+        git_commands: git_commands.iter().map(|value| value.to_string()).collect(),
+        risks: risks.iter().map(|value| value.to_string()).collect(),
+        recovery_notes: recovery_notes
+            .iter()
+            .map(|value| value.to_string())
+            .collect(),
+    }
+}
+
 fn push_actions(actions: &mut Vec<CatalogAction>, owner: &str, specs: Vec<ActionSpec>) {
     actions.extend(specs.into_iter().map(|spec| CatalogAction {
         owner: owner.to_string(),
@@ -3386,6 +3972,79 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reset_hard_preview_describes_ref_worktree_and_command() {
+        let repo_dir = init_repo("reset-preview");
+        assert!(std::fs::write(repo_dir.join("README.md"), "base\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["README.md".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "base").is_ok());
+
+        let mut runner = ConsoleRunner::new(test_config(&repo_dir));
+        assert!(
+            runner
+                .execute(ConsoleCommand::Open {
+                    path: repo_dir.to_string_lossy().to_string(),
+                })
+                .is_ok()
+        );
+
+        let preview = runner
+            .preview_operation("reset.hard", &["HEAD".to_string()])
+            .expect("preview");
+        assert_eq!(preview.operation, "reset.hard");
+        assert_eq!(preview.worktree_impact.level, ImpactLevel::Destructive);
+        assert_eq!(preview.index_impact.level, ImpactLevel::Destructive);
+        assert!(!preview.affected_refs.is_empty());
+        assert!(
+            preview
+                .git_commands
+                .iter()
+                .any(|command| command.contains("git reset --hard"))
+        );
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn branch_delete_preview_marks_unmerged_branch_as_dangerous() {
+        let repo_dir = init_repo("branch-delete-preview");
+        assert!(std::fs::write(repo_dir.join("README.md"), "base\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["README.md".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "base").is_ok());
+        let base_branch = git_service::repo_open(&repo_dir)
+            .expect("repo")
+            .head
+            .expect("head branch");
+        assert!(git_service::create_branch(&repo_dir, "feature/unmerged").is_ok());
+        assert!(git_service::checkout_branch(&repo_dir, "feature/unmerged").is_ok());
+        assert!(std::fs::write(repo_dir.join("feature.txt"), "feature\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["feature.txt".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "feature").is_ok());
+        assert!(git_service::checkout_branch(&repo_dir, &base_branch).is_ok());
+
+        let mut runner = ConsoleRunner::new(test_config(&repo_dir));
+        assert!(
+            runner
+                .execute(ConsoleCommand::Open {
+                    path: repo_dir.to_string_lossy().to_string(),
+                })
+                .is_ok()
+        );
+
+        let preview = runner
+            .preview_operation("branch.delete", &["feature/unmerged".to_string()])
+            .expect("preview");
+        assert!(
+            preview
+                .warnings
+                .iter()
+                .any(|warning| warning.level == PreviewWarningLevel::Danger)
+        );
+        assert!(preview.summary.contains("may contain commits not merged"));
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
     }
 
     #[test]

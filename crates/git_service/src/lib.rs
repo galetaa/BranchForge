@@ -1648,7 +1648,7 @@ fn run_git_with_env(
     Ok(result)
 }
 
-fn resolve_ref_oid(cwd: &Path, reference: &str) -> Result<String, GitServiceError> {
+pub fn resolve_ref_oid(cwd: &Path, reference: &str) -> Result<String, GitServiceError> {
     let out = run_git(cwd, &["rev-parse", "--verify", reference])?;
     String::from_utf8(out.stdout)
         .map(|text| text.trim().to_string())
@@ -1923,6 +1923,19 @@ pub fn rename_branch(cwd: &Path, old: &str, new: &str) -> Result<(), GitServiceE
 pub fn delete_branch(cwd: &Path, name: &str) -> Result<(), GitServiceError> {
     let _ = run_git(cwd, &["branch", "-d", name])?;
     Ok(())
+}
+
+pub fn branch_is_merged(cwd: &Path, name: &str) -> Result<bool, GitServiceError> {
+    let branch_oid = resolve_ref_oid(cwd, name)?;
+    let head_oid = resolve_ref_oid(cwd, "HEAD")?;
+    match run_git(
+        cwd,
+        &["merge-base", "--is-ancestor", &branch_oid, &head_oid],
+    ) {
+        Ok(_) => Ok(true),
+        Err(GitServiceError::GitError { exit_code: 1, .. }) => Ok(false),
+        Err(err) => Err(err),
+    }
 }
 
 pub fn list_tags(cwd: &Path) -> Result<Vec<String>, GitServiceError> {

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use plugin_api::{ConflictState, RepoSnapshot};
+use plugin_api::{ConflictState, DangerLevel, RepoSnapshot};
 use serde::{Deserialize, Serialize};
 
 pub type StoreVersion = u64;
@@ -252,6 +252,88 @@ pub struct OperationJournalEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct OperationJournalState {
     pub entries: Vec<OperationJournalEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationPreview {
+    pub operation: String,
+    pub danger: DangerLevel,
+    pub summary: String,
+    pub affected_refs: Vec<RefImpact>,
+    pub affected_files: Vec<FileImpact>,
+    pub commits_rewritten: Vec<CommitImpact>,
+    pub worktree_impact: ImpactSummary,
+    pub index_impact: ImpactSummary,
+    pub remote_impact: Option<RemoteImpact>,
+    pub warnings: Vec<PreviewWarning>,
+    pub recommended_action: Option<String>,
+    pub git_commands: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefImpact {
+    pub name: String,
+    pub before: Option<String>,
+    pub after: Option<String>,
+    pub impact: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileImpact {
+    pub path: String,
+    pub impact: String,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommitImpact {
+    pub oid: String,
+    pub summary: String,
+    pub action: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImpactSummary {
+    pub level: ImpactLevel,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImpactLevel {
+    None,
+    Read,
+    Write,
+    Destructive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteImpact {
+    pub remote: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreviewWarning {
+    pub level: PreviewWarningLevel,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreviewWarningLevel {
+    Info,
+    Warning,
+    Danger,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExplainTemplate {
+    pub action_id: String,
+    pub plain_summary: String,
+    pub git_commands: Vec<String>,
+    pub risks: Vec<String>,
+    pub recovery_notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

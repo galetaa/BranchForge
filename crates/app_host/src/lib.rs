@@ -22,7 +22,8 @@ pub mod recent_repos;
 
 pub use console_runner::{
     ConsoleRunnerConfig, ConsoleSessionOutput, HostActionCatalogItem, HostRuntime,
-    HostRuntimeError, run_console_app, run_console_command, run_console_session,
+    HostRuntimeError, explain_template_for_action, run_console_app, run_console_command,
+    run_console_session,
 };
 
 use errors::{UserFacingError, translate_job_error};
