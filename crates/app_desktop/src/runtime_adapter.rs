@@ -352,6 +352,8 @@ mod tests {
         ConsoleRunnerConfig {
             cwd: root.to_path_buf(),
             plugins_root: root.join("plugins"),
+            auth_metadata_path: Some(root.join("auth/accounts.json")),
+            auth_file_store: Some(root.join("auth/tokens")),
             auto_render: false,
         }
     }

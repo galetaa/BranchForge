@@ -17,14 +17,16 @@ use plugin_host::{
     status_registration_payload, tags_registration_payload,
 };
 use state_store::{
-    BranchStack, BranchStackEntry, BranchStackState, CheckStatus, CommitImpact, DiffSource,
-    DiffState, ExplainTemplate, FileImpact, ImpactLevel, ImpactSummary, InstalledPluginRecord,
-    OperationPreview, PluginSecurityRecord, PluginTrustLevel, PreviewWarning, PreviewWarningLevel,
-    ProviderRepository, PullRequestState, PullRequestStateSnapshot, PullRequestSummary, RefImpact,
-    RemoteImpact, RepoBranchSummary, RepoStatusSummary, ReviewState, StackEntryStatus, StateStore,
-    Workspace, WorkspaceJobResult, WorkspaceRepo, WorkspaceState,
+    AuthStatus, BranchStack, BranchStackEntry, BranchStackState, CheckStatus, CommitImpact,
+    DiffSource, DiffState, ExplainTemplate, FileImpact, ImpactLevel, ImpactSummary,
+    InstalledPluginRecord, OperationPreview, PluginSecurityRecord, PluginTrustLevel,
+    PreviewWarning, PreviewWarningLevel, ProviderRepository, PullRequestState,
+    PullRequestStateSnapshot, PullRequestSummary, RefImpact, RemoteImpact, RepoBranchSummary,
+    RepoStatusSummary, ReviewState, StackEntryStatus, StateStore, Workspace, WorkspaceJobResult,
+    WorkspaceRepo, WorkspaceState,
 };
 
+use crate::credentials::{CredentialVault, StoredCredential, provider_from_host};
 use crate::errors::{ErrorCategory, UserFacingError, translate_job_error};
 use crate::operations;
 use crate::recent_repos::persist_recent_repo;
@@ -37,6 +39,8 @@ use std::io::Cursor;
 pub struct ConsoleRunnerConfig {
     pub cwd: PathBuf,
     pub plugins_root: PathBuf,
+    pub auth_metadata_path: Option<PathBuf>,
+    pub auth_file_store: Option<PathBuf>,
     pub auto_render: bool,
 }
 
@@ -49,6 +53,8 @@ impl ConsoleRunnerConfig {
         Ok(Self {
             cwd,
             plugins_root,
+            auth_metadata_path: std::env::var_os("BRANCHFORGE_AUTH_METADATA").map(PathBuf::from),
+            auth_file_store: std::env::var_os("BRANCHFORGE_AUTH_FILE_STORE").map(PathBuf::from),
             auto_render: true,
         })
     }
@@ -59,6 +65,8 @@ impl Default for ConsoleRunnerConfig {
         Self::from_current_env().unwrap_or_else(|_| Self {
             cwd: PathBuf::from("."),
             plugins_root: PathBuf::from("target/tmp/console-runner/plugins"),
+            auth_metadata_path: None,
+            auth_file_store: None,
             auto_render: true,
         })
     }
@@ -1469,6 +1477,9 @@ impl ConsoleRunner {
             | "workspace.fetch_all"
             | "workspace.persist"
             | "workspace.restore" => self.run_workspace_op(target, args),
+            "auth.status" | "auth.login" | "auth.logout" | "auth.seed_git" => {
+                self.run_auth_op(target, args)
+            }
             "pr.detect_provider" | "pr.list" | "pr.create_url" | "pr.open" | "pr.checkout" => {
                 self.run_pr_op(target, args)
             }
@@ -2022,6 +2033,254 @@ impl ConsoleRunner {
             }
             _ => Err(invalid_input_error("unsupported workspace operation")),
         }
+    }
+
+    fn run_auth_op(&mut self, target: &str, args: &[String]) -> Result<String, UserFacingError> {
+        match target {
+            "auth.status" => {
+                self.refresh_auth_state_for_current_context();
+                let summary = render_auth_summary(&self.store.snapshot().remotes.auth);
+                self.store
+                    .update_diff(render_text_diff("auth:status", summary.clone()));
+                Ok(summary)
+            }
+            "auth.login" => {
+                let host = args.first().ok_or_else(|| {
+                    invalid_input_error(
+                        "auth.login requires host, username, and token: `run auth.login <host> <username> <token> [provider]`",
+                    )
+                })?;
+                let username = args.get(1).ok_or_else(|| {
+                    invalid_input_error(
+                        "auth.login requires username: `run auth.login <host> <username> <token> [provider]`",
+                    )
+                })?;
+                let token = args.get(2).ok_or_else(|| {
+                    invalid_input_error(
+                        "auth.login requires token: `run auth.login <host> <username> <token> [provider]`",
+                    )
+                })?;
+                let provider = args
+                    .get(3)
+                    .and_then(|raw| parse_provider_kind(raw))
+                    .or_else(|| provider_from_host(host));
+                let record = self
+                    .credential_vault()
+                    .store_token(host, username, provider, token)
+                    .map_err(|err| {
+                        UserFacingError::with_category(
+                            "Credential storage failed",
+                            "Could not save the token in the host credential store.",
+                            Some(err),
+                            ErrorCategory::System,
+                        )
+                    })?;
+
+                if let Some(repo_dir) = self.repo_dir.clone() {
+                    let _ = self.seed_git_credential_for(
+                        &repo_dir,
+                        &record.host,
+                        record.username.as_deref(),
+                    );
+                }
+                self.refresh_auth_state_for_current_context();
+                Ok(format!(
+                    "stored credential for {} as {}",
+                    record.host,
+                    record.username.as_deref().unwrap_or("<unknown>")
+                ))
+            }
+            "auth.logout" => {
+                let host = args.first().ok_or_else(|| {
+                    invalid_input_error(
+                        "auth.logout requires host: `run auth.logout <host> [username]`",
+                    )
+                })?;
+                let username = args.get(1).map(String::as_str);
+                let removed = self
+                    .credential_vault()
+                    .delete_token(host, username)
+                    .map_err(|err| {
+                        UserFacingError::with_category(
+                            "Credential removal failed",
+                            "Could not remove the stored token.",
+                            Some(err),
+                            ErrorCategory::System,
+                        )
+                    })?;
+                if let Some(repo_dir) = self.repo_dir.clone() {
+                    for account in &removed {
+                        let _ = git_service::credential_reject(
+                            &repo_dir,
+                            "https",
+                            host,
+                            Some(account.as_str()),
+                        );
+                    }
+                }
+                self.refresh_auth_state_for_current_context();
+                Ok(format!(
+                    "removed {} credential(s) for {host}",
+                    removed.len()
+                ))
+            }
+            "auth.seed_git" => {
+                let host = args.first().ok_or_else(|| {
+                    invalid_input_error(
+                        "auth.seed_git requires host: `run auth.seed_git <host> [username]`",
+                    )
+                })?;
+                let username = args.get(1).map(String::as_str);
+                let repo_dir = self.require_repo_dir()?;
+                let credential = self.seed_git_credential_for(&repo_dir, host, username)?;
+                self.refresh_auth_state_for_current_context();
+                Ok(format!(
+                    "approved Git credential for {} as {}",
+                    credential.host, credential.username
+                ))
+            }
+            _ => Err(invalid_input_error("unsupported auth operation")),
+        }
+    }
+
+    fn credential_vault(&self) -> CredentialVault {
+        CredentialVault::with_overrides(
+            &self.config.cwd,
+            self.config.auth_metadata_path.as_deref(),
+            self.config.auth_file_store.as_deref(),
+        )
+    }
+
+    fn seed_git_credential_for(
+        &self,
+        repo_dir: &Path,
+        host: &str,
+        username: Option<&str>,
+    ) -> Result<StoredCredential, UserFacingError> {
+        let credential = self
+            .credential_vault()
+            .token_for_host(host, username)
+            .map_err(|err| {
+                UserFacingError::with_category(
+                    "Git credential approval failed",
+                    "No stored token is available for this host.",
+                    Some(err),
+                    ErrorCategory::Validation,
+                )
+            })?;
+        git_service::credential_approve(
+            repo_dir,
+            &git_service::GitCredentialInput {
+                protocol: "https".to_string(),
+                host: credential.host.clone(),
+                username: credential.username.clone(),
+                password: credential.token.clone(),
+            },
+        )
+        .map_err(|err| {
+            UserFacingError::with_category(
+                "Git credential approval failed",
+                "Could not pass the stored token to Git's credential helper.",
+                Some(format!("{err:?}")),
+                ErrorCategory::Git,
+            )
+        })?;
+        Ok(credential)
+    }
+
+    fn prepare_https_credentials(
+        &mut self,
+        repo_dir: &Path,
+        op: &str,
+        args: &[String],
+    ) -> Result<(), UserFacingError> {
+        let Some(host) = self.https_host_for_remote_op(op, args) else {
+            return Ok(());
+        };
+        match self.seed_git_credential_for(repo_dir, &host, None) {
+            Ok(_) => Ok(()),
+            Err(error) if error.title == "Git credential approval failed" => {
+                let mut remotes = self.store.snapshot().remotes.clone();
+                remotes.auth.last_error = Some(format!(
+                    "No stored HTTPS token for {host}. Use auth.login before fetch/pull/push."
+                ));
+                self.store.update_remote_state(remotes);
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn https_host_for_remote_op(&self, op: &str, args: &[String]) -> Option<String> {
+        if !matches!(
+            op,
+            "remote.fetch"
+                | "remote.fetch_all"
+                | "remote.pull"
+                | "remote.push"
+                | "remote.push_set_upstream"
+                | "remote.push_force_with_lease"
+        ) {
+            return None;
+        }
+
+        let snapshot = self.store.snapshot();
+        let remote_name = args
+            .first()
+            .filter(|value| !value.trim().is_empty())
+            .cloned()
+            .or_else(|| {
+                snapshot
+                    .remotes
+                    .upstream
+                    .as_ref()
+                    .and_then(|upstream| upstream.upstream.as_deref())
+                    .and_then(|upstream| {
+                        upstream
+                            .split_once('/')
+                            .map(|(remote, _)| remote.to_string())
+                    })
+            });
+        let remote = remote_name
+            .as_deref()
+            .and_then(|name| {
+                snapshot
+                    .remotes
+                    .remotes
+                    .iter()
+                    .find(|remote| remote.name == name)
+            })
+            .or_else(|| snapshot.remotes.remotes.first())?;
+        let url = remote.push_url.as_deref().or(remote.fetch_url.as_deref())?;
+        https_host_from_url(url)
+    }
+
+    fn refresh_auth_state_for_current_context(&mut self) {
+        let cwd = self
+            .repo_dir
+            .clone()
+            .unwrap_or_else(|| self.config.cwd.clone());
+        self.refresh_auth_state(&cwd);
+    }
+
+    fn refresh_auth_state(&mut self, cwd: &Path) {
+        let git_auth = git_service::auth_status(cwd).unwrap_or_default();
+        let mut last_error = None;
+        let accounts = match self.credential_vault().list_accounts() {
+            Ok(accounts) => accounts,
+            Err(err) => {
+                last_error = Some(err);
+                Vec::new()
+            }
+        };
+        let mut remote_state = self.store.snapshot().remotes.clone();
+        remote_state.auth = AuthStatus {
+            ssh_agent_available: git_auth.ssh_agent_available,
+            https_helper_configured: git_auth.https_helper_configured,
+            accounts,
+            last_error,
+        };
+        self.store.update_remote_state(remote_state);
     }
 
     fn run_pr_op(&mut self, target: &str, args: &[String]) -> Result<String, UserFacingError> {
@@ -3048,6 +3307,7 @@ impl ConsoleRunner {
         args: Vec<String>,
         replayable: bool,
     ) -> Result<JobExecutionResult, UserFacingError> {
+        self.prepare_https_credentials(cwd, op, &args)?;
         let result = execute_job_op(
             cwd,
             &JobRequest {
@@ -3063,6 +3323,7 @@ impl ConsoleRunner {
         if let Some(repo) = self.store.repo() {
             self.repo_dir = Some(PathBuf::from(repo.root.clone()));
         }
+        self.refresh_auth_state(cwd);
 
         if replayable && is_replayable_op(op) {
             self.last_replayable = Some(ReplayableRun::Run {
@@ -3538,6 +3799,56 @@ fn map_provider_kind_for_git(provider: &state_store::ProviderKind) -> git_servic
         state_store::ProviderKind::GitLab => git_service::ProviderKind::GitLab,
         state_store::ProviderKind::Unknown => git_service::ProviderKind::Unknown,
     }
+}
+
+fn parse_provider_kind(raw: &str) -> Option<state_store::ProviderKind> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "github" | "github.com" => Some(state_store::ProviderKind::GitHub),
+        "gitlab" | "gitlab.com" => Some(state_store::ProviderKind::GitLab),
+        "unknown" => Some(state_store::ProviderKind::Unknown),
+        _ => None,
+    }
+}
+
+fn https_host_from_url(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://")?;
+    let authority = rest.split('/').next().unwrap_or_default();
+    let host = authority
+        .rsplit('@')
+        .next()
+        .unwrap_or(authority)
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    (!host.is_empty()).then_some(host)
+}
+
+fn render_auth_summary(auth: &AuthStatus) -> String {
+    let mut lines = vec![
+        "Authentication Status".to_string(),
+        format!("ssh-agent: {}", auth.ssh_agent_available),
+        format!("git credential helper: {}", auth.https_helper_configured),
+    ];
+    if auth.accounts.is_empty() {
+        lines.push("stored accounts: none".to_string());
+    } else {
+        lines.push("stored accounts:".to_string());
+        for account in &auth.accounts {
+            lines.push(format!(
+                "- {} {} provider={:?} token_present={}",
+                account.host,
+                account.username.as_deref().unwrap_or("<unknown>"),
+                account.provider,
+                account.token_present
+            ));
+        }
+    }
+    if let Some(error) = auth.last_error.as_deref() {
+        lines.push(format!("last error: {error}"));
+    }
+    lines.join("\n")
 }
 
 fn create_pull_request_url(
@@ -4258,6 +4569,47 @@ fn host_plugin_action_specs() -> Vec<ActionSpec> {
             ConfirmPolicy::OnDanger,
         ),
         host_action_spec(
+            "auth.status",
+            "Show Auth Status",
+            Some("always"),
+            None,
+            ActionEffects::read_only(),
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "auth.login",
+            "Store HTTPS Token",
+            Some("always"),
+            Some(DangerLevel::Low),
+            ActionEffects {
+                danger_level: DangerLevel::Low,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "auth.logout",
+            "Remove HTTPS Token",
+            Some("always"),
+            Some(DangerLevel::Medium),
+            ActionEffects {
+                danger_level: DangerLevel::Medium,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::OnDanger,
+        ),
+        host_action_spec(
+            "auth.seed_git",
+            "Approve Git Credential",
+            Some("repo.is_open"),
+            Some(DangerLevel::Low),
+            ActionEffects {
+                danger_level: DangerLevel::Low,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
             "remote.refresh",
             "Refresh Remotes",
             Some("repo.is_open"),
@@ -4888,6 +5240,12 @@ fn ops_text() -> String {
         "repo.open <path>",
         "status.refresh",
         "refs.refresh",
+        "",
+        "[auth]",
+        "auth.status",
+        "auth.login <host> <username> <token> [github|gitlab]",
+        "auth.logout <host> [username]",
+        "auth.seed_git <host> [username]",
         "",
         "[remotes]",
         "remote.refresh",
@@ -5691,6 +6049,8 @@ mod tests {
         ConsoleRunnerConfig {
             cwd: root.to_path_buf(),
             plugins_root: root.join("plugins"),
+            auth_metadata_path: Some(root.join("auth/accounts.json")),
+            auth_file_store: Some(root.join("auth/tokens")),
             auto_render: true,
         }
     }
@@ -6241,6 +6601,59 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn auth_ops_store_tokens_outside_state_and_seed_git_helper() {
+        let root = unique_temp_dir("auth-ops");
+        let repo_dir = init_repo("auth-ops-repo");
+        let helper_file = repo_dir.join("credentials.txt");
+        let helper = format!("store --file={}", helper_file.display());
+        assert!(git_service::run_git(&repo_dir, &["config", "credential.helper", &helper]).is_ok());
+
+        let mut runner = ConsoleRunner::new(test_config(&root));
+        assert!(
+            runner
+                .run_target("repo.open", &[repo_dir.display().to_string()], false)
+                .is_ok()
+        );
+        assert!(
+            runner
+                .run_target(
+                    "auth.login",
+                    &[
+                        "github.com".to_string(),
+                        "octo".to_string(),
+                        "secret-token".to_string(),
+                    ],
+                    false,
+                )
+                .is_ok()
+        );
+
+        let snapshot = runner.store.snapshot();
+        assert_eq!(snapshot.remotes.auth.accounts.len(), 1);
+        assert_eq!(snapshot.remotes.auth.accounts[0].host, "github.com");
+        assert!(snapshot.remotes.auth.accounts[0].token_present);
+        let metadata = std::fs::read_to_string(root.join("auth/accounts.json")).unwrap_or_default();
+        assert!(metadata.contains("github.com"));
+        assert!(!metadata.contains("secret-token"));
+        let helper_contents = std::fs::read_to_string(helper_file).unwrap_or_default();
+        assert!(helper_contents.contains("secret-token"));
+
+        assert!(
+            runner
+                .run_target(
+                    "auth.logout",
+                    &["github.com".to_string(), "octo".to_string()],
+                    true,
+                )
+                .is_ok()
+        );
+        assert!(runner.store.snapshot().remotes.auth.accounts.is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&repo_dir);
     }
 
     #[test]

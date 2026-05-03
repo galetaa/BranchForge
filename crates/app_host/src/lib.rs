@@ -16,6 +16,7 @@ use state_store::{
 };
 
 pub mod console_runner;
+mod credentials;
 pub mod errors;
 pub mod operations;
 pub mod recent_repos;

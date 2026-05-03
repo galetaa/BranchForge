@@ -55,6 +55,9 @@ pub struct BranchForgeDesktopApp {
     compare_head_input: String,
     remote_name_input: String,
     remote_url_input: String,
+    auth_host_input: String,
+    auth_username_input: String,
+    auth_token_input: String,
     workspace_name_input: String,
     workspace_repo_input: String,
     pr_base_input: String,
@@ -88,6 +91,9 @@ impl BranchForgeDesktopApp {
             compare_head_input: String::new(),
             remote_name_input: "origin".to_string(),
             remote_url_input: String::new(),
+            auth_host_input: "github.com".to_string(),
+            auth_username_input: String::new(),
+            auth_token_input: String::new(),
             workspace_name_input: "Default Workspace".to_string(),
             workspace_repo_input: String::new(),
             pr_base_input: "main".to_string(),
@@ -1130,6 +1136,104 @@ impl BranchForgeDesktopApp {
             snapshot.remotes.auth.ssh_agent_available,
             snapshot.remotes.auth.https_helper_configured
         ));
+        if let Some(error) = snapshot.remotes.auth.last_error.as_deref() {
+            ui.colored_label(Color32::from_rgb(248, 113, 113), error);
+        }
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(!state.busy, egui::Button::new("Auth status"))
+                .clicked()
+            {
+                self.execute_action_direct("auth.status", Vec::new(), false);
+            }
+            ui.add(
+                egui::TextEdit::singleline(&mut self.auth_host_input)
+                    .desired_width(150.0)
+                    .hint_text("host"),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut self.auth_username_input)
+                    .desired_width(150.0)
+                    .hint_text("username"),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut self.auth_token_input)
+                    .password(true)
+                    .desired_width(220.0)
+                    .hint_text("token"),
+            );
+            if ui
+                .add_enabled(
+                    !self.auth_host_input.trim().is_empty()
+                        && !self.auth_username_input.trim().is_empty()
+                        && !self.auth_token_input.is_empty()
+                        && !state.busy,
+                    egui::Button::new("Store token"),
+                )
+                .clicked()
+            {
+                self.execute_action_direct(
+                    "auth.login",
+                    vec![
+                        self.auth_host_input.trim().to_string(),
+                        self.auth_username_input.trim().to_string(),
+                        self.auth_token_input.clone(),
+                    ],
+                    false,
+                );
+                self.auth_token_input.clear();
+            }
+        });
+        if !snapshot.remotes.auth.accounts.is_empty() {
+            egui::Grid::new("auth.accounts.rows")
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.label(RichText::new("Host").strong());
+                    ui.label(RichText::new("User").strong());
+                    ui.label(RichText::new("Provider").strong());
+                    ui.label(RichText::new("Token").strong());
+                    ui.label(RichText::new("Actions").strong());
+                    ui.end_row();
+                    for account in &snapshot.remotes.auth.accounts {
+                        ui.label(account.host.as_str());
+                        ui.label(account.username.as_deref().unwrap_or(""));
+                        ui.label(format!("{:?}", account.provider));
+                        ui.label(if account.token_present {
+                            "stored"
+                        } else {
+                            "missing"
+                        });
+                        ui.horizontal(|ui| {
+                            let username = account.username.clone().unwrap_or_default();
+                            if ui
+                                .add_enabled(
+                                    account.token_present && !state.busy,
+                                    egui::Button::new("Seed Git"),
+                                )
+                                .clicked()
+                            {
+                                self.execute_action_direct(
+                                    "auth.seed_git",
+                                    vec![account.host.clone(), username.clone()],
+                                    false,
+                                );
+                            }
+                            if ui
+                                .add_enabled(!state.busy, egui::Button::new("Logout"))
+                                .clicked()
+                            {
+                                self.preview_or_confirm(
+                                    "auth.logout",
+                                    vec![account.host.clone(), username],
+                                    "Preview credential removal".to_string(),
+                                    "Remove this stored credential?".to_string(),
+                                );
+                            }
+                        });
+                        ui.end_row();
+                    }
+                });
+        }
         if let Some(message) = snapshot.remotes.last_sync_message.as_deref() {
             ui.label(message);
         }

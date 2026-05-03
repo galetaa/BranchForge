@@ -244,6 +244,14 @@ pub struct GitAuthStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitCredentialInput {
+    pub protocol: String,
+    pub host: String,
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderKind {
     GitHub,
     GitLab,
@@ -2421,6 +2429,60 @@ pub fn auth_status(cwd: &Path) -> Result<GitAuthStatus, GitServiceError> {
     })
 }
 
+pub fn credential_approve(
+    cwd: &Path,
+    credential: &GitCredentialInput,
+) -> Result<(), GitServiceError> {
+    if credential.host.trim().is_empty()
+        || credential.username.trim().is_empty()
+        || credential.password.is_empty()
+    {
+        return Err(GitServiceError::ParseError(
+            "credential approve requires host, username, and password".to_string(),
+        ));
+    }
+    let protocol = if credential.protocol.trim().is_empty() {
+        "https"
+    } else {
+        credential.protocol.trim()
+    };
+    let payload = format!(
+        "protocol={protocol}\nhost={}\nusername={}\npassword={}\n\n",
+        credential.host.trim(),
+        credential.username.trim(),
+        credential.password
+    );
+    let _ = run_git_with_input(cwd, &["credential", "approve"], payload.as_bytes())?;
+    Ok(())
+}
+
+pub fn credential_reject(
+    cwd: &Path,
+    protocol: &str,
+    host: &str,
+    username: Option<&str>,
+) -> Result<(), GitServiceError> {
+    if host.trim().is_empty() {
+        return Err(GitServiceError::ParseError(
+            "credential reject requires host".to_string(),
+        ));
+    }
+    let protocol = if protocol.trim().is_empty() {
+        "https"
+    } else {
+        protocol.trim()
+    };
+    let mut payload = format!("protocol={protocol}\nhost={}\n", host.trim());
+    if let Some(username) = username.filter(|value| !value.trim().is_empty()) {
+        payload.push_str("username=");
+        payload.push_str(username.trim());
+        payload.push('\n');
+    }
+    payload.push('\n');
+    let _ = run_git_with_input(cwd, &["credential", "reject"], payload.as_bytes())?;
+    Ok(())
+}
+
 pub fn detect_remote_provider(url: &str) -> Option<ProviderRepository> {
     parse_remote_provider_url(url)
 }
@@ -2952,6 +3014,34 @@ mod tests {
         assert!(!text.contains("ghp_x"));
         assert!(!text.contains("ghi"));
         assert!(text.contains("<redacted>"));
+    }
+
+    #[test]
+    fn credential_approve_and_reject_use_git_helper_payloads() {
+        let repo_dir = unique_temp_dir();
+        init_basic_repo(&repo_dir);
+        let helper_file = repo_dir.join("credentials.txt");
+        let helper = format!("store --file={}", helper_file.display());
+        assert!(run_git(&repo_dir, &["config", "credential.helper", &helper]).is_ok());
+
+        let credential = GitCredentialInput {
+            protocol: "https".to_string(),
+            host: "github.com".to_string(),
+            username: "octo".to_string(),
+            password: "secret-token".to_string(),
+        };
+        assert!(credential_approve(&repo_dir, &credential).is_ok());
+
+        let stored = std::fs::read_to_string(&helper_file).unwrap_or_default();
+        assert!(stored.contains("github.com"));
+        assert!(stored.contains("octo"));
+        assert!(stored.contains("secret-token"));
+        assert_eq!(
+            redact_secret_text("password=secret-token token=secret-token"),
+            "password=<redacted> token=<redacted>"
+        );
+
+        assert!(credential_reject(&repo_dir, "https", "github.com", Some("octo")).is_ok());
     }
 
     #[test]
