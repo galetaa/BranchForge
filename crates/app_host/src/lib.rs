@@ -19,6 +19,7 @@ pub mod console_runner;
 mod credentials;
 pub mod errors;
 pub mod operations;
+mod provider_api;
 pub mod recent_repos;
 
 pub use console_runner::{

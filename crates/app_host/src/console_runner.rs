@@ -29,6 +29,7 @@ use state_store::{
 use crate::credentials::{CredentialVault, StoredCredential, provider_from_host};
 use crate::errors::{ErrorCategory, UserFacingError, translate_job_error};
 use crate::operations;
+use crate::provider_api::{ProviderApiConfig, list_pull_requests};
 use crate::recent_repos::persist_recent_repo;
 use crate::run_rebase_beta_smoke;
 
@@ -41,6 +42,8 @@ pub struct ConsoleRunnerConfig {
     pub plugins_root: PathBuf,
     pub auth_metadata_path: Option<PathBuf>,
     pub auth_file_store: Option<PathBuf>,
+    pub github_api_base: Option<String>,
+    pub gitlab_api_base: Option<String>,
     pub auto_render: bool,
 }
 
@@ -55,6 +58,8 @@ impl ConsoleRunnerConfig {
             plugins_root,
             auth_metadata_path: std::env::var_os("BRANCHFORGE_AUTH_METADATA").map(PathBuf::from),
             auth_file_store: std::env::var_os("BRANCHFORGE_AUTH_FILE_STORE").map(PathBuf::from),
+            github_api_base: std::env::var("BRANCHFORGE_GITHUB_API_BASE").ok(),
+            gitlab_api_base: std::env::var("BRANCHFORGE_GITLAB_API_BASE").ok(),
             auto_render: true,
         })
     }
@@ -67,6 +72,8 @@ impl Default for ConsoleRunnerConfig {
             plugins_root: PathBuf::from("target/tmp/console-runner/plugins"),
             auth_metadata_path: None,
             auth_file_store: None,
+            github_api_base: None,
+            gitlab_api_base: None,
             auto_render: true,
         })
     }
@@ -2300,15 +2307,64 @@ impl ConsoleRunner {
             }
             "pr.list" => {
                 let (provider, _) = self.detect_provider_for_repo(&repo_dir)?;
-                let current = self.current_branch_pr_summary(&repo_dir, &provider, args)?;
+                let current_branch = self
+                    .store
+                    .snapshot()
+                    .repo
+                    .as_ref()
+                    .and_then(|repo| repo.head.clone())
+                    .or_else(|| {
+                        git_service::upstream_status(&repo_dir)
+                            .ok()
+                            .and_then(|s| s.current_branch)
+                    });
+                let token = match self.credential_vault().token_for_host(&provider.host, None) {
+                    Ok(credential) => credential.token,
+                    Err(err) => {
+                        let recovery = format!(
+                            "No stored provider token for {}. Store one with auth.login, then retry pr.list. ({err})",
+                            provider.host
+                        );
+                        self.store
+                            .update_pull_request_state(PullRequestStateSnapshot {
+                                detected_provider: Some(provider),
+                                pull_requests: Vec::new(),
+                                current_branch_pr: None,
+                                last_error: Some(recovery.clone()),
+                            });
+                        return Ok(recovery);
+                    }
+                };
+                let pull_requests = list_pull_requests(
+                    &provider,
+                    &token,
+                    &ProviderApiConfig {
+                        github_api_base: self.config.github_api_base.clone(),
+                        gitlab_api_base: self.config.gitlab_api_base.clone(),
+                    },
+                )
+                .map_err(|err| {
+                    UserFacingError::with_category(
+                        "Provider API request failed",
+                        "Could not list pull requests from the hosting provider.",
+                        Some(err.message),
+                        ErrorCategory::System,
+                    )
+                })?;
+                let current = current_branch.as_deref().and_then(|head| {
+                    pull_requests
+                        .iter()
+                        .find(|pr| pr.source_branch == head)
+                        .cloned()
+                });
                 self.store
                     .update_pull_request_state(PullRequestStateSnapshot {
                         detected_provider: Some(provider),
-                        pull_requests: current.iter().cloned().collect(),
+                        pull_requests,
                         current_branch_pr: current,
                         last_error: None,
                     });
-                Ok("updated pull request foundation state".to_string())
+                Ok("listed pull requests from provider API".to_string())
             }
             "pr.create_url" => {
                 let (provider, _) = self.detect_provider_for_repo(&repo_dir)?;
@@ -2587,33 +2643,6 @@ impl ConsoleRunner {
             .ok_or_else(|| {
                 invalid_input_error("no GitHub/GitLab-style remote URL detected for this repo")
             })
-    }
-
-    fn current_branch_pr_summary(
-        &self,
-        repo_dir: &Path,
-        provider: &ProviderRepository,
-        args: &[String],
-    ) -> Result<Option<PullRequestSummary>, UserFacingError> {
-        let head = self
-            .store
-            .snapshot()
-            .repo
-            .as_ref()
-            .and_then(|repo| repo.head.clone())
-            .or_else(|| {
-                git_service::upstream_status(repo_dir)
-                    .ok()
-                    .and_then(|s| s.current_branch)
-            });
-        let Some(head) = head else {
-            return Ok(None);
-        };
-        let base = args.first().map(String::as_str).unwrap_or("main");
-        let url = create_pull_request_url(provider, base, &head, None);
-        Ok(Some(pull_request_summary_for_url(
-            provider, base, &head, url,
-        )))
     }
 
     fn run_plugin_op(&mut self, op: PluginOp, confirmed: bool) -> Result<String, UserFacingError> {
@@ -3916,7 +3945,7 @@ fn pull_request_summary_for_url(
             name: "provider-api".to_string(),
             status: CheckStatus::Pending,
             detail: Some(
-                "Provider API foundation is ready; token-backed listing is pending.".to_string(),
+                "Use pr.list with a stored provider token to load live checks.".to_string(),
             ),
         }],
         review_state: Some(ReviewState::ReviewRequired),
@@ -6051,6 +6080,8 @@ mod tests {
             plugins_root: root.join("plugins"),
             auth_metadata_path: Some(root.join("auth/accounts.json")),
             auth_file_store: Some(root.join("auth/tokens")),
+            github_api_base: None,
+            gitlab_api_base: None,
             auto_render: true,
         }
     }
@@ -6216,6 +6247,27 @@ mod tests {
             .expect("build sample external plugin");
         assert!(status.success());
         package_dir
+    }
+
+    fn spawn_json_http_server(responses: Vec<String>) -> (String, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let addr = listener.local_addr().expect("server addr");
+        let handle = std::thread::spawn(move || {
+            for response in responses {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut buffer = [0_u8; 2048];
+                let _ = std::io::Read::read(&mut stream, &mut buffer);
+                let payload = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response.len(),
+                    response
+                );
+                let _ = std::io::Write::write_all(&mut stream, payload.as_bytes());
+            }
+        });
+        (format!("http://{addr}"), handle)
     }
 
     #[test]
@@ -6599,6 +6651,80 @@ mod tests {
                 .map(|provider| provider.provider.clone()),
             Some(state_store::ProviderKind::GitHub)
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pr_list_uses_provider_api_and_stored_token() {
+        let root = unique_temp_dir("pr-list-api");
+        let repo_dir = root.join("repo");
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+        assert!(std::fs::write(repo_dir.join("README.md"), "base\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["README.md".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "base").is_ok());
+        assert!(
+            git_service::remote_add(
+                &repo_dir,
+                "origin",
+                "https://github.com/branchforge/app.git"
+            )
+            .is_ok()
+        );
+
+        let pulls = serde_json::json!([{
+            "number": 12,
+            "title": "Live provider API",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/branchforge/app/pull/12",
+            "user": {"login": "octo"},
+            "head": {"ref": "feature/provider-api", "sha": "abc123"},
+            "base": {"ref": "main"}
+        }])
+        .to_string();
+        let status = serde_json::json!({
+            "state": "success",
+            "statuses": [{"context": "ci"}]
+        })
+        .to_string();
+        let (api_base, handle) = spawn_json_http_server(vec![pulls, status]);
+        let mut config = test_config(&root);
+        config.github_api_base = Some(api_base);
+        let mut runner = ConsoleRunner::new(config);
+
+        assert!(
+            runner
+                .run_target("repo.open", &[repo_dir.display().to_string()], false)
+                .is_ok()
+        );
+        assert!(
+            runner
+                .run_target(
+                    "auth.login",
+                    &[
+                        "github.com".to_string(),
+                        "octo".to_string(),
+                        "secret-token".to_string(),
+                    ],
+                    false,
+                )
+                .is_ok()
+        );
+        assert!(runner.run_target("pr.list", &[], false).is_ok());
+        let snapshot = runner.store.snapshot();
+        assert_eq!(snapshot.pull_requests.pull_requests.len(), 1);
+        assert_eq!(snapshot.pull_requests.pull_requests[0].number, 12);
+        assert_eq!(
+            snapshot.pull_requests.pull_requests[0].checks[0].status,
+            CheckStatus::Success
+        );
+        assert!(handle.join().is_ok());
 
         let _ = std::fs::remove_dir_all(&root);
     }

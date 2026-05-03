@@ -354,6 +354,8 @@ mod tests {
             plugins_root: root.join("plugins"),
             auth_metadata_path: Some(root.join("auth/accounts.json")),
             auth_file_store: Some(root.join("auth/tokens")),
+            github_api_base: None,
+            gitlab_api_base: None,
             auto_render: false,
         }
     }
