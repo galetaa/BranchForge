@@ -19,6 +19,9 @@ const BUNDLED_BINARIES: &[(&str, &str)] = &[
 const RELEASE_NOTES_DOC: &str = "docs/process/release_notes_v1.0.1.md";
 const CHANGELOG_DOC: &str = "docs/process/changelog_v1.0.1.md";
 const SUPPORT_DOC: &str = "docs/process/known_issues_and_support_v1.0.1.md";
+const BETA_USER_GUIDE_DOC: &str = "docs/process/beta_user_guide_v1.0.1.md";
+const BETA_KNOWN_ISSUES_DOC: &str = "docs/process/beta_known_issues_v1.0.1.md";
+const PACKAGE_VERIFICATION_DOC: &str = "docs/process/package_verification_v1.0.1.md";
 const REGRESSION_DOC: &str = "docs/process/release_regression_matrix_sprint24.md";
 const RC_SIGNOFF_DOC: &str = "docs/process/rc_signoff_sprint24.md";
 
@@ -126,9 +129,11 @@ pub fn generate_release_notes(
     let release_notes = read_doc_section(&repo_root.join(RELEASE_NOTES_DOC))?;
     let changelog = read_doc_section(&repo_root.join(CHANGELOG_DOC))?;
     let support = read_doc_section(&repo_root.join(SUPPORT_DOC))?;
+    let beta_known_issues = read_doc_section(&repo_root.join(BETA_KNOWN_ISSUES_DOC))?;
+    let package_verification = read_doc_section(&repo_root.join(PACKAGE_VERIFICATION_DOC))?;
 
     let content = format!(
-        "# Branchforge {version} Release Notes\n\n- Channel: {channel}\n- Generated UTC: {generated_utc}\n- Source docs:\n  - {RELEASE_NOTES_DOC}\n  - {CHANGELOG_DOC}\n  - {SUPPORT_DOC}\n\n## Product Notes\n\n{release_notes}\n\n## Changelog\n\n{changelog}\n\n## Support\n\n{support}\n"
+        "# Branchforge {version} Release Notes\n\n- Channel: {channel}\n- Generated UTC: {generated_utc}\n- Source docs:\n  - {RELEASE_NOTES_DOC}\n  - {CHANGELOG_DOC}\n  - {SUPPORT_DOC}\n  - {BETA_KNOWN_ISSUES_DOC}\n  - {PACKAGE_VERIFICATION_DOC}\n\n## Product Notes\n\n{release_notes}\n\n## Changelog\n\n{changelog}\n\n## Beta Known Issues\n\n{beta_known_issues}\n\n## Package Verification\n\n{package_verification}\n\n## Support\n\n{support}\n"
     );
     if let Some(parent) = out_file.parent() {
         fs::create_dir_all(parent).map_err(|err| format!("{}: {}", parent.display(), err))?;
@@ -252,6 +257,8 @@ pub fn package_local(repo_root: &Path, options: &LocalPackageOptions) -> Result<
         .map_err(|err| format!("{}: {}", options.out_dir.display(), err))?;
     fs::create_dir_all(options.out_dir.join("plugins"))
         .map_err(|err| format!("{}: {}", options.out_dir.display(), err))?;
+    fs::create_dir_all(options.out_dir.join("docs"))
+        .map_err(|err| format!("{}: {}", options.out_dir.display(), err))?;
 
     let release_root = repo_root.join("target/release");
     for (binary, relative_path) in BUNDLED_BINARIES {
@@ -266,7 +273,7 @@ pub fn package_local(repo_root: &Path, options: &LocalPackageOptions) -> Result<
 
     fs::write(
         options.out_dir.join("README.txt"),
-        "Branchforge local package layout\n\nbin/app_host          host executable\nplugins/repo_manager  bundled plugin executable\nplugins/status        bundled plugin executable\nplugins/history       bundled plugin executable\nplugins/branches      bundled plugin executable\nplugins/tags          bundled plugin executable\nplugins/compare       bundled plugin executable\nplugins/diagnostics   bundled plugin executable\n\nRun example:\n  ./bin/app_host\n",
+        "Branchforge local package layout\n\nbin/app_host          host executable\nplugins/repo_manager  bundled plugin executable\nplugins/status        bundled plugin executable\nplugins/history       bundled plugin executable\nplugins/branches      bundled plugin executable\nplugins/tags          bundled plugin executable\nplugins/compare       bundled plugin executable\nplugins/diagnostics   bundled plugin executable\ndocs/                 beta user, known-issues, and package verification docs\n\nRun example:\n  ./bin/app_host\n\nVerify example:\n  cargo run -p app_host -- --command \"run release.verify\"\n",
     )
     .map_err(|err| format!("{}: {}", options.out_dir.display(), err))?;
 
@@ -287,7 +294,7 @@ pub fn package_local(repo_root: &Path, options: &LocalPackageOptions) -> Result<
     fs::write(
         options.out_dir.join("manifest.json"),
         format!(
-            "{{\n  \"version\": \"{version}\",\n  \"channel\": \"{}\",\n  \"commit\": \"{sha}\",\n  \"built_utc\": \"{date_utc}\",\n  \"platform\": \"{platform}\",\n  \"layout\": \"local-package-v1\",\n  \"rollback_from\": \"{}\",\n  \"protocol_version\": \"0.1\"\n}}\n",
+            "{{\n  \"version\": \"{version}\",\n  \"channel\": \"{}\",\n  \"commit\": \"{sha}\",\n  \"built_utc\": \"{date_utc}\",\n  \"platform\": \"{platform}\",\n  \"layout\": \"local-package-v1\",\n  \"rollback_from\": \"{}\",\n  \"protocol_version\": \"0.1\",\n  \"public_beta_docs\": [\n    \"docs/beta_user_guide.md\",\n    \"docs/beta_known_issues.md\",\n    \"docs/package_verification.md\"\n  ]\n}}\n",
             options.channel, options.rollback_from
         ),
     )
@@ -317,6 +324,21 @@ pub fn package_local(repo_root: &Path, options: &LocalPackageOptions) -> Result<
         options.out_dir.join("support.md"),
     )
     .map_err(|err| format!("{}: {}", options.out_dir.display(), err))?;
+    fs::copy(
+        repo_root.join(BETA_USER_GUIDE_DOC),
+        options.out_dir.join("docs/beta_user_guide.md"),
+    )
+    .map_err(|err| format!("{}: {}", options.out_dir.display(), err))?;
+    fs::copy(
+        repo_root.join(BETA_KNOWN_ISSUES_DOC),
+        options.out_dir.join("docs/beta_known_issues.md"),
+    )
+    .map_err(|err| format!("{}: {}", options.out_dir.display(), err))?;
+    fs::copy(
+        repo_root.join(PACKAGE_VERIFICATION_DOC),
+        options.out_dir.join("docs/package_verification.md"),
+    )
+    .map_err(|err| format!("{}: {}", options.out_dir.display(), err))?;
 
     let checksum_files = BUNDLED_BINARIES
         .iter()
@@ -329,6 +351,9 @@ pub fn package_local(repo_root: &Path, options: &LocalPackageOptions) -> Result<
                 "release_notes.md",
                 "changelog.md",
                 "support.md",
+                "docs/beta_user_guide.md",
+                "docs/beta_known_issues.md",
+                "docs/package_verification.md",
                 "README.txt",
             ]
             .into_iter()
@@ -525,9 +550,15 @@ fn verify_release_artifacts(
         release.out_dir.join("signing.json"),
         release.out_dir.join("rollback.json"),
         release.out_dir.join("release_notes.md"),
+        release.out_dir.join("docs/beta_user_guide.md"),
+        release.out_dir.join("docs/beta_known_issues.md"),
+        release.out_dir.join("docs/package_verification.md"),
         repo_root.join(RELEASE_NOTES_DOC),
         repo_root.join(CHANGELOG_DOC),
         repo_root.join(SUPPORT_DOC),
+        repo_root.join(BETA_USER_GUIDE_DOC),
+        repo_root.join(BETA_KNOWN_ISSUES_DOC),
+        repo_root.join(PACKAGE_VERIFICATION_DOC),
         repo_root.join(REGRESSION_DOC),
         repo_root.join(RC_SIGNOFF_DOC),
         release
@@ -549,6 +580,9 @@ fn verify_release_artifacts(
         }
     }
 
+    verify_bundled_binaries(&release.out_dir)?;
+    verify_checksum_manifest(&release.out_dir)?;
+    verify_archive_checksum(&release.archive_path)?;
     run_command(
         repo_root,
         "openssl",
@@ -563,6 +597,70 @@ fn verify_release_artifacts(
         ],
         &[],
     )?;
+    Ok(())
+}
+
+fn verify_bundled_binaries(out_dir: &Path) -> Result<(), String> {
+    for (_, relative_path) in BUNDLED_BINARIES {
+        let path = out_dir.join(relative_path);
+        if !path.is_file() {
+            return Err(format!("bundled binary missing: {}", path.display()));
+        }
+    }
+    Ok(())
+}
+
+fn verify_checksum_manifest(out_dir: &Path) -> Result<(), String> {
+    let manifest_path = out_dir.join("sha256sums.txt");
+    let raw = fs::read_to_string(&manifest_path)
+        .map_err(|err| format!("{}: {}", manifest_path.display(), err))?;
+    for (line_no, line) in raw.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let (expected, relative) = trimmed.split_once("  ").ok_or_else(|| {
+            format!(
+                "invalid checksum line {} in {}",
+                line_no + 1,
+                manifest_path.display()
+            )
+        })?;
+        let actual = hash_file(&out_dir.join(relative))?;
+        if actual != expected {
+            return Err(format!(
+                "checksum mismatch for {relative}: expected {expected}, got {actual}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_archive_checksum(archive_path: &Path) -> Result<(), String> {
+    let checksum_path = archive_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!(
+            "{}.sha256",
+            archive_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("release.tar.gz")
+        ));
+    let raw = fs::read_to_string(&checksum_path)
+        .map_err(|err| format!("{}: {}", checksum_path.display(), err))?;
+    let (expected, _) = raw
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .and_then(|line| line.split_once("  "))
+        .ok_or_else(|| format!("invalid archive checksum: {}", checksum_path.display()))?;
+    let actual = hash_file(archive_path)?;
+    if actual != expected {
+        return Err(format!(
+            "archive checksum mismatch for {}: expected {expected}, got {actual}",
+            archive_path.display()
+        ));
+    }
     Ok(())
 }
 
@@ -708,6 +806,14 @@ mod tests {
         assert!(fs::write(root.join(RELEASE_NOTES_DOC), "# Notes\nrelease body\n").is_ok());
         assert!(fs::write(root.join(CHANGELOG_DOC), "# Changelog\nchange body\n").is_ok());
         assert!(fs::write(root.join(SUPPORT_DOC), "# Support\nsupport body\n").is_ok());
+        assert!(fs::write(root.join(BETA_KNOWN_ISSUES_DOC), "# Known\nknown body\n").is_ok());
+        assert!(
+            fs::write(
+                root.join(PACKAGE_VERIFICATION_DOC),
+                "# Verify\nverify body\n"
+            )
+            .is_ok()
+        );
 
         let out_file = root.join("out/release_notes.md");
         let result = generate_release_notes(&root, &out_file, "stable");
@@ -718,6 +824,8 @@ mod tests {
         assert!(rendered.contains("release body"));
         assert!(rendered.contains("change body"));
         assert!(rendered.contains("support body"));
+        assert!(rendered.contains("known body"));
+        assert!(rendered.contains("verify body"));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -733,6 +841,27 @@ mod tests {
         let manifest = fs::read_to_string(root.join("sha256sums.txt")).unwrap_or_default();
         assert!(manifest.contains("demo.txt"));
         assert_eq!(manifest.lines().count(), 1);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn checksum_manifest_verification_detects_tampering() {
+        let root = temp_root("verify-checksums");
+        assert!(fs::create_dir_all(&root).is_ok());
+        assert!(fs::write(root.join("demo.txt"), "demo").is_ok());
+        assert!(write_checksum_manifest(&root, &["demo.txt".to_string()]).is_ok());
+        assert!(verify_checksum_manifest(&root).is_ok());
+
+        assert!(fs::write(root.join("demo.txt"), "tampered").is_ok());
+        let result = verify_checksum_manifest(&root);
+        assert!(result.is_err());
+        assert!(
+            result
+                .err()
+                .unwrap_or_default()
+                .contains("checksum mismatch")
+        );
 
         let _ = fs::remove_dir_all(root);
     }
