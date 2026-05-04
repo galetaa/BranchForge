@@ -19,8 +19,8 @@ use plugin_host::{
 use state_store::{
     AuthStatus, BranchStack, BranchStackEntry, BranchStackState, CheckStatus, CommitImpact,
     DiffSource, DiffState, ExplainTemplate, FileImpact, ImpactLevel, ImpactSummary,
-    InstalledPluginRecord, OperationPreview, PluginSecurityRecord, PluginTrustLevel,
-    PreviewWarning, PreviewWarningLevel, ProviderRepository, PullRequestState,
+    InstalledPluginRecord, OperationPreview, PluginSecurityRecord, PluginSignatureStatus,
+    PluginTrustLevel, PreviewWarning, PreviewWarningLevel, ProviderRepository, PullRequestState,
     PullRequestStateSnapshot, PullRequestSummary, RefImpact, RemoteImpact, RepoBranchSummary,
     RepoStatusSummary, ReviewState, StackEntryStatus, StateStore, Workspace, WorkspaceJobResult,
     WorkspaceRepo, WorkspaceState,
@@ -186,10 +186,17 @@ enum PluginOp {
     Discover {
         registry_path: Option<String>,
     },
+    Marketplace {
+        registry_path: Option<String>,
+    },
     Install {
         package_dir: String,
     },
     InstallRegistry {
+        plugin_id: String,
+        registry_path: Option<String>,
+    },
+    Update {
         plugin_id: String,
         registry_path: Option<String>,
     },
@@ -1496,6 +1503,10 @@ impl ConsoleRunner {
                 let registry_path = args.first().cloned();
                 self.run_plugin_op(PluginOp::Discover { registry_path }, confirmed)
             }
+            "plugin.marketplace" => {
+                let registry_path = args.first().cloned();
+                self.run_plugin_op(PluginOp::Marketplace { registry_path }, confirmed)
+            }
             "plugin.install" => {
                 let package_dir = args.first().cloned().ok_or_else(|| {
                     invalid_input_error("plugin.install requires package directory")
@@ -1511,6 +1522,21 @@ impl ConsoleRunner {
                 let registry_path = args.get(1).cloned();
                 self.run_plugin_op(
                     PluginOp::InstallRegistry {
+                        plugin_id,
+                        registry_path,
+                    },
+                    confirmed,
+                )
+            }
+            "plugin.update" => {
+                let plugin_id = args.first().cloned().ok_or_else(|| {
+                    invalid_input_error(
+                        "plugin.update requires plugin id: `run plugin.update <plugin_id> [registry_path]`",
+                    )
+                })?;
+                let registry_path = args.get(1).cloned();
+                self.run_plugin_op(
+                    PluginOp::Update {
                         plugin_id,
                         registry_path,
                     },
@@ -2649,8 +2675,10 @@ impl ConsoleRunner {
         let action_id = match &op {
             PluginOp::List => "plugin.list",
             PluginOp::Discover { .. } => "plugin.discover",
+            PluginOp::Marketplace { .. } => "plugin.marketplace",
             PluginOp::Install { .. } => "plugin.install",
             PluginOp::InstallRegistry { .. } => "plugin.install_registry",
+            PluginOp::Update { .. } => "plugin.update",
             PluginOp::Enable { .. } => "plugin.enable",
             PluginOp::Disable { .. } => "plugin.disable",
             PluginOp::Remove { .. } => "plugin.remove",
@@ -2690,6 +2718,33 @@ impl ConsoleRunner {
                     args: registry_path.into_iter().collect(),
                 });
                 Ok(format!("discovered plugins from {}", registry.display()))
+            }
+            PluginOp::Marketplace { registry_path } => {
+                let registry = self.resolve_plugin_registry_path(registry_path.as_deref());
+                let discovered =
+                    discover_local_plugins(&registry).map_err(translate_plugin_manager_error)?;
+                let installed = self.sync_plugin_inventory()?;
+                self.store
+                    .update_plugin_security(map_plugin_security_records_with_updates(
+                        &installed,
+                        &self.actions,
+                        &self.config.plugins_root,
+                        &discovered,
+                    ));
+                self.store
+                    .set_active_view(Some("diagnostics.panel".to_string()));
+                self.store.update_diff(render_text_diff(
+                    "plugin:marketplace",
+                    render_plugin_marketplace_list(&discovered, &installed, &registry),
+                ));
+                self.last_replayable = Some(ReplayableRun::Run {
+                    target: "plugin.marketplace".to_string(),
+                    args: registry_path.into_iter().collect(),
+                });
+                Ok(format!(
+                    "loaded plugin marketplace from {}",
+                    registry.display()
+                ))
             }
             PluginOp::Install { package_dir } => {
                 let path = resolve_path(&self.config.cwd, &package_dir);
@@ -2746,6 +2801,66 @@ impl ConsoleRunner {
                 Ok(format!(
                     "installed registry plugin {}",
                     installed.manifest.plugin_id
+                ))
+            }
+            PluginOp::Update {
+                plugin_id,
+                registry_path,
+            } => {
+                let registry = self.resolve_plugin_registry_path(registry_path.as_deref());
+                let discovered =
+                    discover_local_plugins(&registry).map_err(translate_plugin_manager_error)?;
+                let candidate = discovered
+                    .iter()
+                    .find(|plugin| plugin.manifest.plugin_id == plugin_id)
+                    .ok_or_else(|| {
+                        UserFacingError::with_category(
+                            "Plugin update failed",
+                            "Plugin was not found in the marketplace registry.",
+                            Some(plugin_id.clone()),
+                            ErrorCategory::System,
+                        )
+                    })?;
+                let installed_before = list_installed_plugins(&self.config.plugins_root)
+                    .map_err(translate_plugin_manager_error)?;
+                if let Some(current) = installed_before
+                    .iter()
+                    .find(|plugin| plugin.manifest.plugin_id == plugin_id)
+                    && current.manifest.version == candidate.manifest.version
+                {
+                    self.sync_plugin_inventory()?;
+                    return Ok(format!(
+                        "plugin {plugin_id} is already at {}",
+                        candidate.manifest.version
+                    ));
+                }
+                if installed_before
+                    .iter()
+                    .any(|plugin| plugin.manifest.plugin_id == plugin_id)
+                {
+                    remove_local_plugin(&self.config.plugins_root, &plugin_id)
+                        .map_err(translate_plugin_manager_error)?;
+                }
+                let installed =
+                    install_registry_plugin(&registry, &self.config.plugins_root, &plugin_id)
+                        .map_err(translate_plugin_manager_error)?;
+                self.store
+                    .update_selected_plugin(Some(installed.manifest.plugin_id.clone()));
+                self.sync_plugin_inventory()?;
+                self.store
+                    .set_active_view(Some("diagnostics.panel".to_string()));
+                self.store.update_diff(render_text_diff(
+                    "plugin:update",
+                    format!(
+                        "updated plugin {}\nversion: {}\nregistry: {}",
+                        installed.manifest.plugin_id,
+                        installed.manifest.version,
+                        registry.display()
+                    ),
+                ));
+                Ok(format!(
+                    "updated plugin {} to {}",
+                    installed.manifest.plugin_id, installed.manifest.version
                 ))
             }
             PluginOp::Enable { plugin_id } => {
@@ -4973,6 +5088,14 @@ fn host_plugin_action_specs() -> Vec<ActionSpec> {
             ConfirmPolicy::Never,
         ),
         host_action_spec(
+            "plugin.marketplace",
+            "Open Plugin Marketplace",
+            Some("always"),
+            None,
+            ActionEffects::read_only(),
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
             "plugin.install",
             "Install Plugin",
             Some("always"),
@@ -4995,6 +5118,18 @@ fn host_plugin_action_specs() -> Vec<ActionSpec> {
                 ..ActionEffects::default()
             },
             ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "plugin.update",
+            "Update Plugin",
+            Some("always"),
+            Some(DangerLevel::Medium),
+            ActionEffects {
+                writes_worktree: true,
+                danger_level: DangerLevel::Medium,
+                ..ActionEffects::default()
+            },
+            ConfirmPolicy::OnDanger,
         ),
         host_action_spec(
             "plugin.enable",
@@ -5089,12 +5224,15 @@ fn parse_command_line(line: &str) -> Result<ConsoleCommand, String> {
         "plugin" => {
             let (plugin_tokens, confirmed) = extract_confirm_flags(&tokens[1..]);
             let subcommand = plugin_tokens.first().map(String::as_str).ok_or_else(|| {
-                "usage: plugin <list|discover|install|install-registry|enable|disable|remove> ..."
+                "usage: plugin <list|discover|marketplace|install|install-registry|update|enable|disable|remove> ..."
                     .to_string()
             })?;
             let op = match subcommand {
                 "list" => PluginOp::List,
                 "discover" => PluginOp::Discover {
+                    registry_path: join_tail_optional(&plugin_tokens, 1),
+                },
+                "marketplace" => PluginOp::Marketplace {
                     registry_path: join_tail_optional(&plugin_tokens, 1),
                 },
                 "install" => PluginOp::Install {
@@ -5103,6 +5241,12 @@ fn parse_command_line(line: &str) -> Result<ConsoleCommand, String> {
                 "install-registry" => PluginOp::InstallRegistry {
                     plugin_id: plugin_tokens.get(1).cloned().ok_or_else(|| {
                         "usage: plugin install-registry <plugin_id> [registry_path]".to_string()
+                    })?,
+                    registry_path: join_tail_optional(&plugin_tokens, 2),
+                },
+                "update" => PluginOp::Update {
+                    plugin_id: plugin_tokens.get(1).cloned().ok_or_else(|| {
+                        "usage: plugin update <plugin_id> [registry_path]".to_string()
                     })?,
                     registry_path: join_tail_optional(&plugin_tokens, 2),
                 },
@@ -5116,7 +5260,7 @@ fn parse_command_line(line: &str) -> Result<ConsoleCommand, String> {
                     plugin_id: join_tail_optional(&plugin_tokens, 1),
                 },
                 _ => {
-                    return Err("plugin must be one of: list, discover, install, install-registry, enable, disable, remove".to_string());
+                    return Err("plugin must be one of: list, discover, marketplace, install, install-registry, update, enable, disable, remove".to_string());
                 }
             };
             Ok(ConsoleCommand::Plugin { op, confirmed })
@@ -5412,8 +5556,10 @@ fn ops_text() -> String {
         "[plugins]",
         "plugin.list",
         "plugin.discover [registry_path]",
+        "plugin.marketplace [registry_path]",
         "plugin.install <package_dir>",
         "plugin.install_registry <plugin_id> [registry_path]",
+        "plugin.update <plugin_id> [registry_path]",
         "plugin.enable [plugin_id]",
         "plugin.disable [plugin_id]",
         "plugin.remove [plugin_id]",
@@ -5737,8 +5883,10 @@ fn is_supported_direct_op(op: &str) -> bool {
             | "recovery.create_branch_from_reflog"
             | "plugin.list"
             | "plugin.discover"
+            | "plugin.marketplace"
             | "plugin.install"
             | "plugin.install_registry"
+            | "plugin.update"
             | "plugin.enable"
             | "plugin.disable"
             | "plugin.remove"
@@ -5824,16 +5972,60 @@ fn render_discovered_plugin_list(
             format!("package={}", plugin.package_dir.display())
         };
         lines.push(format!(
-            "{} v{} channel={} {} perms={}",
+            "{} v{} channel={} {} signature={:?} perms={}",
             plugin.manifest.plugin_id,
             plugin.manifest.version,
             plugin.channel.as_deref().unwrap_or("stable"),
             package_label,
+            plugin_signature_status_for_dir(&plugin.package_dir).0,
             plugin.manifest.permissions.join(", ")
         ));
         if let Some(summary) = plugin.summary.as_deref() {
             lines.push(format!("  summary: {summary}"));
         }
+    }
+    lines.join("\n")
+}
+
+fn render_plugin_marketplace_list(
+    discovered: &[plugin_host::DiscoverablePluginInfo],
+    installed: &[plugin_host::InstalledPluginInfo],
+    registry_path: &Path,
+) -> String {
+    if discovered.is_empty() {
+        return format!("marketplace: {}\nplugins: <empty>", registry_path.display());
+    }
+
+    let mut lines = vec![format!("marketplace: {}", registry_path.display())];
+    for plugin in discovered {
+        let installed_version = installed
+            .iter()
+            .find(|installed| installed.manifest.plugin_id == plugin.manifest.plugin_id)
+            .map(|installed| installed.manifest.version.as_str());
+        let update = installed_version
+            .map(|version| version != plugin.manifest.version)
+            .unwrap_or(false);
+        let (signature_status, signature_note) =
+            plugin_signature_status_for_dir(&plugin.package_dir);
+        lines.push(format!(
+            "{} v{} channel={} installed={} update={} signature={:?}",
+            plugin.manifest.plugin_id,
+            plugin.manifest.version,
+            plugin.channel.as_deref().unwrap_or("stable"),
+            installed_version.unwrap_or("<not installed>"),
+            update,
+            signature_status
+        ));
+        if let Some(note) = signature_note {
+            lines.push(format!("  signature: {note}"));
+        }
+        if let Some(summary) = plugin.summary.as_deref() {
+            lines.push(format!("  summary: {summary}"));
+        }
+        lines.push(format!(
+            "  permissions: {}",
+            plugin.manifest.permissions.join(", ")
+        ));
     }
     lines.join("\n")
 }
@@ -5860,19 +6052,26 @@ fn map_plugin_security_records(
     actions: &[CatalogAction],
     plugins_root: &Path,
 ) -> Vec<PluginSecurityRecord> {
+    map_plugin_security_records_with_updates(installed, actions, plugins_root, &[])
+}
+
+fn map_plugin_security_records_with_updates(
+    installed: &[plugin_host::InstalledPluginInfo],
+    actions: &[CatalogAction],
+    plugins_root: &Path,
+    discovered: &[plugin_host::DiscoverablePluginInfo],
+) -> Vec<PluginSecurityRecord> {
     installed
         .iter()
         .map(|plugin| {
-            let signed = plugin.install_dir.join("plugin.sig").exists()
-                || plugin.install_dir.join("SIGNATURE").exists()
-                || plugin
-                    .manifest
-                    .permissions
-                    .iter()
-                    .any(|permission| permission == "signed");
+            let (signature_status, signature_note) = plugin_signature_status_for_dir(&plugin.install_dir);
+            let signed_marker = plugin.install_dir.join("SIGNATURE").exists()
+                || plugin.manifest.permissions.iter().any(|permission| permission == "signed");
+            let signed = matches!(signature_status, PluginSignatureStatus::Verified)
+                || signed_marker;
             let trust_level = if plugin.install_dir.starts_with(plugins_root.join("bundled")) {
                 PluginTrustLevel::Bundled
-            } else if signed {
+            } else if matches!(signature_status, PluginSignatureStatus::Verified) {
                 PluginTrustLevel::SignedCommunity
             } else if plugin.enabled {
                 PluginTrustLevel::UnsignedLocal
@@ -5885,9 +6084,14 @@ fn map_plugin_security_records(
                 .map(|action| action.spec.action_id.clone())
                 .collect::<Vec<_>>();
             let mut warnings = Vec::new();
-            if !signed && !matches!(trust_level, PluginTrustLevel::Bundled) {
+            if let Some(note) = signature_note {
+                warnings.push(note);
+            }
+            if !matches!(signature_status, PluginSignatureStatus::Verified)
+                && !matches!(trust_level, PluginTrustLevel::Bundled)
+            {
                 warnings.push(
-                    "unsigned package: keep disabled until the source is trusted".to_string(),
+                    "signature is not cryptographically verified: keep disabled until the source is trusted".to_string(),
                 );
             }
             for permission in &plugin.manifest.permissions {
@@ -5905,18 +6109,79 @@ fn map_plugin_security_records(
                     plugin_api::HOST_PLUGIN_PROTOCOL_VERSION
                 ));
             }
+            let update_available = discovered
+                .iter()
+                .find(|candidate| candidate.manifest.plugin_id == plugin.manifest.plugin_id)
+                .map(|candidate| candidate.manifest.version != plugin.manifest.version)
+                .unwrap_or(false);
+            let sandbox_mode = plugin_sandbox_mode(&plugin.manifest.permissions);
             PluginSecurityRecord {
                 plugin_id: plugin.manifest.plugin_id.clone(),
                 trust_level,
                 signed,
+                signature_status,
+                sandbox_mode,
                 permissions: plugin.manifest.permissions.clone(),
                 contributed_actions,
                 contributed_views: Vec::new(),
                 warnings,
-                update_available: false,
+                update_available,
             }
         })
         .collect()
+}
+
+fn plugin_signature_status_for_dir(dir: &Path) -> (PluginSignatureStatus, Option<String>) {
+    let manifest = dir.join("plugin.json");
+    let signature = dir.join("plugin.sig");
+    let public_key = dir.join("plugin.pub");
+    if !signature.exists() && !dir.join("SIGNATURE").exists() {
+        return (PluginSignatureStatus::Missing, None);
+    }
+    if !signature.exists() || !public_key.exists() {
+        return (
+            PluginSignatureStatus::PresentUnverified,
+            Some("signature marker is present but plugin.sig/plugin.pub verification files are missing".to_string()),
+        );
+    }
+    let output = std::process::Command::new("openssl")
+        .args(["dgst", "-sha256", "-verify"])
+        .arg(&public_key)
+        .arg("-signature")
+        .arg(&signature)
+        .arg(&manifest)
+        .output();
+    match output {
+        Ok(output) if output.status.success() => (PluginSignatureStatus::Verified, None),
+        Ok(output) => {
+            let stderr = String::from_utf8(output.stderr)
+                .unwrap_or_else(|_| "openssl verification failed".to_string());
+            (
+                PluginSignatureStatus::Invalid,
+                Some(format!("signature verification failed: {}", stderr.trim())),
+            )
+        }
+        Err(err) => (
+            PluginSignatureStatus::PresentUnverified,
+            Some(format!("signature verification unavailable: {err}")),
+        ),
+    }
+}
+
+fn plugin_sandbox_mode(permissions: &[String]) -> String {
+    if permissions
+        .iter()
+        .any(|permission| matches!(permission.as_str(), "spawn_process" | "filesystem_write"))
+    {
+        "process-isolated-high-impact".to_string()
+    } else if permissions
+        .iter()
+        .any(|permission| matches!(permission.as_str(), "network" | "write_repo"))
+    {
+        "process-isolated-permission-gated".to_string()
+    } else {
+        "process-isolated-read-mostly".to_string()
+    }
 }
 
 fn render_journal_summary(store: &StateStore) -> String {
@@ -7144,7 +7409,7 @@ mod tests {
             runner.store.snapshot().plugin_security[0]
                 .warnings
                 .iter()
-                .any(|warning| warning.contains("unsigned"))
+                .any(|warning| warning.contains("signature"))
         );
         assert_eq!(
             runner.store.snapshot().active_view.as_deref(),
@@ -7224,6 +7489,47 @@ mod tests {
                 .selected_plugin_id
                 .as_deref(),
             Some("sample_status")
+        );
+
+        let mut manifest: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(package_dir.join("plugin.json")).unwrap_or_default(),
+        )
+        .unwrap_or_else(|_| serde_json::json!({}));
+        manifest["version"] = serde_json::Value::String("0.2.0".to_string());
+        assert!(std::fs::write(package_dir.join("plugin.json"), manifest.to_string()).is_ok());
+        assert!(
+            runner
+                .execute(ConsoleCommand::Plugin {
+                    op: PluginOp::Marketplace {
+                        registry_path: Some(registry_dir.display().to_string()),
+                    },
+                    confirmed: false,
+                })
+                .is_ok()
+        );
+        let marketplace_diff = runner
+            .store
+            .snapshot()
+            .diff
+            .content
+            .clone()
+            .unwrap_or_default();
+        assert!(marketplace_diff.contains("update=true"));
+        assert!(runner.store.snapshot().plugin_security[0].update_available);
+        assert!(
+            runner
+                .execute(ConsoleCommand::Plugin {
+                    op: PluginOp::Update {
+                        plugin_id: "sample_status".to_string(),
+                        registry_path: Some(registry_dir.display().to_string()),
+                    },
+                    confirmed: true,
+                })
+                .is_ok()
+        );
+        assert_eq!(
+            runner.store.snapshot().installed_plugins[0].version,
+            "0.2.0"
         );
 
         let _ = std::fs::remove_dir_all(&root);

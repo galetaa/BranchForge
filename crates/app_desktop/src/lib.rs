@@ -64,6 +64,8 @@ pub struct BranchForgeDesktopApp {
     pr_head_input: String,
     pr_title_input: String,
     pr_number_input: String,
+    plugin_registry_input: String,
+    plugin_id_input: String,
     stack_name_input: String,
     stack_base_input: String,
     stack_branches_input: String,
@@ -100,6 +102,8 @@ impl BranchForgeDesktopApp {
             pr_head_input: String::new(),
             pr_title_input: String::new(),
             pr_number_input: String::new(),
+            plugin_registry_input: "plugin_registry/registry.json".to_string(),
+            plugin_id_input: String::new(),
             stack_name_input: "Feature Stack".to_string(),
             stack_base_input: "main".to_string(),
             stack_branches_input: String::new(),
@@ -1852,6 +1856,80 @@ impl BranchForgeDesktopApp {
         for plugin in &state.snapshot.plugins {
             ui.label(format!("{}: {:?}", plugin.plugin_id, plugin.health));
         }
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.plugin_registry_input)
+                    .desired_width(320.0)
+                    .hint_text("registry path or URL"),
+            );
+            if ui
+                .add_enabled(!state.busy, egui::Button::new("Marketplace"))
+                .clicked()
+            {
+                let args = if self.plugin_registry_input.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    vec![self.plugin_registry_input.trim().to_string()]
+                };
+                self.execute_action_direct("plugin.marketplace", args, false);
+            }
+            if ui
+                .add_enabled(!state.busy, egui::Button::new("Discover"))
+                .clicked()
+            {
+                let args = if self.plugin_registry_input.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    vec![self.plugin_registry_input.trim().to_string()]
+                };
+                self.execute_action_direct("plugin.discover", args, false);
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.plugin_id_input)
+                    .desired_width(220.0)
+                    .hint_text("plugin id"),
+            );
+            if let Some(selected) = state.snapshot.selection.selected_plugin_id.as_deref()
+                && self.plugin_id_input.trim().is_empty()
+            {
+                self.plugin_id_input = selected.to_string();
+            }
+            let registry = self.plugin_registry_input.trim().to_string();
+            if ui
+                .add_enabled(
+                    !self.plugin_id_input.trim().is_empty() && !state.busy,
+                    egui::Button::new("Install"),
+                )
+                .clicked()
+            {
+                let mut args = vec![self.plugin_id_input.trim().to_string()];
+                if !registry.is_empty() {
+                    args.push(registry.clone());
+                }
+                self.execute_action_direct("plugin.install_registry", args, false);
+            }
+            if ui
+                .add_enabled(
+                    !self.plugin_id_input.trim().is_empty() && !state.busy,
+                    egui::Button::new("Update"),
+                )
+                .clicked()
+            {
+                let mut args = vec![self.plugin_id_input.trim().to_string()];
+                if !registry.is_empty() {
+                    args.push(registry);
+                }
+                self.preview_or_confirm(
+                    "plugin.update",
+                    args,
+                    "Preview plugin update".to_string(),
+                    "Update this plugin from the marketplace registry?".to_string(),
+                );
+            }
+        });
         if !state.snapshot.installed_plugins.is_empty() {
             ui.separator();
             ui.label(RichText::new("Installed Plugins").strong());
@@ -1876,7 +1954,9 @@ impl BranchForgeDesktopApp {
                 .show(ui, |ui| {
                     ui.label(RichText::new("Plugin").strong());
                     ui.label(RichText::new("Trust").strong());
-                    ui.label(RichText::new("Signed").strong());
+                    ui.label(RichText::new("Signature").strong());
+                    ui.label(RichText::new("Sandbox").strong());
+                    ui.label(RichText::new("Update").strong());
                     ui.label(RichText::new("Warnings").strong());
                     ui.end_row();
                     for record in &state.snapshot.plugin_security {
@@ -1887,7 +1967,9 @@ impl BranchForgeDesktopApp {
                         };
                         ui.label(record.plugin_id.as_str());
                         ui.label(format!("{:?}", record.trust_level));
-                        ui.label(if record.signed { "yes" } else { "no" });
+                        ui.label(format!("{:?}", record.signature_status));
+                        ui.label(record.sandbox_mode.as_str());
+                        ui.label(if record.update_available { "yes" } else { "no" });
                         ui.label(warnings);
                         ui.end_row();
                     }

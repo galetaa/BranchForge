@@ -305,10 +305,13 @@ pub fn render_diagnostics_panel(store: &StateStore) -> String {
         )];
         for record in &store.snapshot().plugin_security {
             lines.push(format!(
-                "- {} trust={:?} signed={} warnings={}",
+                "- {} trust={:?} signed={} signature={:?} sandbox={} update={} warnings={}",
                 record.plugin_id,
                 record.trust_level,
                 record.signed,
+                record.signature_status,
+                record.sandbox_mode,
+                record.update_available,
                 if record.warnings.is_empty() {
                     "<none>".to_string()
                 } else {

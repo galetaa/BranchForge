@@ -613,10 +613,21 @@ pub enum PluginTrustLevel {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginSignatureStatus {
+    Missing,
+    PresentUnverified,
+    Verified,
+    Invalid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginSecurityRecord {
     pub plugin_id: String,
     pub trust_level: PluginTrustLevel,
     pub signed: bool,
+    pub signature_status: PluginSignatureStatus,
+    pub sandbox_mode: String,
     pub permissions: Vec<String>,
     pub contributed_actions: Vec<String>,
     pub contributed_views: Vec<String>,

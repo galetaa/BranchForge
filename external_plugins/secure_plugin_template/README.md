@@ -14,7 +14,7 @@ Copy or symlink the built `secure_plugin_template` binary into this directory be
 
 - Start with `read_state` only and add permissions one at a time.
 - Keep Git execution in the host; plugins should request host actions instead of shelling out to Git.
-- Include `plugin.sig` or `SIGNATURE` beside `plugin.json` for signed community distribution.
+- Include `plugin.sig` and `plugin.pub` beside `plugin.json` for cryptographically verified community distribution.
 - Treat `write_repo`, `filesystem_write`, `network`, and `spawn_process` as high-impact permissions.
 - Keep `protocol_version` aligned with `plugin_api::HOST_PLUGIN_PROTOCOL_VERSION`.
 
@@ -23,6 +23,6 @@ Copy or symlink the built `secure_plugin_template` binary into this directory be
 | Trust level | Requirement | Host behavior |
 | --- | --- | --- |
 | Bundled | Packaged with BranchForge | Trusted by distribution channel |
-| SignedCommunity | Installed package contains `plugin.sig` or `SIGNATURE` | Shown as signed community plugin |
+| SignedCommunity | Installed package contains `plugin.sig` and `plugin.pub` that verify `plugin.json` | Shown as signed community plugin |
 | UnsignedLocal | Local package without signature | Shown with an unsigned-package warning |
 | ExperimentalSandboxed | Installed but disabled unsigned package | Shown as sandboxed/experimental |
