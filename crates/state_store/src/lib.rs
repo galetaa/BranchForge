@@ -417,6 +417,43 @@ pub struct BranchStackState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VirtualBranchChange {
+    pub path: String,
+    pub staged: bool,
+    pub unstaged: bool,
+    pub untracked: bool,
+    pub hunk_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VirtualBranchStatus {
+    ActiveContext,
+    SavedContext,
+    Empty,
+    NeedsRefresh,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VirtualBranch {
+    pub id: String,
+    pub name: String,
+    pub base_branch: Option<String>,
+    pub base_oid: Option<String>,
+    pub changes: Vec<VirtualBranchChange>,
+    pub status: VirtualBranchStatus,
+    pub research_note: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct VirtualBranchState {
+    pub branches: Vec<VirtualBranch>,
+    pub active_branch_id: Option<String>,
+    pub last_export: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JournalStatus {
     Started,
     Succeeded,
@@ -662,6 +699,7 @@ pub struct StoreSnapshot {
     pub workspace: WorkspaceState,
     pub pull_requests: PullRequestStateSnapshot,
     pub branch_stacks: BranchStackState,
+    pub virtual_branches: VirtualBranchState,
     pub journal: OperationJournalState,
     pub active_view: Option<String>,
     pub plugins: Vec<PluginStatus>,
@@ -1105,6 +1143,11 @@ impl StateStore {
 
     pub fn update_branch_stack_state(&mut self, state: BranchStackState) {
         self.snapshot.branch_stacks = state;
+        self.bump_version();
+    }
+
+    pub fn update_virtual_branch_state(&mut self, state: VirtualBranchState) {
+        self.snapshot.virtual_branches = state;
         self.bump_version();
     }
 

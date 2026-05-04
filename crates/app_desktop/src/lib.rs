@@ -69,6 +69,8 @@ pub struct BranchForgeDesktopApp {
     stack_name_input: String,
     stack_base_input: String,
     stack_branches_input: String,
+    virtual_branch_name_input: String,
+    virtual_branch_paths_input: String,
     ui_error: Option<String>,
 }
 
@@ -107,6 +109,8 @@ impl BranchForgeDesktopApp {
             stack_name_input: "Feature Stack".to_string(),
             stack_base_input: "main".to_string(),
             stack_branches_input: String::new(),
+            virtual_branch_name_input: "Working changes".to_string(),
+            virtual_branch_paths_input: String::new(),
             ui_error,
         }
     }
@@ -1691,6 +1695,102 @@ impl BranchForgeDesktopApp {
                         ui.end_row();
                     }
                 });
+        }
+        ui.separator();
+        ui.label(RichText::new("Virtual Branches Research").strong());
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.virtual_branch_name_input)
+                    .desired_width(180.0)
+                    .hint_text("context name"),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut self.virtual_branch_paths_input)
+                    .desired_width(360.0)
+                    .hint_text("optional paths"),
+            );
+            let paths = self
+                .virtual_branch_paths_input
+                .split_whitespace()
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            if ui
+                .add_enabled(!state.busy, egui::Button::new("Detect"))
+                .clicked()
+            {
+                let mut args = Vec::new();
+                if !self.virtual_branch_name_input.trim().is_empty() {
+                    args.push(self.virtual_branch_name_input.trim().to_string());
+                }
+                args.extend(paths.clone());
+                self.execute_action_direct("virtual.detect", args, false);
+            }
+            if ui
+                .add_enabled(
+                    !state.busy
+                        && !self.virtual_branch_name_input.trim().is_empty()
+                        && !paths.is_empty(),
+                    egui::Button::new("Create"),
+                )
+                .clicked()
+            {
+                let mut args = vec![self.virtual_branch_name_input.trim().to_string()];
+                args.extend(paths);
+                self.execute_action_direct("virtual.create", args, false);
+            }
+        });
+        if !snapshot.virtual_branches.branches.is_empty() {
+            egui::Grid::new("virtual.branches")
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.label(RichText::new("Context").strong());
+                    ui.label(RichText::new("Base").strong());
+                    ui.label(RichText::new("Files").strong());
+                    ui.label(RichText::new("Status").strong());
+                    ui.label(RichText::new("Actions").strong());
+                    ui.end_row();
+                    for branch in &snapshot.virtual_branches.branches {
+                        let active = snapshot.virtual_branches.active_branch_id.as_deref()
+                            == Some(branch.id.as_str());
+                        ui.label(if active {
+                            format!("{} active", branch.name)
+                        } else {
+                            branch.name.clone()
+                        });
+                        ui.label(branch.base_branch.as_deref().unwrap_or("<detached>"));
+                        ui.label(branch.changes.len().to_string());
+                        ui.label(format!("{:?}", branch.status));
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(!state.busy, egui::Button::new("Switch"))
+                                .clicked()
+                            {
+                                self.execute_action_direct(
+                                    "virtual.switch",
+                                    vec![branch.id.clone()],
+                                    false,
+                                );
+                            }
+                            if ui
+                                .add_enabled(!state.busy, egui::Button::new("Export"))
+                                .clicked()
+                            {
+                                self.execute_action_direct(
+                                    "virtual.export_patch",
+                                    vec![branch.id.clone()],
+                                    false,
+                                );
+                            }
+                        });
+                        ui.end_row();
+                    }
+                });
+        }
+        if let Some(export) = snapshot.virtual_branches.last_export.as_deref() {
+            ui.label(format!("Last virtual export: {export}"));
+        }
+        if let Some(error) = snapshot.virtual_branches.last_error.as_deref() {
+            ui.colored_label(Color32::from_rgb(248, 113, 113), error);
         }
         if let Some(error) = snapshot.branch_stacks.last_error.as_deref() {
             ui.colored_label(Color32::from_rgb(248, 113, 113), error);

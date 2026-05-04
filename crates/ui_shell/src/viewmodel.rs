@@ -387,6 +387,31 @@ pub fn build_branches_panel(snapshot: &StoreSnapshot) -> ViewNode {
         children.push(ViewNode::Text { value: session });
     }
 
+    if !snapshot.virtual_branches.branches.is_empty() {
+        children.push(ViewNode::Text {
+            value: "Virtual branches: research contexts".to_string(),
+        });
+        for branch in &snapshot.virtual_branches.branches {
+            let active = if snapshot.virtual_branches.active_branch_id.as_deref()
+                == Some(branch.id.as_str())
+            {
+                "active"
+            } else {
+                "saved"
+            };
+            children.push(ViewNode::Text {
+                value: format!(
+                    "Virtual[{}] {} base={} files={} status={:?}",
+                    active,
+                    branch.name,
+                    branch.base_branch.as_deref().unwrap_or("<detached>"),
+                    branch.changes.len(),
+                    branch.status
+                ),
+            });
+        }
+    }
+
     children.push(ViewNode::Text {
         value: "Merge safety: ensure clean worktree before merge/cherry-pick/rebase.".to_string(),
     });
@@ -760,6 +785,7 @@ mod tests {
             workspace: state_store::WorkspaceState::default(),
             pull_requests: state_store::PullRequestStateSnapshot::default(),
             branch_stacks: state_store::BranchStackState::default(),
+            virtual_branches: state_store::VirtualBranchState::default(),
             journal: state_store::OperationJournalState::default(),
             active_view: None,
             plugins: Vec::new(),
@@ -798,6 +824,7 @@ mod tests {
             workspace: state_store::WorkspaceState::default(),
             pull_requests: state_store::PullRequestStateSnapshot::default(),
             branch_stacks: state_store::BranchStackState::default(),
+            virtual_branches: state_store::VirtualBranchState::default(),
             journal: state_store::OperationJournalState::default(),
             active_view: None,
             plugins: Vec::new(),
@@ -835,6 +862,7 @@ mod tests {
             workspace: state_store::WorkspaceState::default(),
             pull_requests: state_store::PullRequestStateSnapshot::default(),
             branch_stacks: state_store::BranchStackState::default(),
+            virtual_branches: state_store::VirtualBranchState::default(),
             journal: state_store::OperationJournalState::default(),
             active_view: None,
             plugins: Vec::new(),
@@ -872,6 +900,7 @@ mod tests {
             workspace: state_store::WorkspaceState::default(),
             pull_requests: state_store::PullRequestStateSnapshot::default(),
             branch_stacks: state_store::BranchStackState::default(),
+            virtual_branches: state_store::VirtualBranchState::default(),
             journal: state_store::OperationJournalState {
                 entries: vec![
                     state_store::OperationJournalEntry {
@@ -952,6 +981,7 @@ mod tests {
             workspace: state_store::WorkspaceState::default(),
             pull_requests: state_store::PullRequestStateSnapshot::default(),
             branch_stacks: state_store::BranchStackState::default(),
+            virtual_branches: state_store::VirtualBranchState::default(),
             journal: state_store::OperationJournalState {
                 entries: vec![state_store::OperationJournalEntry {
                     id: 1,
@@ -1044,6 +1074,7 @@ mod tests {
             workspace: state_store::WorkspaceState::default(),
             pull_requests: state_store::PullRequestStateSnapshot::default(),
             branch_stacks: state_store::BranchStackState::default(),
+            virtual_branches: state_store::VirtualBranchState::default(),
             journal: state_store::OperationJournalState::default(),
             active_view: None,
             plugins: Vec::new(),
@@ -1106,6 +1137,7 @@ mod tests {
             workspace: state_store::WorkspaceState::default(),
             pull_requests: state_store::PullRequestStateSnapshot::default(),
             branch_stacks: state_store::BranchStackState::default(),
+            virtual_branches: state_store::VirtualBranchState::default(),
             journal: state_store::OperationJournalState::default(),
             active_view: None,
             plugins: Vec::new(),
@@ -1162,6 +1194,7 @@ mod tests {
             workspace: state_store::WorkspaceState::default(),
             pull_requests: state_store::PullRequestStateSnapshot::default(),
             branch_stacks: state_store::BranchStackState::default(),
+            virtual_branches: state_store::VirtualBranchState::default(),
             journal: state_store::OperationJournalState::default(),
             active_view: None,
             plugins: Vec::new(),
@@ -1217,6 +1250,7 @@ mod tests {
             workspace: state_store::WorkspaceState::default(),
             pull_requests: state_store::PullRequestStateSnapshot::default(),
             branch_stacks: state_store::BranchStackState::default(),
+            virtual_branches: state_store::VirtualBranchState::default(),
             journal: state_store::OperationJournalState::default(),
             active_view: None,
             plugins: Vec::new(),
@@ -1266,6 +1300,7 @@ mod tests {
             workspace: state_store::WorkspaceState::default(),
             pull_requests: state_store::PullRequestStateSnapshot::default(),
             branch_stacks: state_store::BranchStackState::default(),
+            virtual_branches: state_store::VirtualBranchState::default(),
             journal: state_store::OperationJournalState::default(),
             active_view: None,
             plugins: Vec::new(),

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
@@ -22,7 +22,8 @@ use state_store::{
     InstalledPluginRecord, OperationPreview, PluginSecurityRecord, PluginSignatureStatus,
     PluginTrustLevel, PreviewWarning, PreviewWarningLevel, ProviderRepository, PullRequestState,
     PullRequestStateSnapshot, PullRequestSummary, RefImpact, RemoteImpact, RepoBranchSummary,
-    RepoStatusSummary, ReviewState, StackEntryStatus, StateStore, Workspace, WorkspaceJobResult,
+    RepoStatusSummary, ReviewState, StackEntryStatus, StateStore, VirtualBranch,
+    VirtualBranchChange, VirtualBranchState, VirtualBranchStatus, Workspace, WorkspaceJobResult,
     WorkspaceRepo, WorkspaceState,
 };
 
@@ -1498,6 +1499,9 @@ impl ConsoleRunner {
                 self.run_pr_op(target, args)
             }
             "stack.create" | "stack.detect" | "stack.restack" => self.run_stack_op(target, args),
+            "virtual.detect" | "virtual.create" | "virtual.switch" | "virtual.export_patch" => {
+                self.run_virtual_branch_op(target, args)
+            }
             "plugin.list" => self.run_plugin_op(PluginOp::List, confirmed),
             "plugin.discover" => {
                 let registry_path = args.first().cloned();
@@ -2605,6 +2609,131 @@ impl ConsoleRunner {
                 Ok(format!("restacked branch stack {}", stack.name))
             }
             _ => Err(invalid_input_error("unsupported stack operation")),
+        }
+    }
+
+    fn run_virtual_branch_op(
+        &mut self,
+        target: &str,
+        args: &[String],
+    ) -> Result<String, UserFacingError> {
+        let repo_dir = self.require_repo_dir()?;
+        match target {
+            "virtual.detect" => {
+                let name = args
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "Working changes".to_string());
+                let paths = args.get(1..).unwrap_or(&[]);
+                let branch = build_virtual_branch(&repo_dir, &name, paths)?;
+                let id = branch.id.clone();
+                let name = branch.name.clone();
+                let mut state = self.store.snapshot().virtual_branches.clone();
+                upsert_virtual_branch(&mut state, branch);
+                set_active_virtual_branch(&mut state, &id);
+                state.last_export = None;
+                state.last_error = None;
+                self.store.update_virtual_branch_state(state);
+                self.store
+                    .set_active_view(Some(PanelKind::Branches.view_id().to_string()));
+                self.store.update_diff(render_text_diff(
+                    "virtual:detect",
+                    render_virtual_branch_state(&self.store.snapshot().virtual_branches),
+                ));
+                self.last_replayable = Some(ReplayableRun::Run {
+                    target: "virtual.detect".to_string(),
+                    args: args.to_vec(),
+                });
+                Ok(format!("detected virtual branch context {name}"))
+            }
+            "virtual.create" => {
+                let name = args.first().cloned().ok_or_else(|| {
+                    invalid_input_error("virtual.create requires name and at least one path")
+                })?;
+                let paths = args.get(1..).unwrap_or(&[]);
+                if paths.is_empty() {
+                    return Err(invalid_input_error(
+                        "virtual.create requires at least one path after the name",
+                    ));
+                }
+                let branch = build_virtual_branch(&repo_dir, &name, paths)?;
+                let id = branch.id.clone();
+                let mut state = self.store.snapshot().virtual_branches.clone();
+                upsert_virtual_branch(&mut state, branch);
+                set_active_virtual_branch(&mut state, &id);
+                state.last_export = None;
+                state.last_error = None;
+                self.store.update_virtual_branch_state(state);
+                self.store
+                    .set_active_view(Some(PanelKind::Branches.view_id().to_string()));
+                self.store.update_diff(render_text_diff(
+                    "virtual:create",
+                    render_virtual_branch_state(&self.store.snapshot().virtual_branches),
+                ));
+                self.last_replayable = Some(ReplayableRun::Run {
+                    target: "virtual.create".to_string(),
+                    args: args.to_vec(),
+                });
+                Ok(format!("created virtual branch context {name}"))
+            }
+            "virtual.switch" => {
+                let mut state = self.store.snapshot().virtual_branches.clone();
+                let selector = args
+                    .first()
+                    .cloned()
+                    .or_else(|| state.active_branch_id.clone())
+                    .ok_or_else(|| {
+                        invalid_input_error("virtual.switch requires branch id or name")
+                    })?;
+                let id = state
+                    .branches
+                    .iter()
+                    .find(|branch| branch.id == selector || branch.name == selector)
+                    .map(|branch| branch.id.clone())
+                    .ok_or_else(|| invalid_input_error("virtual branch context was not found"))?;
+                set_active_virtual_branch(&mut state, &id);
+                state.last_error = None;
+                self.store.update_virtual_branch_state(state);
+                self.store
+                    .set_active_view(Some(PanelKind::Branches.view_id().to_string()));
+                self.store.update_diff(render_text_diff(
+                    "virtual:switch",
+                    render_virtual_branch_state(&self.store.snapshot().virtual_branches),
+                ));
+                self.last_replayable = Some(ReplayableRun::Run {
+                    target: "virtual.switch".to_string(),
+                    args: vec![id.clone()],
+                });
+                Ok(format!(
+                    "switched virtual branch context {id} without checkout"
+                ))
+            }
+            "virtual.export_patch" => {
+                let selector = args.first().cloned();
+                let state = self.store.snapshot().virtual_branches.clone();
+                let branch = select_virtual_branch(&state, selector.as_deref())?.clone();
+                let patch = render_virtual_branch_patch(&repo_dir, &branch)?;
+                let mut updated_state = state;
+                updated_state.active_branch_id = Some(branch.id.clone());
+                updated_state.last_export = Some(format!(
+                    "{} paths, {} bytes",
+                    branch.changes.len(),
+                    patch.len()
+                ));
+                updated_state.last_error = None;
+                set_active_virtual_branch(&mut updated_state, &branch.id);
+                self.store.update_virtual_branch_state(updated_state);
+                self.store
+                    .set_active_view(Some(PanelKind::Branches.view_id().to_string()));
+                self.store
+                    .update_diff(render_text_diff("virtual:export_patch", patch));
+                self.last_replayable = Some(ReplayableRun::Run {
+                    target: "virtual.export_patch".to_string(),
+                    args: selector.into_iter().collect(),
+                });
+                Ok(format!("exported virtual branch patch {}", branch.name))
+            }
+            _ => Err(invalid_input_error("unsupported virtual branch operation")),
         }
     }
 
@@ -3796,6 +3925,10 @@ fn stack_id_for(name: &str) -> String {
     slug_identifier("stack", name)
 }
 
+fn virtual_branch_id_for(name: &str) -> String {
+    slug_identifier("virtual", name)
+}
+
 fn slug_identifier(prefix: &str, value: &str) -> String {
     let slug = value
         .chars()
@@ -4112,6 +4245,282 @@ fn upsert_stack(state: &mut BranchStackState, stack: BranchStack) {
     }
 }
 
+fn build_virtual_branch(
+    repo_dir: &Path,
+    name: &str,
+    paths: &[String],
+) -> Result<VirtualBranch, UserFacingError> {
+    let repo = git_service::repo_open(repo_dir).map_err(|err| {
+        UserFacingError::with_category(
+            "Virtual branch detection failed",
+            "Could not inspect repository state.",
+            Some(format!("{err:?}")),
+            ErrorCategory::Git,
+        )
+    })?;
+    let status = git_service::status_refresh(repo_dir).map_err(|err| {
+        UserFacingError::with_category(
+            "Virtual branch detection failed",
+            "Could not read working tree status.",
+            Some(format!("{err:?}")),
+            ErrorCategory::Git,
+        )
+    })?;
+    let normalized_paths = paths
+        .iter()
+        .map(|path| normalize_repo_path(repo_dir, path))
+        .collect::<Vec<_>>();
+    let changes = map_virtual_branch_changes(repo_dir, &status, &normalized_paths)?;
+    let status = if changes.is_empty() {
+        VirtualBranchStatus::Empty
+    } else {
+        VirtualBranchStatus::ActiveContext
+    };
+    let base_oid = git_service::resolve_ref_oid(repo_dir, "HEAD").ok();
+
+    Ok(VirtualBranch {
+        id: virtual_branch_id_for(name),
+        name: name.to_string(),
+        base_branch: repo.head,
+        base_oid,
+        changes,
+        status,
+        research_note:
+            "research prototype: switches logical context only; no checkout or ref mutation"
+                .to_string(),
+    })
+}
+
+fn map_virtual_branch_changes(
+    repo_dir: &Path,
+    status: &git_service::StatusSummary,
+    paths: &[String],
+) -> Result<Vec<VirtualBranchChange>, UserFacingError> {
+    let mut changes: BTreeMap<String, VirtualBranchChange> = BTreeMap::new();
+    for path in &status.staged {
+        changes
+            .entry(path.clone())
+            .or_insert_with(|| virtual_change_for(path))
+            .staged = true;
+    }
+    for path in &status.unstaged {
+        changes
+            .entry(path.clone())
+            .or_insert_with(|| virtual_change_for(path))
+            .unstaged = true;
+    }
+    for path in &status.untracked {
+        changes
+            .entry(path.clone())
+            .or_insert_with(|| virtual_change_for(path))
+            .untracked = true;
+    }
+
+    for path in paths {
+        changes
+            .entry(path.clone())
+            .or_insert_with(|| virtual_change_for(path));
+    }
+
+    let mut selected = changes
+        .into_values()
+        .filter(|change| paths.is_empty() || paths.iter().any(|path| path == &change.path))
+        .collect::<Vec<_>>();
+    for change in &mut selected {
+        change.hunk_count = count_virtual_change_hunks(repo_dir, &change.path)?;
+    }
+    Ok(selected)
+}
+
+fn virtual_change_for(path: &str) -> VirtualBranchChange {
+    VirtualBranchChange {
+        path: path.to_string(),
+        staged: false,
+        unstaged: false,
+        untracked: false,
+        hunk_count: 0,
+    }
+}
+
+fn count_virtual_change_hunks(repo_dir: &Path, path: &str) -> Result<usize, UserFacingError> {
+    let paths = vec![path.to_string()];
+    let staged = git_service::diff_index_with_hunks(repo_dir, &paths, 128_000)
+        .map(|diff| diff.hunks.len())
+        .map_err(|err| {
+            UserFacingError::with_category(
+                "Virtual branch detection failed",
+                "Could not inspect staged hunks.",
+                Some(format!("{err:?}")),
+                ErrorCategory::Git,
+            )
+        })?;
+    let unstaged = git_service::diff_worktree_with_hunks(repo_dir, &paths, 128_000)
+        .map(|diff| diff.hunks.len())
+        .map_err(|err| {
+            UserFacingError::with_category(
+                "Virtual branch detection failed",
+                "Could not inspect working-tree hunks.",
+                Some(format!("{err:?}")),
+                ErrorCategory::Git,
+            )
+        })?;
+    Ok(staged + unstaged)
+}
+
+fn upsert_virtual_branch(state: &mut VirtualBranchState, branch: VirtualBranch) {
+    if let Some(existing) = state.branches.iter_mut().find(|item| item.id == branch.id) {
+        *existing = branch;
+    } else {
+        state.branches.push(branch);
+    }
+}
+
+fn set_active_virtual_branch(state: &mut VirtualBranchState, id: &str) {
+    state.active_branch_id = Some(id.to_string());
+    for branch in &mut state.branches {
+        branch.status = if branch.id == id {
+            if branch.changes.is_empty() {
+                VirtualBranchStatus::Empty
+            } else {
+                VirtualBranchStatus::ActiveContext
+            }
+        } else {
+            VirtualBranchStatus::SavedContext
+        };
+    }
+}
+
+fn select_virtual_branch<'a>(
+    state: &'a VirtualBranchState,
+    selector: Option<&str>,
+) -> Result<&'a VirtualBranch, UserFacingError> {
+    let selector = selector
+        .map(str::to_string)
+        .or_else(|| state.active_branch_id.clone())
+        .ok_or_else(|| invalid_input_error("virtual branch context was not found"))?;
+    state
+        .branches
+        .iter()
+        .find(|branch| branch.id == selector || branch.name == selector)
+        .ok_or_else(|| invalid_input_error("virtual branch context was not found"))
+}
+
+fn render_virtual_branch_state(state: &VirtualBranchState) -> String {
+    let mut lines = vec![
+        "Virtual Branches (research)".to_string(),
+        "context switching is logical only; worktree checkout is unchanged".to_string(),
+    ];
+    if state.branches.is_empty() {
+        lines.push("contexts: <none>".to_string());
+    }
+    for branch in &state.branches {
+        let active = if state.active_branch_id.as_deref() == Some(branch.id.as_str()) {
+            "active"
+        } else {
+            "saved"
+        };
+        lines.push(format!(
+            "- {} ({}) base={} oid={} paths={} status={:?}",
+            branch.name,
+            active,
+            branch.base_branch.as_deref().unwrap_or("<detached>"),
+            branch
+                .base_oid
+                .as_deref()
+                .map(|oid| oid.chars().take(12).collect::<String>())
+                .unwrap_or_else(|| "<unknown>".to_string()),
+            branch.changes.len(),
+            branch.status
+        ));
+        lines.push(format!("  note: {}", branch.research_note));
+        for change in &branch.changes {
+            lines.push(format!(
+                "  {} staged={} unstaged={} untracked={} hunks={}",
+                change.path, change.staged, change.unstaged, change.untracked, change.hunk_count
+            ));
+        }
+    }
+    if let Some(export) = state.last_export.as_deref() {
+        lines.push(format!("last export: {export}"));
+    }
+    if let Some(error) = state.last_error.as_deref() {
+        lines.push(format!("last error: {error}"));
+    }
+    lines.join("\n")
+}
+
+fn render_virtual_branch_patch(
+    repo_dir: &Path,
+    branch: &VirtualBranch,
+) -> Result<String, UserFacingError> {
+    let paths = branch
+        .changes
+        .iter()
+        .map(|change| change.path.clone())
+        .collect::<Vec<_>>();
+    let staged = if paths.is_empty() {
+        String::new()
+    } else {
+        git_service::diff_index_with_hunks(repo_dir, &paths, 512_000)
+            .map(|diff| diff.text)
+            .map_err(|err| {
+                UserFacingError::with_category(
+                    "Virtual branch export failed",
+                    "Could not export staged patch.",
+                    Some(format!("{err:?}")),
+                    ErrorCategory::Git,
+                )
+            })?
+    };
+    let unstaged = if paths.is_empty() {
+        String::new()
+    } else {
+        git_service::diff_worktree_with_hunks(repo_dir, &paths, 512_000)
+            .map(|diff| diff.text)
+            .map_err(|err| {
+                UserFacingError::with_category(
+                    "Virtual branch export failed",
+                    "Could not export working-tree patch.",
+                    Some(format!("{err:?}")),
+                    ErrorCategory::Git,
+                )
+            })?
+    };
+    let untracked = branch
+        .changes
+        .iter()
+        .filter(|change| change.untracked)
+        .map(|change| change.path.clone())
+        .collect::<Vec<_>>();
+    let mut lines = vec![
+        format!("Virtual branch patch: {}", branch.name),
+        format!(
+            "Base: {} {}",
+            branch.base_branch.as_deref().unwrap_or("<detached>"),
+            branch.base_oid.as_deref().unwrap_or("<unknown>")
+        ),
+        "Research note: logical context export; applying this patch is a manual operation."
+            .to_string(),
+        String::new(),
+    ];
+    if staged.trim().is_empty() {
+        lines.push("[staged patch] <empty>".to_string());
+    } else {
+        lines.push("[staged patch]".to_string());
+        lines.push(staged);
+    }
+    if unstaged.trim().is_empty() {
+        lines.push("[unstaged patch] <empty>".to_string());
+    } else {
+        lines.push("[unstaged patch]".to_string());
+        lines.push(unstaged);
+    }
+    if !untracked.is_empty() {
+        lines.push(format!("[untracked files] {}", untracked.join(", ")));
+    }
+    Ok(lines.join("\n"))
+}
+
 fn impact(level: ImpactLevel, summary: impl Into<String>) -> ImpactSummary {
     ImpactSummary {
         level,
@@ -4280,6 +4689,13 @@ pub fn explain_template_for_action(action_id: &str) -> Option<ExplainTemplate> {
             &[
                 "Each branch restack is journaled with a backup ref so the previous branch tip can be recovered.",
             ],
+        ),
+        "virtual.detect" | "virtual.create" | "virtual.switch" | "virtual.export_patch" => explain(
+            action_id,
+            "This manages research-only virtual branch contexts without checking out another Git branch.",
+            &["git status --porcelain=v2", "git diff --patch"],
+            &["Only BranchForge UI state changes; repository refs and the worktree stay in place."],
+            &["Export the patch preview before manually applying a virtual context elsewhere."],
         ),
         "file.discard" | "file.discard_hunk" | "file.discard_lines" => explain(
             action_id,
@@ -5032,6 +5448,38 @@ fn host_plugin_action_specs() -> Vec<ActionSpec> {
             ConfirmPolicy::Always,
         ),
         host_action_spec(
+            "virtual.detect",
+            "Detect Virtual Branch Context",
+            Some("repo.is_open"),
+            None,
+            ActionEffects::read_only(),
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "virtual.create",
+            "Create Virtual Branch Context",
+            Some("repo.is_open"),
+            None,
+            ActionEffects::read_only(),
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "virtual.switch",
+            "Switch Virtual Branch Context",
+            Some("repo.is_open"),
+            None,
+            ActionEffects::read_only(),
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
+            "virtual.export_patch",
+            "Export Virtual Branch Patch",
+            Some("repo.is_open"),
+            None,
+            ActionEffects::read_only(),
+            ConfirmPolicy::Never,
+        ),
+        host_action_spec(
             "journal.restore_ref",
             "Restore Ref From Journal",
             Some("repo.is_open"),
@@ -5456,6 +5904,12 @@ fn ops_text() -> String {
         "stack.detect [base_ref]",
         "stack.restack <stack_id|name>",
         "",
+        "[virtual-branches-research]",
+        "virtual.detect [name] [path...]",
+        "virtual.create <name> <path...>",
+        "virtual.switch [virtual_id|name]",
+        "virtual.export_patch [virtual_id|name]",
+        "",
         "[history]",
         "history.page <offset> <limit> [author] [text] [hash_prefix]",
         "history.load_more",
@@ -5711,6 +6165,10 @@ fn lock_for_op(op: &str, _args: &[String]) -> Result<JobLock, UserFacingError> {
         | "pr.open"
         | "stack.create"
         | "stack.detect"
+        | "virtual.detect"
+        | "virtual.create"
+        | "virtual.switch"
+        | "virtual.export_patch"
         | "diff.worktree"
         | "diff.index"
         | "diff.commit"
@@ -5871,6 +6329,10 @@ fn is_supported_direct_op(op: &str) -> bool {
             | "remote.push_set_upstream"
             | "remote.push_force_with_lease"
             | "remote.branch_list"
+            | "virtual.detect"
+            | "virtual.create"
+            | "virtual.switch"
+            | "virtual.export_patch"
             | "stack.restack_branch"
             | "journal.open_entry"
             | "journal.copy_details"
@@ -5908,6 +6370,9 @@ fn is_replayable_op(op: &str) -> bool {
             | "worktree.list"
             | "submodule.list"
             | "diagnostics.repo_capabilities"
+            | "virtual.detect"
+            | "virtual.switch"
+            | "virtual.export_patch"
             | "diff.worktree"
             | "diff.index"
             | "diff.commit"
@@ -7118,6 +7583,83 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn virtual_branch_ops_map_switch_and_export_worktree_contexts() {
+        let repo_dir = init_repo("virtual-branch");
+        assert!(std::fs::write(repo_dir.join("README.md"), "base\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["README.md".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "base").is_ok());
+        assert!(std::fs::write(repo_dir.join("README.md"), "base\nvirtual\n").is_ok());
+        assert!(std::fs::write(repo_dir.join("notes.txt"), "draft\n").is_ok());
+
+        let mut runner = ConsoleRunner::new(test_config(&repo_dir));
+        assert!(
+            runner
+                .execute(ConsoleCommand::Open {
+                    path: repo_dir.to_string_lossy().to_string(),
+                })
+                .is_ok()
+        );
+        assert!(
+            runner
+                .execute(ConsoleCommand::Run {
+                    target: "virtual.detect".to_string(),
+                    args: vec!["Draft".to_string()],
+                    confirmed: false,
+                })
+                .is_ok()
+        );
+        let snapshot = runner.store.snapshot();
+        assert_eq!(snapshot.virtual_branches.branches.len(), 1);
+        assert_eq!(
+            snapshot.virtual_branches.active_branch_id.as_deref(),
+            Some("virtual-draft")
+        );
+        assert!(
+            snapshot.virtual_branches.branches[0]
+                .changes
+                .iter()
+                .any(|change| change.path == "README.md" && change.unstaged)
+        );
+        assert!(
+            snapshot.virtual_branches.branches[0]
+                .changes
+                .iter()
+                .any(|change| change.path == "notes.txt" && change.untracked)
+        );
+
+        assert!(
+            runner
+                .execute(ConsoleCommand::Run {
+                    target: "virtual.switch".to_string(),
+                    args: vec!["virtual-draft".to_string()],
+                    confirmed: false,
+                })
+                .is_ok()
+        );
+        assert!(
+            runner
+                .execute(ConsoleCommand::Run {
+                    target: "virtual.export_patch".to_string(),
+                    args: vec!["virtual-draft".to_string()],
+                    confirmed: false,
+                })
+                .is_ok()
+        );
+        let exported = runner
+            .store
+            .snapshot()
+            .diff
+            .content
+            .clone()
+            .unwrap_or_default();
+        assert!(exported.contains("Virtual branch patch: Draft"));
+        assert!(exported.contains("+virtual"));
+        assert!(exported.contains("[untracked files] notes.txt"));
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
     }
 
     #[test]
