@@ -41,7 +41,7 @@ impl PanelId {
     pub fn label(self) -> &'static str {
         match self {
             Self::Status => "Status",
-            Self::History => "History Graph",
+            Self::History => "History",
             Self::Diff => "Diff",
             Self::Branches => "Branches",
             Self::Tags => "Tags",
@@ -56,6 +56,37 @@ impl PanelId {
             Self::Conflicts => "Conflicts",
             Self::Diagnostics => "Diagnostics",
             Self::Journal => "Journal",
+        }
+    }
+
+    pub fn sidebar_label(self) -> String {
+        match self.panel_status() {
+            PanelStatus::Core | PanelStatus::Developer => self.label().to_string(),
+            PanelStatus::Preview => format!("{} Preview", self.label()),
+            PanelStatus::Advanced => format!("{} Advanced", self.label()),
+        }
+    }
+
+    pub fn is_visible(self, advanced_mode: bool) -> bool {
+        match self.panel_status() {
+            PanelStatus::Core | PanelStatus::Preview | PanelStatus::Developer => true,
+            PanelStatus::Advanced => advanced_mode,
+        }
+    }
+
+    pub fn panel_status(self) -> PanelStatus {
+        match self {
+            Self::Status | Self::History | Self::Diff | Self::Branches => PanelStatus::Core,
+            Self::Tags | Self::Compare | Self::Remotes => PanelStatus::Preview,
+            Self::Diagnostics => PanelStatus::Developer,
+            Self::Workspaces
+            | Self::PullRequests
+            | Self::BranchStacks
+            | Self::Stash
+            | Self::Worktrees
+            | Self::Submodules
+            | Self::Conflicts
+            | Self::Journal => PanelStatus::Advanced,
         }
     }
 
@@ -79,6 +110,14 @@ impl PanelId {
             | Self::Journal => None,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelStatus {
+    Core,
+    Preview,
+    Advanced,
+    Developer,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
