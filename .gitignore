@@ -5,5 +5,4 @@ external_plugins/**/target/
 .idea/
 
 # Local working pack (tracked files remain tracked)
-/branchforge_remaining_3_tracks_dev_pack/
 /docs/
