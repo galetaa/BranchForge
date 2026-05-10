@@ -171,6 +171,15 @@ pub fn render_diff_panel(store: &StateStore) -> String {
     out
 }
 
+fn diff_source_label(source: &state_store::DiffSource) -> &'static str {
+    match source {
+        state_store::DiffSource::Worktree { .. } => "worktree",
+        state_store::DiffSource::Index { .. } => "index",
+        state_store::DiffSource::Commit { .. } => "commit",
+        state_store::DiffSource::Compare { .. } => "compare",
+    }
+}
+
 pub fn render_diagnostics_panel(store: &StateStore) -> String {
     let host_version = env!("CARGO_PKG_VERSION");
     let protocol_version = plugin_api::HOST_PLUGIN_PROTOCOL_VERSION;
@@ -250,6 +259,47 @@ pub fn render_diagnostics_panel(store: &StateStore) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     };
+    let repo_context = store
+        .snapshot()
+        .repo
+        .as_ref()
+        .map(|repo| {
+            format!(
+                "RepoContext: repo_id={} repo_path={} current_branch={} active_view={}",
+                repo.root,
+                repo.root,
+                repo.head.as_deref().unwrap_or("detached HEAD"),
+                store.snapshot().active_view.as_deref().unwrap_or("<none>")
+            )
+        })
+        .unwrap_or_else(|| "RepoContext: <none>".to_string());
+    let selection_context = format!(
+        "SelectionState: files={} commit={} branch={} diff_source={}",
+        if store.snapshot().selection.selected_paths.is_empty() {
+            "<none>".to_string()
+        } else {
+            store.snapshot().selection.selected_paths.join(", ")
+        },
+        store
+            .snapshot()
+            .selection
+            .selected_commit_oid
+            .as_deref()
+            .unwrap_or("<none>"),
+        store
+            .snapshot()
+            .selection
+            .selected_branch
+            .as_deref()
+            .unwrap_or("<none>"),
+        store
+            .snapshot()
+            .diff
+            .source
+            .as_ref()
+            .map(diff_source_label)
+            .unwrap_or("<none>")
+    );
     let selected_plugin = store
         .snapshot()
         .selection
@@ -333,9 +383,11 @@ pub fn render_diagnostics_panel(store: &StateStore) -> String {
     .join("\n");
 
     format!(
-        "Diagnostics Panel\nHost version: {}\nProtocol version: {}\nJournal entries: {}\nRunning: {}\nSucceeded: {}\nFailed: {}\nLast error: {}\nAvg duration(ms): {}\nSlowest op: {}\nActionable blockers: {}\nRuntime plugin health: {}\nRebase plan: {}\nRebase session: {}\n{}\n{}\n{}\n",
+        "Diagnostics Panel\nHost version: {}\nProtocol version: {}\n{}\n{}\nJournal entries: {}\nRunning: {}\nSucceeded: {}\nFailed: {}\nLast error: {}\nAvg duration(ms): {}\nSlowest op: {}\nActionable blockers: {}\nRuntime plugin health: {}\nRebase plan: {}\nRebase session: {}\n{}\n{}\n{}\n",
         host_version,
         protocol_version,
+        repo_context,
+        selection_context,
         entries.len(),
         started,
         succeeded,

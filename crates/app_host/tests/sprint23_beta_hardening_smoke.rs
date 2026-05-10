@@ -10,6 +10,8 @@ fn sprint23_beta_hardening_smoke() {
             author: "Dev".to_string(),
             time: "now".to_string(),
             message: format!("message-{idx}"),
+            parents: Vec::new(),
+            refs: Vec::new(),
         });
     }
     assert!(store.snapshot().commit_cache.len() <= 256);

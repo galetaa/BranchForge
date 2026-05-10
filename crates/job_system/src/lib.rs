@@ -184,6 +184,7 @@ pub fn execute_job_op(
         "index.stage_paths" => {
             git_service::stage_paths(cwd, &request.paths)?;
             refresh_status(cwd, store)?;
+            refresh_loaded_diff(cwd, store)?;
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -193,6 +194,7 @@ pub fn execute_job_op(
         "index.unstage_paths" => {
             git_service::unstage_paths(cwd, &request.paths)?;
             refresh_status(cwd, store)?;
+            refresh_loaded_diff(cwd, store)?;
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -346,8 +348,14 @@ pub fn execute_job_op(
                     message: "commit.create requires message in request.paths[0]".to_string(),
                 }
             })?;
+            if message.trim().is_empty() {
+                return Err(JobExecutionError::InvalidInput {
+                    message: "commit.create requires a non-empty commit message.".to_string(),
+                });
+            }
 
             git_service::commit_create(cwd, message)?;
+            store.update_commit_message(String::new(), None);
             refresh_repo_and_status(cwd, store)?;
             refresh_refs(cwd, store)?;
 
@@ -986,7 +994,17 @@ pub fn execute_job_op(
                 author: details.author,
                 time: details.time,
                 message: details.message,
+                parents: details.parents,
+                refs: details.refs,
             });
+            let diff = git_service::diff_commit(cwd, oid, 64 * 1024)?;
+            store.update_diff(build_diff_state(
+                DiffSource::Commit {
+                    oid: oid.to_string(),
+                },
+                diff,
+                Vec::new(),
+            ));
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -1005,6 +1023,8 @@ pub fn execute_job_op(
                 author: details.author,
                 time: details.time,
                 message: details.message,
+                parents: details.parents,
+                refs: details.refs,
             });
             Ok(JobExecutionResult {
                 op: request.op.clone(),
@@ -1542,6 +1562,7 @@ pub fn execute_job_op(
                     message: "branch.create requires name in request.paths[0]".to_string(),
                 }
             })?;
+            ensure_valid_branch_name(cwd, name, "branch.create")?;
             git_service::create_branch(cwd, name)?;
             refresh_refs(cwd, store)?;
             Ok(JobExecutionResult {
@@ -1562,6 +1583,7 @@ pub fn execute_job_op(
                     message: "branch.rename requires new name in request.paths[1]".to_string(),
                 }
             })?;
+            ensure_valid_branch_name(cwd, new, "branch.rename")?;
             git_service::rename_branch(cwd, old, new)?;
             refresh_refs(cwd, store)?;
             Ok(JobExecutionResult {
@@ -2178,11 +2200,19 @@ fn build_diff_state(
 ) -> DiffState {
     const CHUNK_SIZE: usize = 32 * 1024;
     let chunks = split_diff_chunks(&text, CHUNK_SIZE);
+    let (source_type, file_path, commit_oid) = diff_descriptor_source_fields(&source);
     let descriptor = DiffDescriptor {
+        repo_id: None,
+        source_type,
+        file_path,
+        commit_oid,
+        status: "loaded".to_string(),
         total_bytes: text.len(),
+        total_lines: text.lines().count(),
         chunk_size: CHUNK_SIZE,
         loaded_chunks: chunks.len(),
         truncated: text.contains("... diff truncated ..."),
+        error: None,
     };
 
     DiffState {
@@ -2198,6 +2228,27 @@ fn build_diff_state(
         hunks,
         loading: false,
         error: None,
+    }
+}
+
+fn diff_descriptor_source_fields(source: &DiffSource) -> (String, Option<String>, Option<String>) {
+    match source {
+        DiffSource::Worktree { paths } => ("worktree".to_string(), paths.first().cloned(), None),
+        DiffSource::Index { paths } => ("index".to_string(), paths.first().cloned(), None),
+        DiffSource::Commit { oid } => ("commit".to_string(), None, Some(oid.clone())),
+        DiffSource::Compare { base, head } => {
+            ("compare".to_string(), None, Some(format!("{base}..{head}")))
+        }
+    }
+}
+
+fn ensure_valid_branch_name(cwd: &Path, name: &str, op: &str) -> Result<(), JobExecutionError> {
+    if git_service::branch_name_is_valid(cwd, name)? {
+        Ok(())
+    } else {
+        Err(JobExecutionError::InvalidInput {
+            message: format!("{op} received an invalid branch name: {name}"),
+        })
     }
 }
 

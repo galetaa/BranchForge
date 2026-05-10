@@ -1235,6 +1235,21 @@ impl ConsoleRunner {
             {
                 return (false, Some("no selected branch".to_string()));
             }
+            "branch.delete"
+                if snapshot
+                    .selection
+                    .selected_branch
+                    .as_deref()
+                    .is_some_and(|selected| {
+                        snapshot
+                            .branches
+                            .branches
+                            .iter()
+                            .any(|branch| branch.name == selected && branch.is_current)
+                    }) =>
+            {
+                return (false, Some("cannot delete current branch".to_string()));
+            }
             "rebase.execute" if snapshot.rebase.plan.is_none() => {
                 return (false, Some("no rebase plan".to_string()));
             }

@@ -705,7 +705,26 @@ fn render_into(node: &ViewNode, snapshot: &StoreSnapshot, level: usize, out: &mu
                 .as_deref()
                 .unwrap_or("<none>");
             if let Some(details) = snapshot.commit_cache.get(selected) {
-                out.push_str(&format!("{indent}Commit: {}\n", details.message));
+                out.push_str(&format!("{indent}Commit: {}\n", details.oid));
+                out.push_str(&format!("{indent}Author: {}\n", details.author));
+                out.push_str(&format!("{indent}Date: {}\n", details.time));
+                out.push_str(&format!(
+                    "{indent}Parents: {}\n",
+                    if details.parents.is_empty() {
+                        "<none>".to_string()
+                    } else {
+                        details.parents.join(", ")
+                    }
+                ));
+                out.push_str(&format!(
+                    "{indent}Refs: {}\n",
+                    if details.refs.is_empty() {
+                        "<none>".to_string()
+                    } else {
+                        details.refs.join(", ")
+                    }
+                ));
+                out.push_str(&format!("{indent}Message: {}\n", details.message));
             } else {
                 out.push_str(&format!("{indent}Commit: {selected}\n"));
             }
