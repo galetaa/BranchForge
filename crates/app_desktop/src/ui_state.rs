@@ -64,29 +64,47 @@ impl PanelId {
             PanelStatus::Core | PanelStatus::Developer => self.label().to_string(),
             PanelStatus::Preview => format!("{} Preview", self.label()),
             PanelStatus::Advanced => format!("{} Advanced", self.label()),
+            PanelStatus::DeveloperPreview => format!("{} Preview", self.label()),
         }
     }
 
-    pub fn is_visible(self, advanced_mode: bool) -> bool {
-        match self.panel_status() {
-            PanelStatus::Core | PanelStatus::Preview | PanelStatus::Developer => true,
-            PanelStatus::Advanced => advanced_mode,
-        }
-    }
-
-    pub fn panel_status(self) -> PanelStatus {
+    pub fn is_visible(self, advanced_mode: bool, developer_mode: bool) -> bool {
         match self {
-            Self::Status | Self::History | Self::Diff | Self::Branches => PanelStatus::Core,
-            Self::Tags | Self::Compare | Self::Remotes => PanelStatus::Preview,
-            Self::Diagnostics => PanelStatus::Developer,
-            Self::Workspaces
+            Self::Status
+            | Self::History
+            | Self::Diff
+            | Self::Branches
+            | Self::Tags
+            | Self::Remotes => true,
+            Self::Diagnostics | Self::Journal => developer_mode,
+            Self::Compare
+            | Self::Workspaces
             | Self::PullRequests
             | Self::BranchStacks
             | Self::Stash
             | Self::Worktrees
             | Self::Submodules
-            | Self::Conflicts
-            | Self::Journal => PanelStatus::Advanced,
+            | Self::Conflicts => advanced_mode || developer_mode,
+        }
+    }
+
+    pub fn panel_status(self) -> PanelStatus {
+        match self {
+            Self::Status
+            | Self::History
+            | Self::Diff
+            | Self::Branches
+            | Self::Tags
+            | Self::Remotes => PanelStatus::Core,
+            Self::Compare | Self::PullRequests => PanelStatus::Preview,
+            Self::Diagnostics => PanelStatus::Developer,
+            Self::Journal => PanelStatus::DeveloperPreview,
+            Self::Workspaces
+            | Self::BranchStacks
+            | Self::Stash
+            | Self::Worktrees
+            | Self::Submodules
+            | Self::Conflicts => PanelStatus::Advanced,
         }
     }
 
@@ -118,6 +136,7 @@ pub enum PanelStatus {
     Preview,
     Advanced,
     Developer,
+    DeveloperPreview,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,6 +145,7 @@ pub struct LayoutState {
     pub right_inspector_open: bool,
     pub dark_mode: bool,
     pub advanced_mode: bool,
+    pub developer_mode: bool,
 }
 
 impl Default for LayoutState {
@@ -135,6 +155,7 @@ impl Default for LayoutState {
             right_inspector_open: true,
             dark_mode: true,
             advanced_mode: false,
+            developer_mode: false,
         }
     }
 }

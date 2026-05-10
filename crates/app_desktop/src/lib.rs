@@ -1,6 +1,7 @@
 pub mod runtime_adapter;
 pub mod ui_state;
 
+use std::path::Path;
 use std::time::Duration;
 
 use app_host::HostActionCatalogItem;
@@ -17,6 +18,184 @@ use state_store::{
 use ui_state::{ConfirmationDialog, DesktopUiState, PanelId, PanelStatus, PreviewDialog};
 
 const MAX_RENDERED_DIFF_LINES: usize = 900;
+
+pub mod design_tokens {
+    use eframe::egui::Color32;
+
+    pub const SPACING_XS: f32 = 4.0;
+    pub const SPACING_SM: f32 = 8.0;
+    pub const SPACING_MD: f32 = 12.0;
+    pub const SPACING_LG: f32 = 16.0;
+    pub const SPACING_XL: f32 = 24.0;
+    pub const SPACING_2XL: f32 = 32.0;
+
+    pub const SIDEBAR_WIDTH: f32 = 210.0;
+    pub const INSPECTOR_WIDTH: f32 = 280.0;
+    pub const TOPBAR_HEIGHT: f32 = 58.0;
+    pub const BOTTOMBAR_HEIGHT: f32 = 26.0;
+
+    pub const ROW_HEIGHT_SM: f32 = 24.0;
+    pub const ROW_HEIGHT_MD: f32 = 30.0;
+    pub const ROW_HEIGHT_LG: f32 = 36.0;
+
+    pub const BUTTON_HEIGHT_SM: f32 = 24.0;
+    pub const BUTTON_HEIGHT_MD: f32 = 28.0;
+    pub const INPUT_HEIGHT_MD: f32 = 28.0;
+
+    pub const RADIUS_SM: f32 = 4.0;
+    pub const RADIUS_MD: f32 = 6.0;
+    pub const RADIUS_LG: f32 = 8.0;
+
+    pub const FONT_SIZE_XS: f32 = 11.0;
+    pub const FONT_SIZE_SM: f32 = 12.0;
+    pub const FONT_SIZE_MD: f32 = 13.0;
+    pub const FONT_SIZE_LG: f32 = 15.0;
+    pub const FONT_SIZE_TITLE: f32 = 18.0;
+
+    pub fn bg(dark: bool) -> Color32 {
+        if dark {
+            Color32::from_rgb(23, 26, 29)
+        } else {
+            Color32::from_rgb(246, 247, 248)
+        }
+    }
+
+    pub fn surface(dark: bool) -> Color32 {
+        if dark {
+            Color32::from_rgb(32, 36, 40)
+        } else {
+            Color32::WHITE
+        }
+    }
+
+    pub fn surface_alt(dark: bool) -> Color32 {
+        if dark {
+            Color32::from_rgb(41, 46, 51)
+        } else {
+            Color32::from_rgb(240, 242, 244)
+        }
+    }
+
+    pub fn surface_hover(dark: bool) -> Color32 {
+        if dark {
+            Color32::from_rgb(48, 54, 61)
+        } else {
+            Color32::from_rgb(233, 238, 242)
+        }
+    }
+
+    pub fn surface_active(dark: bool) -> Color32 {
+        if dark {
+            Color32::from_rgb(23, 50, 74)
+        } else {
+            Color32::from_rgb(220, 238, 255)
+        }
+    }
+
+    pub fn border(dark: bool) -> Color32 {
+        if dark {
+            Color32::from_rgb(58, 64, 71)
+        } else {
+            Color32::from_rgb(214, 218, 223)
+        }
+    }
+
+    pub fn border_strong(dark: bool) -> Color32 {
+        if dark {
+            Color32::from_rgb(75, 85, 96)
+        } else {
+            Color32::from_rgb(184, 192, 200)
+        }
+    }
+
+    pub fn text(dark: bool) -> Color32 {
+        if dark {
+            Color32::from_rgb(229, 231, 235)
+        } else {
+            Color32::from_rgb(31, 35, 40)
+        }
+    }
+
+    pub fn text_muted(dark: bool) -> Color32 {
+        if dark {
+            Color32::from_rgb(160, 167, 176)
+        } else {
+            Color32::from_rgb(107, 114, 128)
+        }
+    }
+
+    pub fn text_subtle(dark: bool) -> Color32 {
+        if dark {
+            Color32::from_rgb(122, 130, 140)
+        } else {
+            Color32::from_rgb(138, 146, 156)
+        }
+    }
+
+    pub fn accent(dark: bool) -> Color32 {
+        if dark {
+            Color32::from_rgb(77, 163, 230)
+        } else {
+            Color32::from_rgb(23, 139, 214)
+        }
+    }
+
+    pub fn accent_soft(dark: bool) -> Color32 {
+        if dark {
+            Color32::from_rgb(23, 50, 74)
+        } else {
+            Color32::from_rgb(220, 238, 255)
+        }
+    }
+
+    pub fn success(dark: bool) -> Color32 {
+        if dark {
+            Color32::from_rgb(66, 184, 131)
+        } else {
+            Color32::from_rgb(31, 157, 85)
+        }
+    }
+
+    pub fn warning(dark: bool) -> Color32 {
+        if dark {
+            Color32::from_rgb(214, 168, 79)
+        } else {
+            Color32::from_rgb(183, 121, 31)
+        }
+    }
+
+    pub fn danger(dark: bool) -> Color32 {
+        if dark {
+            Color32::from_rgb(255, 107, 107)
+        } else {
+            Color32::from_rgb(214, 69, 69)
+        }
+    }
+
+    pub fn danger_soft(dark: bool) -> Color32 {
+        if dark {
+            Color32::from_rgb(74, 31, 31)
+        } else {
+            Color32::from_rgb(255, 225, 225)
+        }
+    }
+
+    pub fn disabled(dark: bool) -> Color32 {
+        if dark {
+            Color32::from_rgb(107, 114, 128)
+        } else {
+            Color32::from_rgb(168, 175, 183)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActionButtonKind {
+    Primary,
+    Secondary,
+    Danger,
+    Ghost,
+}
 
 pub fn run() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
@@ -50,6 +229,7 @@ pub struct BranchForgeDesktopApp {
     ui_state: DesktopUiState,
     repo_path_input: String,
     commit_message: String,
+    commit_description: String,
     branch_name_input: String,
     compare_base_input: String,
     compare_head_input: String,
@@ -58,6 +238,7 @@ pub struct BranchForgeDesktopApp {
     auth_host_input: String,
     auth_username_input: String,
     auth_token_input: String,
+    show_credentials_dialog: bool,
     workspace_name_input: String,
     workspace_repo_input: String,
     pr_base_input: String,
@@ -92,6 +273,7 @@ impl BranchForgeDesktopApp {
             ui_state: DesktopUiState::default(),
             repo_path_input: String::new(),
             commit_message: String::new(),
+            commit_description: String::new(),
             branch_name_input: String::new(),
             compare_base_input: String::new(),
             compare_head_input: String::new(),
@@ -100,6 +282,7 @@ impl BranchForgeDesktopApp {
             auth_host_input: "github.com".to_string(),
             auth_username_input: String::new(),
             auth_token_input: String::new(),
+            show_credentials_dialog: false,
             workspace_name_input: "Default Workspace".to_string(),
             workspace_repo_input: String::new(),
             pr_base_input: "main".to_string(),
@@ -270,16 +453,16 @@ impl BranchForgeDesktopApp {
             && state.snapshot.version > version
         {
             self.commit_message.clear();
+            self.commit_description.clear();
             self.pending_commit_clear_after_version = None;
         } else if !state.busy && state.last_error.is_some() {
             self.pending_commit_clear_after_version = None;
         }
 
-        if !self
-            .ui_state
-            .active_panel
-            .is_visible(self.ui_state.layout.advanced_mode)
-        {
+        if !self.ui_state.active_panel.is_visible(
+            self.ui_state.layout.advanced_mode,
+            self.ui_state.layout.developer_mode,
+        ) {
             self.ui_state.active_panel = PanelId::Status;
             self.ui_state.selected_sidebar_item = PanelId::Status;
         }
@@ -296,81 +479,214 @@ impl BranchForgeDesktopApp {
     fn render_top_bar(&mut self, root_ui: &mut egui::Ui, state: &RuntimeAdapterState) {
         let ctx = root_ui.ctx().clone();
         egui::Panel::top("branchforge.top_bar").show_inside(root_ui, |ui| {
-            ui.horizontal(|ui| {
-                if ui.button("Sidebar").clicked() {
-                    self.ui_state.layout.left_sidebar_open =
-                        !self.ui_state.layout.left_sidebar_open;
-                }
-                if ui.button("Inspector").clicked() {
-                    self.ui_state.layout.right_inspector_open =
-                        !self.ui_state.layout.right_inspector_open;
-                }
-                ui.separator();
-                ui.label(RichText::new("BranchForge").strong());
-                ui.separator();
-                let repo_label = state
-                    .snapshot
-                    .repo
-                    .as_ref()
-                    .map(|repo| repo.root.as_str())
-                    .unwrap_or("<no repo>");
-                ui.label(repo_label);
-                if let Some(head) = state
-                    .snapshot
-                    .repo
-                    .as_ref()
-                    .and_then(|repo| repo.head.as_deref())
-                {
-                    ui.label(RichText::new(head).color(Color32::from_rgb(125, 211, 252)));
-                }
-                ui.separator();
-                let path_response = ui.add_enabled(
-                    !state.busy,
-                    egui::TextEdit::singleline(&mut self.repo_path_input)
-                        .desired_width(280.0)
-                        .hint_text("Repository path"),
-                );
-                if path_response.lost_focus()
-                    && ui.input(|input| input.key_pressed(egui::Key::Enter))
-                {
-                    self.open_repo_from_input();
-                }
-                if ui
-                    .add_enabled(!state.busy, egui::Button::new("Open"))
-                    .clicked()
-                {
-                    self.open_repo_from_input();
-                }
-                if ui
-                    .add_enabled(!state.busy, egui::Button::new("Browse"))
-                    .clicked()
-                {
-                    self.open_repo_dialog();
-                }
-                if ui
-                    .add_enabled(!state.busy, egui::Button::new("Refresh"))
-                    .clicked()
-                {
-                    let result = self.runtime.refresh();
-                    self.record_submit(result);
-                }
-                if ui.button("Palette").clicked() {
-                    self.ui_state.command_palette.open = true;
-                }
-                ui.checkbox(&mut self.ui_state.layout.advanced_mode, "Advanced");
-                let mut dark = self.ui_state.layout.dark_mode;
-                if ui.checkbox(&mut dark, "Dark").changed() {
-                    self.ui_state.layout.dark_mode = dark;
-                    if dark {
-                        ctx.set_visuals(egui::Visuals::dark());
-                    } else {
-                        ctx.set_visuals(egui::Visuals::light());
-                    }
-                }
-                if state.busy {
-                    ui.spinner();
-                }
-            });
+            let dark = ui.visuals().dark_mode;
+            let repo = state.snapshot.repo.as_ref();
+            let has_repo = repo.is_some();
+
+            ui.set_min_height(design_tokens::TOPBAR_HEIGHT);
+            ui.spacing_mut().item_spacing = egui::vec2(design_tokens::SPACING_SM, 4.0);
+            egui::Frame::new()
+                .fill(design_tokens::surface(dark))
+                .inner_margin(egui::Margin::symmetric(12, 6))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        if action_button(ui, "Sidebar", ActionButtonKind::Ghost, true, None)
+                            .clicked()
+                        {
+                            self.ui_state.layout.left_sidebar_open =
+                                !self.ui_state.layout.left_sidebar_open;
+                        }
+                        if action_button(ui, "Inspector", ActionButtonKind::Ghost, true, None)
+                            .clicked()
+                        {
+                            self.ui_state.layout.right_inspector_open =
+                                !self.ui_state.layout.right_inspector_open;
+                        }
+
+                        ui.separator();
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new("BranchForge")
+                                        .size(design_tokens::FONT_SIZE_TITLE)
+                                        .strong(),
+                                );
+                                if let Some(repo) = repo {
+                                    ui.label(
+                                        RichText::new(repo_display_name(&repo.root))
+                                            .size(design_tokens::FONT_SIZE_LG)
+                                            .strong(),
+                                    );
+                                }
+                            });
+                            if let Some(repo) = repo {
+                                ui.label(
+                                    RichText::new(truncate_middle(&repo.root, 46))
+                                        .size(design_tokens::FONT_SIZE_SM)
+                                        .color(design_tokens::text_muted(dark)),
+                                )
+                                .on_hover_text(repo.root.as_str());
+                            } else {
+                                let path_response = ui.add_enabled(
+                                    !state.busy,
+                                    egui::TextEdit::singleline(&mut self.repo_path_input)
+                                        .desired_width(320.0)
+                                        .hint_text("No repository opened"),
+                                );
+                                if path_response.lost_focus()
+                                    && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                                {
+                                    self.open_repo_from_input();
+                                }
+                            }
+                        });
+
+                        ui.separator();
+                        ui.vertical(|ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                if let Some(repo) = repo {
+                                    let branch_text = branch_badge_label(&state.snapshot)
+                                        .unwrap_or_else(|| {
+                                            repo.head
+                                                .clone()
+                                                .unwrap_or_else(|| "detached HEAD".to_string())
+                                        });
+                                    let branch_color = if repo.head.is_some() {
+                                        design_tokens::accent_soft(dark)
+                                    } else {
+                                        design_tokens::warning(dark)
+                                    };
+                                    ui.label(
+                                        RichText::new(branch_text)
+                                            .monospace()
+                                            .background_color(branch_color)
+                                            .color(design_tokens::text(dark)),
+                                    );
+                                    ui.label(
+                                        RichText::new(dirty_summary(&state.snapshot))
+                                            .color(design_tokens::text_muted(dark)),
+                                    );
+                                } else {
+                                    ui.label(
+                                        RichText::new("No repository opened")
+                                            .color(design_tokens::text_muted(dark)),
+                                    );
+                                }
+                            });
+                            if state.busy {
+                                ui.horizontal(|ui| {
+                                    ui.spinner();
+                                    ui.weak(
+                                        state
+                                            .current_operation
+                                            .as_deref()
+                                            .unwrap_or("Operation running"),
+                                    );
+                                });
+                            }
+                        });
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let mut dark_mode = self.ui_state.layout.dark_mode;
+                            if ui.checkbox(&mut dark_mode, "Dark").changed() {
+                                self.ui_state.layout.dark_mode = dark_mode;
+                                if dark_mode {
+                                    ctx.set_visuals(egui::Visuals::dark());
+                                } else {
+                                    ctx.set_visuals(egui::Visuals::light());
+                                }
+                            }
+                            ui.checkbox(&mut self.ui_state.layout.developer_mode, "Developer");
+                            ui.checkbox(&mut self.ui_state.layout.advanced_mode, "Advanced");
+                            if action_button(ui, "Palette", ActionButtonKind::Ghost, true, None)
+                                .clicked()
+                            {
+                                self.ui_state.command_palette.open = true;
+                            }
+                            if action_button(
+                                ui,
+                                "Push",
+                                ActionButtonKind::Secondary,
+                                has_repo && !state.busy,
+                                Some("Push current branch"),
+                            )
+                            .clicked()
+                            {
+                                self.preview_or_confirm(
+                                    "remote.push",
+                                    Vec::new(),
+                                    "Preview push".to_string(),
+                                    "Push current branch to upstream?".to_string(),
+                                );
+                            }
+                            if action_button(
+                                ui,
+                                "Pull",
+                                ActionButtonKind::Secondary,
+                                has_repo && !state.busy,
+                                Some("Pull current branch"),
+                            )
+                            .clicked()
+                            {
+                                self.preview_or_confirm(
+                                    "remote.pull",
+                                    Vec::new(),
+                                    "Preview pull".to_string(),
+                                    "Pull current branch from upstream?".to_string(),
+                                );
+                            }
+                            if action_button(
+                                ui,
+                                "Fetch",
+                                ActionButtonKind::Secondary,
+                                has_repo && !state.busy,
+                                Some("Fetch all remotes"),
+                            )
+                            .clicked()
+                            {
+                                self.execute_action_direct("remote.fetch_all", Vec::new(), false);
+                            }
+                            if action_button(
+                                ui,
+                                "Refresh",
+                                ActionButtonKind::Secondary,
+                                !state.busy,
+                                None,
+                            )
+                            .clicked()
+                            {
+                                let result = self.runtime.refresh();
+                                self.record_submit(result);
+                            }
+                            if action_button(
+                                ui,
+                                if has_repo { "Open" } else { "Open Repository" },
+                                ActionButtonKind::Secondary,
+                                !state.busy,
+                                None,
+                            )
+                            .clicked()
+                            {
+                                if has_repo {
+                                    self.open_repo_dialog();
+                                } else {
+                                    self.open_repo_from_input();
+                                }
+                            }
+                            if action_button(
+                                ui,
+                                "Browse",
+                                ActionButtonKind::Secondary,
+                                !state.busy,
+                                None,
+                            )
+                            .clicked()
+                            {
+                                self.open_repo_dialog();
+                            }
+                        });
+                    });
+                });
         });
     }
 
@@ -381,28 +697,75 @@ impl BranchForgeDesktopApp {
 
         egui::Panel::left("branchforge.sidebar")
             .resizable(true)
-            .default_size(190.0)
-            .size_range(150.0..=280.0)
+            .default_size(design_tokens::SIDEBAR_WIDTH)
+            .size_range(190.0..=260.0)
             .show_inside(root_ui, |ui| {
+                let dark = ui.visuals().dark_mode;
+                ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
                 ui.vertical(|ui| {
-                    ui.label(RichText::new("Panels").strong());
-                    ui.separator();
-                    for panel in PanelId::ALL {
-                        if !panel.is_visible(self.ui_state.layout.advanced_mode) {
+                    for &(section, panels) in sidebar_sections() {
+                        let visible = panels.iter().any(|panel| {
+                            panel.is_visible(
+                                self.ui_state.layout.advanced_mode,
+                                self.ui_state.layout.developer_mode,
+                            )
+                        });
+                        if !visible {
                             continue;
                         }
-                        if ui
-                            .selectable_label(
-                                self.ui_state.active_panel == panel,
-                                panel.sidebar_label(),
-                            )
-                            .clicked()
-                        {
-                            self.activate_panel(panel);
+                        ui.add_space(design_tokens::SPACING_SM);
+                        ui.label(
+                            RichText::new(section)
+                                .size(design_tokens::FONT_SIZE_XS)
+                                .color(design_tokens::text_subtle(dark))
+                                .strong(),
+                        );
+                        for panel in panels {
+                            if !panel.is_visible(
+                                self.ui_state.layout.advanced_mode,
+                                self.ui_state.layout.developer_mode,
+                            ) {
+                                continue;
+                            }
+                            self.render_sidebar_item(ui, *panel);
                         }
                     }
                 });
             });
+    }
+
+    fn render_sidebar_item(&mut self, ui: &mut egui::Ui, panel: PanelId) {
+        let dark = ui.visuals().dark_mode;
+        let active = self.ui_state.active_panel == panel;
+        ui.horizontal(|ui| {
+            ui.set_height(design_tokens::ROW_HEIGHT_MD);
+            if active {
+                ui.colored_label(design_tokens::accent(dark), "|");
+            } else {
+                ui.add_space(6.0);
+            }
+            let response = ui.selectable_label(
+                active,
+                RichText::new(panel.label()).size(design_tokens::FONT_SIZE_MD),
+            );
+            if response.clicked() {
+                self.activate_panel(panel);
+            }
+            if let Some(badge) = sidebar_badge(panel) {
+                ui.label(
+                    RichText::new(badge)
+                        .size(design_tokens::FONT_SIZE_XS)
+                        .color(match panel.panel_status() {
+                            PanelStatus::Advanced | PanelStatus::DeveloperPreview => {
+                                design_tokens::warning(dark)
+                            }
+                            PanelStatus::Developer => design_tokens::accent(dark),
+                            PanelStatus::Preview => design_tokens::text_subtle(dark),
+                            PanelStatus::Core => design_tokens::text_muted(dark),
+                        }),
+                );
+            }
+        });
     }
 
     fn render_inspector(&mut self, root_ui: &mut egui::Ui, state: &RuntimeAdapterState) {
@@ -412,35 +775,31 @@ impl BranchForgeDesktopApp {
 
         egui::Panel::right("branchforge.inspector")
             .resizable(true)
-            .default_size(260.0)
-            .size_range(220.0..=380.0)
+            .default_size(design_tokens::INSPECTOR_WIDTH)
+            .size_range(240.0..=360.0)
             .show_inside(root_ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.label(RichText::new("Inspector").strong());
+                    let dark = ui.visuals().dark_mode;
+                    ui.label(
+                        RichText::new("Inspector")
+                            .size(design_tokens::FONT_SIZE_LG)
+                            .strong(),
+                    );
                     ui.separator();
-                    ui.label(format!("Panel: {}", self.ui_state.active_panel.label()));
                     if let Some(repo) = state.snapshot.repo.as_ref() {
-                        ui.label(format!("Repo id: {}", repo.root));
-                        ui.label(format!("Repo path: {}", repo.root));
-                        ui.label(format!(
-                            "Current branch: {}",
-                            repo.head.as_deref().unwrap_or("detached HEAD")
-                        ));
+                        ui.label(RichText::new(repo_display_name(&repo.root)).strong());
+                        ui.label(
+                            RichText::new(truncate_middle(&repo.root, 34))
+                                .color(design_tokens::text_muted(dark)),
+                        )
+                        .on_hover_text(repo.root.as_str());
                     } else {
                         ui.weak("No repository opened");
-                    }
-                    if let Some(file) = self.selected_file(&state.snapshot) {
-                        ui.label(format!("File: {file}"));
-                    }
-                    if let Some(commit) = state.snapshot.selection.selected_commit_oid.as_deref() {
-                        ui.label(format!("Commit: {}", short_oid(commit)));
-                    }
-                    if let Some(branch) = state.snapshot.selection.selected_branch.as_deref() {
-                        ui.label(format!("Branch: {branch}"));
                     }
                     ui.separator();
                     match self.ui_state.active_panel {
                         PanelId::Status => {
+                            ui.label(RichText::new("Status").strong());
                             ui.label(format!("Staged: {}", state.snapshot.status.staged.len()));
                             ui.label(format!(
                                 "Unstaged: {}",
@@ -450,70 +809,145 @@ impl BranchForgeDesktopApp {
                                 "Untracked: {}",
                                 state.snapshot.status.untracked.len()
                             ));
-                            ui.label(format!(
-                                "Selected files: {}",
-                                state.snapshot.selection.selected_paths.len()
-                            ));
+                            ui.separator();
+                            if let Some(file) = self.selected_file(&state.snapshot) {
+                                ui.label(RichText::new("Selected file").strong());
+                                ui.label(file);
+                                self.render_selected_file_actions(ui, &state.snapshot, state.busy);
+                            } else {
+                                render_empty_state(
+                                    ui,
+                                    "No file selected",
+                                    "Select a changed file to stage it or open its diff.",
+                                );
+                            }
                         }
                         PanelId::History => {
+                            ui.label(RichText::new("Commit").strong());
                             if let Some(commit) =
                                 state.snapshot.selection.selected_commit_oid.as_deref()
                             {
                                 if let Some(details) = state.snapshot.commit_cache.get(commit) {
-                                    ui.label(format!("Selected commit: {}", short_oid(commit)));
+                                    ui.label(RichText::new(short_oid(commit)).monospace());
+                                    ui.label(details.message.lines().next().unwrap_or(""));
                                     ui.label(format!("Author: {}", details.author));
                                     ui.label(format!("Date: {}", details.time));
-                                    ui.label(format!("Parents: {}", details.parents.len()));
+                                    if !details.refs.is_empty() {
+                                        ui.label(format!("Refs: {}", details.refs.join(", ")));
+                                    }
+                                    ui.horizontal(|ui| {
+                                        if action_button(
+                                            ui,
+                                            "Copy hash",
+                                            ActionButtonKind::Secondary,
+                                            true,
+                                            None,
+                                        )
+                                        .clicked()
+                                        {
+                                            ui.ctx().copy_text(details.oid.clone());
+                                        }
+                                        if action_button(
+                                            ui,
+                                            "Show diff",
+                                            ActionButtonKind::Secondary,
+                                            true,
+                                            None,
+                                        )
+                                        .clicked()
+                                        {
+                                            self.activate_panel(PanelId::Diff);
+                                        }
+                                    });
+                                } else {
+                                    ui.label(RichText::new(short_oid(commit)).monospace());
                                 }
                             } else {
-                                ui.weak("No commit selected");
+                                render_empty_state(
+                                    ui,
+                                    "No commit selected",
+                                    "Select a commit in History to inspect it here.",
+                                );
                             }
                         }
                         PanelId::Diff => {
-                            ui.label(format!(
-                                "Diff source: {}",
+                            ui.label(RichText::new("Diff").strong());
+                            ui.label(
                                 state
                                     .snapshot
                                     .diff
                                     .source
                                     .as_ref()
                                     .map(format_diff_source)
-                                    .unwrap_or_else(|| "<none>".to_string())
-                            ));
+                                    .unwrap_or_else(|| "No diff selected".to_string()),
+                            );
                             ui.label(format!("Chunks: {}", state.snapshot.diff.chunks.len()));
                             ui.label(format!("Hunks: {}", state.snapshot.diff.hunks.len()));
-                            ui.label(format!("Loading: {}", state.snapshot.diff.loading));
+                            if state.snapshot.diff.loading {
+                                ui.weak("Loading");
+                            }
                         }
                         PanelId::Branches => {
-                            ui.label(format!(
-                                "Current branch: {}",
-                                current_branch_name(&state.snapshot)
-                                    .unwrap_or_else(|| "<unknown>".to_string())
-                            ));
-                            ui.label(format!(
-                                "Selected branch: {}",
-                                state
+                            ui.label(RichText::new("Branch").strong());
+                            if let Some(branch) =
+                                state.snapshot.selection.selected_branch.as_deref()
+                            {
+                                let branch_info = state
                                     .snapshot
-                                    .selection
-                                    .selected_branch
-                                    .as_deref()
-                                    .unwrap_or("<none>")
+                                    .branches
+                                    .branches
+                                    .iter()
+                                    .find(|item| item.name == branch);
+                                ui.label(RichText::new(branch).monospace());
+                                if branch_info.is_some_and(|item| item.is_current) {
+                                    ui.label("Current branch");
+                                }
+                                ui.label(format!(
+                                    "Upstream: {}",
+                                    branch_info
+                                        .and_then(|item| item.upstream.as_deref())
+                                        .unwrap_or("<none>")
+                                ));
+                                self.render_selected_branch_actions(
+                                    ui,
+                                    &state.snapshot,
+                                    branch,
+                                    state.busy,
+                                );
+                            } else {
+                                render_empty_state(
+                                    ui,
+                                    "No branch selected",
+                                    "Select a branch to see checkout and maintenance actions.",
+                                );
+                            }
+                        }
+                        PanelId::Tags => {
+                            ui.label(RichText::new("Tag").strong());
+                            ui.weak("Select tag actions in the Tags panel.");
+                        }
+                        PanelId::Remotes => {
+                            ui.label(RichText::new("Remote").strong());
+                            ui.label(format!("Remotes: {}", state.snapshot.remotes.remotes.len()));
+                            ui.label(format!(
+                                "SSH agent: {}",
+                                bool_word(state.snapshot.remotes.auth.ssh_agent_available)
                             ));
-                            ui.label(format!("Dirty tree: {}", status_is_dirty(&state.snapshot)));
+                            ui.label(format!(
+                                "Credential helper: {}",
+                                bool_word(state.snapshot.remotes.auth.https_helper_configured)
+                            ));
                         }
                         _ => {
-                            ui.label(format!("Staged: {}", state.snapshot.status.staged.len()));
-                            ui.label(format!(
-                                "Unstaged: {}",
-                                state.snapshot.status.unstaged.len()
-                            ));
-                            ui.label(format!(
-                                "Untracked: {}",
-                                state.snapshot.status.untracked.len()
-                            ));
+                            ui.label(format!("Panel: {}", self.ui_state.active_panel.label()));
+                            ui.weak(
+                                "Context-specific details will appear as this workflow stabilizes.",
+                            );
                         }
                     }
-                    if let Some(capabilities) = state.snapshot.repo_capabilities.as_ref() {
+                    if self.ui_state.layout.developer_mode
+                        && let Some(capabilities) = state.snapshot.repo_capabilities.as_ref()
+                    {
                         ui.separator();
                         ui.label("Capabilities");
                         ui.label(format!(
@@ -524,7 +958,7 @@ impl BranchForgeDesktopApp {
                         ui.label(format!("LFS detected: {}", capabilities.lfs_detected));
                         ui.label(format!("LFS available: {}", capabilities.lfs_available));
                     }
-                    if self.ui_state.layout.advanced_mode {
+                    if self.ui_state.layout.developer_mode {
                         ui.separator();
                         ui.label(RichText::new("Context Actions").strong());
                         for item in state
@@ -542,22 +976,26 @@ impl BranchForgeDesktopApp {
 
     fn render_status_bar(&mut self, root_ui: &mut egui::Ui, state: &RuntimeAdapterState) {
         egui::Panel::bottom("branchforge.status_bar").show_inside(root_ui, |ui| {
+            ui.set_min_height(design_tokens::BOTTOMBAR_HEIGHT);
             ui.horizontal(|ui| {
                 let message = bottom_status_message(state, self.ui_error.as_deref());
                 if message.is_error {
-                    ui.colored_label(Color32::from_rgb(248, 113, 113), message.text);
-                    if ui.button("Clear").clicked() {
+                    ui.colored_label(
+                        design_tokens::danger(ui.visuals().dark_mode),
+                        format!("Last error: {}", message.text),
+                    );
+                    if action_button(ui, "Clear", ActionButtonKind::Ghost, true, None).clicked() {
                         self.ui_error = None;
                     }
                 } else {
-                    ui.label(message.text);
+                    ui.label(format!(
+                        "{} · {} · Jobs: {} · Journal: {}",
+                        message.text,
+                        bottom_repo_context_label(&state.snapshot),
+                        if state.busy { 1 } else { 0 },
+                        state.snapshot.journal.entries.len()
+                    ));
                 }
-                ui.separator();
-                ui.label(bottom_repo_context_label(&state.snapshot));
-                ui.separator();
-                ui.label(format!("State v{}", state.snapshot.version));
-                ui.separator();
-                ui.label(format!("Journal {}", state.snapshot.journal.entries.len()));
             });
         });
     }
@@ -602,142 +1040,339 @@ impl BranchForgeDesktopApp {
 
     fn render_status_panel(&mut self, ui: &mut egui::Ui, state: &RuntimeAdapterState) {
         let snapshot = &state.snapshot;
+        render_panel_header(ui, "Status", &dirty_summary(snapshot));
+        if let Some(conflict_state) = snapshot
+            .repo
+            .as_ref()
+            .and_then(|repo| repo.conflict_state.as_ref())
+        {
+            ui.colored_label(
+                design_tokens::warning(ui.visuals().dark_mode),
+                format!("Conflict: {}", format_conflict_state(conflict_state)),
+            );
+        }
+
         ui.horizontal(|ui| {
-            ui.heading("Status");
-            if let Some(conflict_state) = snapshot
-                .repo
-                .as_ref()
-                .and_then(|repo| repo.conflict_state.as_ref())
+            let stage_all_paths = stageable_paths(snapshot);
+            if action_button(
+                ui,
+                "Stage all",
+                ActionButtonKind::Secondary,
+                !stage_all_paths.is_empty() && !state.busy,
+                Some("No unstaged or untracked files"),
+            )
+            .clicked()
             {
-                ui.colored_label(
-                    Color32::from_rgb(251, 191, 36),
-                    format!("Conflict: {}", format_conflict_state(conflict_state)),
+                self.execute_action_direct("index.stage_paths", stage_all_paths, false);
+            }
+            if action_button(
+                ui,
+                "Unstage all",
+                ActionButtonKind::Secondary,
+                !snapshot.status.staged.is_empty() && !state.busy,
+                Some("No staged files"),
+            )
+            .clicked()
+            {
+                self.execute_action_direct(
+                    "index.unstage_paths",
+                    snapshot.status.staged.clone(),
+                    false,
                 );
             }
-        });
-        ui.separator();
-
-        ui.columns(3, |columns| {
-            self.render_file_bucket(
-                &mut columns[0],
-                "Staged",
-                &snapshot.status.staged,
-                &snapshot.selection.selected_paths,
-                state.busy,
-            );
-            self.render_file_bucket(
-                &mut columns[1],
-                "Unstaged",
-                &snapshot.status.unstaged,
-                &snapshot.selection.selected_paths,
-                state.busy,
-            );
-            self.render_file_bucket(
-                &mut columns[2],
-                "Untracked",
-                &snapshot.status.untracked,
-                &snapshot.selection.selected_paths,
-                state.busy,
-            );
-        });
-
-        ui.separator();
-        ui.horizontal(|ui| {
-            let has_selection = !snapshot.selection.selected_paths.is_empty();
-            if ui
-                .add_enabled(
-                    has_selection && !state.busy,
-                    egui::Button::new("Stage selected"),
-                )
-                .clicked()
-            {
-                self.execute_action_direct("index.stage_selected", Vec::new(), false);
-            }
-            if ui
-                .add_enabled(
-                    has_selection && !state.busy,
-                    egui::Button::new("Unstage selected"),
-                )
-                .clicked()
-            {
-                self.execute_action_direct("index.unstage_selected", Vec::new(), false);
-            }
-            if ui
-                .add_enabled(!state.busy, egui::Button::new("Refresh status"))
-                .clicked()
+            if action_button(
+                ui,
+                "Refresh",
+                ActionButtonKind::Secondary,
+                !state.busy,
+                None,
+            )
+            .clicked()
             {
                 self.execute_action_direct("status.refresh", Vec::new(), false);
             }
         });
 
-        ui.separator();
-        ui.label(RichText::new("Commit").strong());
-        ui.add(
-            egui::TextEdit::multiline(&mut self.commit_message)
-                .desired_rows(3)
-                .desired_width(f32::INFINITY),
+        ui.add_space(design_tokens::SPACING_MD);
+        ui.label(RichText::new("Changes").strong());
+        self.render_file_group(
+            ui,
+            "Staged",
+            "A",
+            &snapshot.status.staged,
+            &snapshot.selection.selected_paths,
+            state.busy,
         );
-        let can_commit =
-            !snapshot.status.staged.is_empty() && !self.commit_message.trim().is_empty();
-        if ui
-            .add_enabled(can_commit && !state.busy, egui::Button::new("Commit"))
-            .clicked()
-        {
-            self.execute_action_direct(
-                "commit.create",
-                vec![self.commit_message.trim().to_string()],
-                false,
-            );
+        self.render_file_group(
+            ui,
+            "Unstaged",
+            "M",
+            &snapshot.status.unstaged,
+            &snapshot.selection.selected_paths,
+            state.busy,
+        );
+        self.render_file_group(
+            ui,
+            "Untracked",
+            "?",
+            &snapshot.status.untracked,
+            &snapshot.selection.selected_paths,
+            state.busy,
+        );
+
+        if let Some(file) = self.selected_file(snapshot) {
+            ui.add_space(design_tokens::SPACING_SM);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("Selected file").strong());
+                ui.label(file);
+                self.render_selected_file_actions(ui, snapshot, state.busy);
+            });
         }
+
+        ui.add_space(design_tokens::SPACING_MD);
+        self.render_commit_block(ui, snapshot, state.busy);
     }
 
-    fn render_file_bucket(
+    fn render_file_group(
         &mut self,
         ui: &mut egui::Ui,
         title: &str,
+        badge: &str,
         files: &[String],
         selected_paths: &[String],
         busy: bool,
     ) {
-        ui.label(RichText::new(format!("{title} ({})", files.len())).strong());
-        egui::ScrollArea::vertical()
-            .id_salt(format!("status-file-bucket-{title}"))
-            .max_height(240.0)
-            .auto_shrink([false, false])
+        egui::Frame::group(ui.style())
+            .fill(design_tokens::surface(ui.visuals().dark_mode))
             .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("{title} ({})", files.len())).strong());
+                });
                 if files.is_empty() {
-                    ui.weak("<empty>");
+                    ui.weak("empty");
                     return;
                 }
                 for file in files {
                     let selected = selected_paths.iter().any(|path| path == file);
-                    let response =
-                        ui.add_enabled(!busy, egui::Button::selectable(selected, file.as_str()));
+                    let response = ui.add_enabled(
+                        !busy,
+                        egui::Button::selectable(selected, format!("{badge} {file}"))
+                            .min_size(egui::vec2(0.0, design_tokens::ROW_HEIGHT_SM)),
+                    );
                     if response.clicked() {
                         let result = self.runtime.select_file(file);
                         self.record_submit(result);
-                        self.ui_state.active_panel = PanelId::Diff;
                     }
+                }
+            });
+        ui.add_space(design_tokens::SPACING_SM);
+    }
+
+    fn render_selected_file_actions(
+        &mut self,
+        ui: &mut egui::Ui,
+        snapshot: &StoreSnapshot,
+        busy: bool,
+    ) {
+        let Some(file) = self.selected_file(snapshot).map(str::to_string) else {
+            return;
+        };
+        let group = selected_file_group(snapshot, &file);
+        let can_stage = matches!(
+            group,
+            Some(StatusFileGroup::Unstaged | StatusFileGroup::Untracked)
+        );
+        let can_unstage = matches!(group, Some(StatusFileGroup::Staged));
+        if action_button(
+            ui,
+            "Stage",
+            ActionButtonKind::Secondary,
+            can_stage && !busy,
+            Some("Only unstaged or untracked files can be staged"),
+        )
+        .clicked()
+        {
+            self.execute_action_direct("index.stage_paths", vec![file.clone()], false);
+        }
+        if action_button(
+            ui,
+            "Unstage",
+            ActionButtonKind::Secondary,
+            can_unstage && !busy,
+            Some("Only staged files can be unstaged"),
+        )
+        .clicked()
+        {
+            self.execute_action_direct("index.unstage_paths", vec![file.clone()], false);
+        }
+        if action_button(ui, "Open Diff", ActionButtonKind::Secondary, !busy, None).clicked() {
+            let result = self.runtime.select_file(&file);
+            self.record_submit(result);
+            self.activate_panel(PanelId::Diff);
+        }
+        if action_button(
+            ui,
+            "Discard",
+            ActionButtonKind::Danger,
+            (can_stage || can_unstage) && !busy,
+            Some("Discard writes to the worktree and requires confirmation"),
+        )
+        .clicked()
+        {
+            self.preview_or_confirm(
+                "file.discard",
+                vec![file.clone()],
+                "Preview discard file".to_string(),
+                format!("Discard changes in {file}?"),
+            );
+        }
+    }
+
+    fn render_commit_block(&mut self, ui: &mut egui::Ui, snapshot: &StoreSnapshot, busy: bool) {
+        egui::Frame::group(ui.style())
+            .fill(design_tokens::surface(ui.visuals().dark_mode))
+            .show(ui, |ui| {
+                ui.label(RichText::new("Commit").strong());
+                ui.label("Summary");
+                ui.add_sized(
+                    [f32::INFINITY, design_tokens::INPUT_HEIGHT_MD],
+                    egui::TextEdit::singleline(&mut self.commit_message)
+                        .hint_text("Commit summary"),
+                );
+                ui.label("Description");
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.commit_description)
+                        .desired_rows(3)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("Optional description"),
+                );
+                let staged_count = snapshot.status.staged.len();
+                let reason = commit_disabled_reason(snapshot, &self.commit_message, busy);
+                let can_commit = reason.is_none();
+                if action_button(
+                    ui,
+                    &commit_button_label(staged_count),
+                    ActionButtonKind::Primary,
+                    can_commit,
+                    reason,
+                )
+                .clicked()
+                {
+                    let mut message = self.commit_message.trim().to_string();
+                    let description = self.commit_description.trim();
+                    if !description.is_empty() {
+                        message.push_str("\n\n");
+                        message.push_str(description);
+                    }
+                    self.execute_action_direct("commit.create", vec![message], false);
                 }
             });
     }
 
+    fn render_selected_branch_actions(
+        &mut self,
+        ui: &mut egui::Ui,
+        snapshot: &StoreSnapshot,
+        branch: &str,
+        busy: bool,
+    ) {
+        let selected_is_current = snapshot
+            .branches
+            .branches
+            .iter()
+            .any(|item| item.name == branch && item.is_current);
+        if action_button(
+            ui,
+            "Checkout",
+            ActionButtonKind::Primary,
+            !busy && !selected_is_current,
+            Some("Current branch is already checked out"),
+        )
+        .clicked()
+        {
+            if status_is_dirty(snapshot) {
+                self.ui_state.pending_confirmation = Some(ConfirmationDialog {
+                    action_id: "branch.checkout".to_string(),
+                    args: vec![branch.to_string()],
+                    title: "You have local changes".to_string(),
+                    message: "Switching branches may affect your working tree. Continue anyway?"
+                        .to_string(),
+                });
+            } else {
+                self.execute_action_direct("branch.checkout", vec![branch.to_string()], false);
+            }
+        }
+
+        let rename_target = self.branch_name_input.trim();
+        if action_button(
+            ui,
+            "Rename",
+            ActionButtonKind::Secondary,
+            !busy
+                && !selected_is_current
+                && branch_name_input_is_valid(rename_target)
+                && rename_target != branch,
+            Some("Enter a valid new branch name in the branch input"),
+        )
+        .clicked()
+        {
+            self.preview_or_confirm(
+                "branch.rename",
+                vec![branch.to_string(), rename_target.to_string()],
+                "Preview branch rename".to_string(),
+                format!("Rename branch {branch} to {rename_target}?"),
+            );
+        }
+
+        if action_button(
+            ui,
+            "Delete",
+            ActionButtonKind::Danger,
+            !busy && !selected_is_current,
+            Some("Current branch cannot be deleted"),
+        )
+        .clicked()
+        {
+            self.preview_or_confirm(
+                "branch.delete",
+                vec![branch.to_string()],
+                "Preview branch delete".to_string(),
+                format!("Delete branch {branch}?"),
+            );
+        }
+
+        if action_button(ui, "Copy branch name", ActionButtonKind::Ghost, true, None).clicked() {
+            ui.ctx().copy_text(branch.to_string());
+        }
+    }
+
     fn render_history_panel(&mut self, ui: &mut egui::Ui, state: &RuntimeAdapterState) {
         let snapshot = &state.snapshot;
+        render_panel_header(
+            ui,
+            "History",
+            &format!("{} commits loaded", snapshot.history.commits.len()),
+        );
         ui.horizontal(|ui| {
-            ui.heading("History");
-            if ui
-                .add_enabled(!state.busy, egui::Button::new("Refresh history"))
-                .clicked()
+            if action_button(
+                ui,
+                "Refresh",
+                ActionButtonKind::Secondary,
+                !state.busy,
+                None,
+            )
+            .clicked()
             {
                 self.activate_panel(PanelId::History);
             }
-            if ui
-                .add_enabled(
-                    snapshot.history.next_cursor.is_some() && !state.busy,
-                    egui::Button::new("Load more"),
-                )
-                .clicked()
+            if action_button(
+                ui,
+                "Load more",
+                ActionButtonKind::Secondary,
+                snapshot.history.next_cursor.is_some() && !state.busy,
+                Some("No more commits available"),
+            )
+            .clicked()
             {
                 self.execute_action_direct("history.load_more", Vec::new(), false);
             }
@@ -771,16 +1406,18 @@ impl BranchForgeDesktopApp {
                 self.execute_action_direct("history.clear_filter", Vec::new(), false);
             }
         });
-        ui.separator();
-
         if snapshot.history.loading {
-            ui.spinner();
+            render_loading_state(ui, "Loading history...");
         }
         if let Some(error) = snapshot.history.error.as_deref() {
-            ui.colored_label(Color32::from_rgb(248, 113, 113), error);
+            render_error_state(ui, "Could not load history.", error);
         }
         if snapshot.history.commits.is_empty() {
-            ui.weak("<empty>");
+            render_empty_state(
+                ui,
+                "No commits",
+                "History will appear after commits are loaded.",
+            );
             return;
         }
         let graph = if state.graph_rows.is_empty() {
@@ -789,24 +1426,22 @@ impl BranchForgeDesktopApp {
             state.graph_rows.clone()
         };
 
-        egui::Grid::new("history.rows")
-            .striped(true)
-            .min_col_width(90.0)
-            .show(ui, |ui| {
-                ui.label(RichText::new("Graph").strong());
-                ui.label(RichText::new("Commit").strong());
-                ui.label(RichText::new("Refs").strong());
-                ui.label(RichText::new("Author").strong());
-                ui.label(RichText::new("Time").strong());
-                ui.end_row();
-
-                for commit in &graph {
-                    let selected = snapshot.selection.selected_commit_oid.as_deref()
-                        == Some(commit.oid.as_str());
-                    ui.label(RichText::new(graph_lane_text(commit)).monospace());
+        for commit in &graph {
+            let selected =
+                snapshot.selection.selected_commit_oid.as_deref() == Some(commit.oid.as_str());
+            let row_fill = if selected {
+                design_tokens::surface_active(ui.visuals().dark_mode)
+            } else {
+                design_tokens::surface(ui.visuals().dark_mode)
+            };
+            egui::Frame::group(ui.style())
+                .fill(row_fill)
+                .show(ui, |ui| {
                     let response = ui.selectable_label(
                         selected,
-                        format!("{} {}", short_oid(&commit.oid), commit.summary),
+                        RichText::new(format!("{}  {}", short_oid(&commit.oid), commit.summary))
+                            .size(design_tokens::FONT_SIZE_MD)
+                            .strong(),
                     );
                     if response.clicked() {
                         self.ui_state.graph_view_state.selected_row = Some(commit.row);
@@ -814,7 +1449,7 @@ impl BranchForgeDesktopApp {
                         self.record_submit(result);
                     }
                     response.context_menu(|ui| {
-                        if ui.button("Copy oid").clicked() {
+                        if ui.button("Copy hash").clicked() {
                             ui.ctx().copy_text(commit.oid.clone());
                             ui.close();
                         }
@@ -841,51 +1476,55 @@ impl BranchForgeDesktopApp {
                             ui.close();
                         }
                     });
-                    if commit.refs.is_empty() {
-                        ui.label("");
-                    } else {
-                        ui.horizontal_wrapped(|ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new(short_oid(&commit.oid))
+                                .monospace()
+                                .color(design_tokens::text_muted(ui.visuals().dark_mode)),
+                        );
+                        if !commit.refs.is_empty() {
                             for label in &commit.refs {
                                 ui.label(ref_label_text(label));
                             }
-                        });
-                    }
-                    ui.label(commit.author.as_str());
-                    ui.label(commit.time.as_str());
-                    ui.end_row();
-                }
-            });
+                        }
+                        ui.label(
+                            RichText::new(commit.author.as_str())
+                                .color(design_tokens::text_muted(ui.visuals().dark_mode)),
+                        );
+                        ui.label(
+                            RichText::new(commit.time.as_str())
+                                .color(design_tokens::text_muted(ui.visuals().dark_mode)),
+                        );
+                    });
+                });
+            ui.add_space(design_tokens::SPACING_XS);
+        }
 
         if let Some(commit) = snapshot.selection.selected_commit_oid.as_deref() {
             ui.separator();
-            ui.label(RichText::new("Commit Details").strong());
+            ui.label(RichText::new("Selected commit").strong());
             if let Some(details) = snapshot.commit_cache.get(commit) {
-                ui.label(format!("Hash: {}", details.oid));
-                ui.label(format!("Author: {}", details.author));
-                ui.label(format!("Date: {}", details.time));
                 ui.label(format!(
-                    "Parents: {}",
-                    if details.parents.is_empty() {
-                        "<none>".to_string()
-                    } else {
-                        details.parents.join(", ")
-                    }
+                    "{}  {}",
+                    short_oid(&details.oid),
+                    details.message.lines().next().unwrap_or("")
                 ));
-                ui.label(format!(
-                    "Refs: {}",
-                    if details.refs.is_empty() {
-                        "<none>".to_string()
-                    } else {
-                        details.refs.join(", ")
+                ui.horizontal(|ui| {
+                    if action_button(ui, "Copy hash", ActionButtonKind::Secondary, true, None)
+                        .clicked()
+                    {
+                        ui.ctx().copy_text(details.oid.clone());
                     }
-                ));
-                ui.label(details.message.as_str());
-                if ui.button("Copy hash").clicked() {
-                    ui.ctx().copy_text(details.oid.clone());
-                }
+                    if action_button(ui, "Open diff", ActionButtonKind::Secondary, true, None)
+                        .clicked()
+                    {
+                        self.activate_panel(PanelId::Diff);
+                    }
+                });
             } else {
                 ui.label(format!("Hash: {commit}"));
-                if ui.button("Copy hash").clicked() {
+                if action_button(ui, "Copy hash", ActionButtonKind::Secondary, true, None).clicked()
+                {
                     ui.ctx().copy_text(commit.to_string());
                 }
             }
@@ -894,8 +1533,8 @@ impl BranchForgeDesktopApp {
 
     fn render_diff_panel(&mut self, ui: &mut egui::Ui, state: &RuntimeAdapterState) {
         let snapshot = &state.snapshot;
+        render_panel_header(ui, "Diff", &diff_header_summary(snapshot));
         ui.horizontal(|ui| {
-            ui.heading("Diff");
             ui.selectable_value(
                 &mut self.ui_state.diff_view_state.side_by_side,
                 false,
@@ -910,19 +1549,22 @@ impl BranchForgeDesktopApp {
                 ui.label(format_diff_source(source));
             }
         });
-        ui.separator();
 
         if snapshot.diff.loading {
-            ui.spinner();
+            render_loading_state(ui, "Loading diff...");
         }
         if let Some(error) = snapshot.diff.error.as_deref() {
-            ui.colored_label(Color32::from_rgb(248, 113, 113), error);
+            render_error_state(ui, "Could not load diff.", error);
         }
         if snapshot.diff.hunks.is_empty() {
             if let Some(content) = snapshot.diff.content.as_deref() {
                 render_diff_text(ui, content);
             } else {
-                ui.weak("<no diff loaded>");
+                render_empty_state(
+                    ui,
+                    "No diff selected",
+                    "Select a file in Status or a commit in History.",
+                );
             }
             return;
         }
@@ -932,7 +1574,7 @@ impl BranchForgeDesktopApp {
 
         for (visible_index, hunk) in snapshot.diff.hunks.iter().enumerate() {
             let selected = self.ui_state.diff_view_state.selected_hunk == Some(visible_index);
-            let label = format!("{} [{}] {}", hunk.file_path, hunk.hunk_index, hunk.header);
+            let label = format!("{}  {}", hunk.file_path, hunk.header);
             if ui.selectable_label(selected, label).clicked() {
                 if self.ui_state.diff_view_state.selected_hunk != Some(visible_index) {
                     self.ui_state.diff_view_state.selected_changed_lines.clear();
@@ -954,6 +1596,21 @@ impl BranchForgeDesktopApp {
                     None,
                 );
             }
+        }
+        if snapshot
+            .diff
+            .descriptor
+            .as_ref()
+            .is_some_and(|descriptor| descriptor.truncated)
+        {
+            ui.separator();
+            action_button(
+                ui,
+                "Load more diff",
+                ActionButtonKind::Secondary,
+                false,
+                Some("Large diff support is limited to the first rendered portion for now"),
+            );
         }
     }
 
@@ -1055,30 +1712,42 @@ impl BranchForgeDesktopApp {
 
     fn render_branches_panel(&mut self, ui: &mut egui::Ui, state: &RuntimeAdapterState) {
         let snapshot = &state.snapshot;
+        render_panel_header(
+            ui,
+            "Branches",
+            &format!("{} local branches", snapshot.branches.branches.len()),
+        );
         ui.horizontal(|ui| {
-            ui.heading("Branches");
-            if ui
-                .add_enabled(!state.busy, egui::Button::new("Refresh refs"))
-                .clicked()
+            if action_button(
+                ui,
+                "Refresh refs",
+                ActionButtonKind::Secondary,
+                !state.busy,
+                None,
+            )
+            .clicked()
             {
                 self.execute_action_direct("refs.refresh", Vec::new(), false);
             }
         });
-        ui.separator();
 
+        ui.add_space(design_tokens::SPACING_MD);
+        ui.label(RichText::new("Create branch").strong());
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.branch_name_input)
                     .desired_width(220.0)
-                    .hint_text("Branch name"),
+                    .hint_text("New branch name"),
             );
             let branch_name_valid = branch_name_input_is_valid(self.branch_name_input.trim());
-            if ui
-                .add_enabled(
-                    branch_name_valid && !state.busy,
-                    egui::Button::new("Create"),
-                )
-                .clicked()
+            if action_button(
+                ui,
+                "Create",
+                ActionButtonKind::Primary,
+                branch_name_valid && !state.busy,
+                Some("Enter a valid Git branch name"),
+            )
+            .clicked()
             {
                 self.execute_action_direct(
                     "branch.create",
@@ -1087,130 +1756,150 @@ impl BranchForgeDesktopApp {
                 );
             }
             if !self.branch_name_input.trim().is_empty() && !branch_name_valid {
-                ui.colored_label(Color32::from_rgb(251, 191, 36), "Invalid branch name");
-            }
-            if let Some(branch) = snapshot.selection.selected_branch.as_deref() {
-                let selected_is_current = snapshot
-                    .branches
-                    .branches
-                    .iter()
-                    .any(|item| item.name == branch && item.is_current);
-                if ui
-                    .add_enabled(
-                        !state.busy && !selected_is_current,
-                        egui::Button::new("Checkout"),
-                    )
-                    .clicked()
-                {
-                    self.execute_action_direct("branch.checkout", vec![branch.to_string()], false);
-                }
-                if ui
-                    .add_enabled(
-                        !state.busy && !selected_is_current,
-                        egui::Button::new("Delete"),
-                    )
-                    .clicked()
-                {
-                    self.preview_or_confirm(
-                        "branch.delete",
-                        vec![branch.to_string()],
-                        "Preview branch delete".to_string(),
-                        format!("Delete branch {branch}?"),
-                    );
-                }
-                if selected_is_current {
-                    ui.weak("Current branch cannot be deleted");
-                }
+                ui.colored_label(
+                    design_tokens::warning(ui.visuals().dark_mode),
+                    "Invalid branch name",
+                );
             }
         });
 
-        ui.separator();
+        if let Some(branch) = snapshot.selection.selected_branch.as_deref() {
+            ui.add_space(design_tokens::SPACING_SM);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("Selected branch").strong());
+                ui.label(RichText::new(branch).monospace());
+                self.render_selected_branch_actions(ui, snapshot, branch, state.busy);
+            });
+        }
+
+        ui.add_space(design_tokens::SPACING_MD);
+        ui.label(RichText::new("Local branches").strong());
         if snapshot.branches.branches.is_empty() {
-            ui.weak("<empty>");
+            render_empty_state(
+                ui,
+                "No local branches",
+                "Refresh refs after opening a repository.",
+            );
             return;
         }
 
-        egui::Grid::new("branches.rows")
-            .striped(true)
-            .show(ui, |ui| {
-                ui.label(RichText::new("Name").strong());
-                ui.label(RichText::new("Upstream").strong());
-                ui.end_row();
-                for branch in &snapshot.branches.branches {
-                    let selected =
-                        snapshot.selection.selected_branch.as_deref() == Some(branch.name.as_str());
-                    let label = if branch.is_current {
-                        format!("{} [current]", branch.name)
-                    } else {
-                        branch.name.clone()
-                    };
-                    if ui.selectable_label(selected, label).clicked() {
-                        let result = self.runtime.select_branch(&branch.name);
-                        self.record_submit(result);
-                    }
-                    ui.label(branch.upstream.as_deref().unwrap_or(""));
-                    ui.end_row();
+        for branch in &snapshot.branches.branches {
+            let selected =
+                snapshot.selection.selected_branch.as_deref() == Some(branch.name.as_str());
+            let fill = if selected {
+                design_tokens::surface_active(ui.visuals().dark_mode)
+            } else {
+                design_tokens::surface(ui.visuals().dark_mode)
+            };
+            egui::Frame::group(ui.style()).fill(fill).show(ui, |ui| {
+                let label = if branch.is_current {
+                    format!("{}    current", branch.name)
+                } else {
+                    branch.name.clone()
+                };
+                if ui
+                    .selectable_label(selected, RichText::new(label).monospace().strong())
+                    .clicked()
+                {
+                    let result = self.runtime.select_branch(&branch.name);
+                    self.record_submit(result);
                 }
+                ui.label(
+                    RichText::new(format!(
+                        "upstream: {}",
+                        branch.upstream.as_deref().unwrap_or("<none>")
+                    ))
+                    .color(design_tokens::text_muted(ui.visuals().dark_mode)),
+                );
             });
+            ui.add_space(design_tokens::SPACING_XS);
+        }
     }
 
     fn render_tags_panel(&mut self, ui: &mut egui::Ui, state: &RuntimeAdapterState) {
-        ui.heading("Tags");
-        render_panel_notice(ui, PanelId::Tags);
-        ui.separator();
+        render_panel_header(
+            ui,
+            "Tags",
+            &format!("{} tags", state.snapshot.tags.tags.len()),
+        );
         if state.snapshot.tags.tags.is_empty() {
-            ui.weak("<empty>");
+            render_empty_state(ui, "No tags", "Repository tags will appear here.");
             return;
         }
 
         for tag in &state.snapshot.tags.tags {
-            ui.horizontal(|ui| {
-                ui.label(tag.name.as_str());
-                if ui
-                    .add_enabled(!state.busy, egui::Button::new("Checkout"))
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(tag.name.as_str()).monospace().strong());
+                    if action_button(
+                        ui,
+                        "Checkout",
+                        ActionButtonKind::Secondary,
+                        !state.busy,
+                        Some("Checking out a tag will detach HEAD"),
+                    )
                     .clicked()
-                {
-                    self.execute_action_direct("tag.checkout", vec![tag.name.clone()], false);
-                }
-                if ui
-                    .add_enabled(!state.busy, egui::Button::new("Delete"))
+                    {
+                        self.ui_state.pending_confirmation = Some(ConfirmationDialog {
+                            action_id: "tag.checkout".to_string(),
+                            args: vec![tag.name.clone()],
+                            title: "Checkout tag".to_string(),
+                            message: "Checking out a tag will detach HEAD. Continue?".to_string(),
+                        });
+                    }
+                    if action_button(
+                        ui,
+                        "Delete",
+                        ActionButtonKind::Danger,
+                        !state.busy,
+                        Some("Deleting a tag requires confirmation"),
+                    )
                     .clicked()
-                {
-                    self.preview_or_confirm(
-                        "tag.delete",
-                        vec![tag.name.clone()],
-                        "Preview tag delete".to_string(),
-                        format!("Delete tag {}?", tag.name),
-                    );
-                }
+                    {
+                        self.preview_or_confirm(
+                            "tag.delete",
+                            vec![tag.name.clone()],
+                            "Preview tag delete".to_string(),
+                            format!("Delete tag {}?", tag.name),
+                        );
+                    }
+                });
             });
+            ui.add_space(design_tokens::SPACING_XS);
         }
     }
 
     fn render_compare_panel(&mut self, ui: &mut egui::Ui, state: &RuntimeAdapterState) {
         let snapshot = &state.snapshot;
-        ui.heading("Compare");
+        render_panel_header(
+            ui,
+            "Compare",
+            "Compare two refs to inspect commits and file changes.",
+        );
         render_panel_notice(ui, PanelId::Compare);
-        ui.separator();
+        ui.label(RichText::new("Base ref").strong());
+        ui.add(
+            egui::TextEdit::singleline(&mut self.compare_base_input)
+                .desired_width(260.0)
+                .hint_text("Base ref"),
+        );
+        ui.label(RichText::new("Head ref").strong());
         ui.horizontal(|ui| {
             ui.add(
-                egui::TextEdit::singleline(&mut self.compare_base_input)
-                    .desired_width(180.0)
-                    .hint_text("Base ref"),
-            );
-            ui.add(
                 egui::TextEdit::singleline(&mut self.compare_head_input)
-                    .desired_width(180.0)
+                    .desired_width(260.0)
                     .hint_text("Head ref"),
             );
-            if ui
-                .add_enabled(
-                    !self.compare_base_input.trim().is_empty()
-                        && !self.compare_head_input.trim().is_empty()
-                        && !state.busy,
-                    egui::Button::new("Compare"),
-                )
-                .clicked()
+            if action_button(
+                ui,
+                "Compare",
+                ActionButtonKind::Primary,
+                !self.compare_base_input.trim().is_empty()
+                    && !self.compare_head_input.trim().is_empty()
+                    && !state.busy,
+                Some("Both refs are required"),
+            )
+            .clicked()
             {
                 self.execute_action_direct(
                     "compare.refs",
@@ -1223,40 +1912,54 @@ impl BranchForgeDesktopApp {
             }
         });
         ui.separator();
+        if snapshot.compare.base_ref.is_none() || snapshot.compare.head_ref.is_none() {
+            render_empty_state(
+                ui,
+                "No comparison",
+                "Enter a base ref and head ref to compare commits and files.",
+            );
+            return;
+        }
         ui.label(format!(
-            "Current: {} -> {}",
-            snapshot.compare.base_ref.as_deref().unwrap_or("<unset>"),
-            snapshot.compare.head_ref.as_deref().unwrap_or("<unset>")
-        ));
-        ui.label(format!(
-            "Ahead/behind: +{} / -{}",
+            "Ahead / behind: +{} / -{}",
             snapshot.compare.ahead, snapshot.compare.behind
         ));
-        for commit in snapshot.compare.commits.iter().take(30) {
-            ui.label(format!("{} {}", short_oid(&commit.oid), commit.summary));
+        if snapshot.compare.commits.is_empty() {
+            ui.weak("No commits between refs.");
+        } else {
+            for commit in snapshot.compare.commits.iter().take(30) {
+                ui.label(format!("{} {}", short_oid(&commit.oid), commit.summary));
+            }
+            if action_button(ui, "Open diff", ActionButtonKind::Secondary, true, None).clicked() {
+                self.activate_panel(PanelId::Diff);
+            }
         }
     }
 
     fn render_remotes_panel(&mut self, ui: &mut egui::Ui, state: &RuntimeAdapterState) {
         let snapshot = &state.snapshot;
+        render_panel_header(
+            ui,
+            "Remotes",
+            &format!("{} remotes", snapshot.remotes.remotes.len()),
+        );
         ui.horizontal(|ui| {
-            ui.heading("Remotes");
-            if ui
-                .add_enabled(!state.busy, egui::Button::new("Refresh"))
-                .clicked()
+            if action_button(
+                ui,
+                "Refresh",
+                ActionButtonKind::Secondary,
+                !state.busy,
+                None,
+            )
+            .clicked()
             {
                 self.execute_action_direct("remote.refresh", Vec::new(), false);
             }
-            if ui
-                .add_enabled(!state.busy, egui::Button::new("Fetch all"))
-                .clicked()
+            if action_button(ui, "Fetch", ActionButtonKind::Secondary, !state.busy, None).clicked()
             {
                 self.execute_action_direct("remote.fetch_all", Vec::new(), false);
             }
-            if ui
-                .add_enabled(!state.busy, egui::Button::new("Pull"))
-                .clicked()
-            {
+            if action_button(ui, "Pull", ActionButtonKind::Secondary, !state.busy, None).clicked() {
                 self.preview_or_confirm(
                     "remote.pull",
                     Vec::new(),
@@ -1264,10 +1967,7 @@ impl BranchForgeDesktopApp {
                     "Pull current branch from upstream?".to_string(),
                 );
             }
-            if ui
-                .add_enabled(!state.busy, egui::Button::new("Push"))
-                .clicked()
-            {
+            if action_button(ui, "Push", ActionButtonKind::Secondary, !state.busy, None).clicked() {
                 self.preview_or_confirm(
                     "remote.push",
                     Vec::new(),
@@ -1276,8 +1976,8 @@ impl BranchForgeDesktopApp {
                 );
             }
         });
-        render_panel_notice(ui, PanelId::Remotes);
-        ui.separator();
+        ui.add_space(design_tokens::SPACING_MD);
+        ui.label(RichText::new("Add remote").strong());
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.remote_name_input)
@@ -1289,14 +1989,16 @@ impl BranchForgeDesktopApp {
                     .desired_width(360.0)
                     .hint_text("remote URL"),
             );
-            if ui
-                .add_enabled(
-                    !self.remote_name_input.trim().is_empty()
-                        && !self.remote_url_input.trim().is_empty()
-                        && !state.busy,
-                    egui::Button::new("Add"),
-                )
-                .clicked()
+            if action_button(
+                ui,
+                "Add",
+                ActionButtonKind::Secondary,
+                !self.remote_name_input.trim().is_empty()
+                    && !self.remote_url_input.trim().is_empty()
+                    && !state.busy,
+                Some("Remote name and URL are required"),
+            )
+            .clicked()
             {
                 self.preview_or_confirm(
                     "remote.add",
@@ -1308,28 +2010,95 @@ impl BranchForgeDesktopApp {
                     "Add this remote to the repository?".to_string(),
                 );
             }
-            let current_branch = snapshot
-                .repo
-                .as_ref()
-                .and_then(|repo| repo.head.clone())
-                .unwrap_or_default();
-            if ui
-                .add_enabled(
-                    !self.remote_name_input.trim().is_empty()
-                        && !current_branch.is_empty()
-                        && !state.busy,
-                    egui::Button::new("Set upstream"),
-                )
-                .clicked()
-            {
-                self.preview_or_confirm(
-                    "remote.push_set_upstream",
-                    vec![self.remote_name_input.trim().to_string(), current_branch],
-                    "Preview upstream push".to_string(),
-                    "Push current branch and set upstream?".to_string(),
-                );
-            }
         });
+
+        ui.add_space(design_tokens::SPACING_MD);
+        ui.label(RichText::new("Remote list").strong());
+        if snapshot.remotes.remotes.is_empty() {
+            render_empty_state(ui, "No remotes", "Add a remote or refresh repository refs.");
+        }
+        for remote in &snapshot.remotes.remotes {
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.label(RichText::new(remote.name.as_str()).strong());
+                ui.label(format!(
+                    "fetch: {}",
+                    remote.fetch_url.as_deref().unwrap_or("<none>")
+                ));
+                ui.label(format!(
+                    "push: {}",
+                    remote.push_url.as_deref().unwrap_or("<none>")
+                ));
+                ui.horizontal_wrapped(|ui| {
+                    if action_button(ui, "Fetch", ActionButtonKind::Secondary, !state.busy, None)
+                        .clicked()
+                    {
+                        self.execute_action_direct(
+                            "remote.fetch",
+                            vec![remote.name.clone()],
+                            false,
+                        );
+                    }
+                    if action_button(ui, "Pull", ActionButtonKind::Secondary, !state.busy, None)
+                        .clicked()
+                    {
+                        self.preview_or_confirm(
+                            "remote.pull",
+                            Vec::new(),
+                            "Preview pull".to_string(),
+                            "Pull current branch from upstream?".to_string(),
+                        );
+                    }
+                    if action_button(ui, "Push", ActionButtonKind::Secondary, !state.busy, None)
+                        .clicked()
+                    {
+                        self.preview_or_confirm(
+                            "remote.push",
+                            Vec::new(),
+                            "Preview push".to_string(),
+                            "Push current branch to upstream?".to_string(),
+                        );
+                    }
+                    let current_branch = snapshot
+                        .repo
+                        .as_ref()
+                        .and_then(|repo| repo.head.clone())
+                        .unwrap_or_default();
+                    if action_button(
+                        ui,
+                        "Set upstream",
+                        ActionButtonKind::Secondary,
+                        !current_branch.is_empty() && !state.busy,
+                        Some("Current branch is required"),
+                    )
+                    .clicked()
+                    {
+                        self.preview_or_confirm(
+                            "remote.push_set_upstream",
+                            vec![remote.name.clone(), current_branch],
+                            "Preview upstream push".to_string(),
+                            "Push current branch and set upstream?".to_string(),
+                        );
+                    }
+                    if action_button(
+                        ui,
+                        "Remove",
+                        ActionButtonKind::Danger,
+                        !state.busy,
+                        Some("Removing a remote requires confirmation"),
+                    )
+                    .clicked()
+                    {
+                        self.preview_or_confirm(
+                            "remote.remove",
+                            vec![remote.name.clone()],
+                            "Preview remote remove".to_string(),
+                            format!("Remove remote {}?", remote.name),
+                        );
+                    }
+                });
+            });
+            ui.add_space(design_tokens::SPACING_XS);
+        }
 
         if let Some(upstream) = snapshot.remotes.upstream.as_ref() {
             ui.separator();
@@ -1341,171 +2110,87 @@ impl BranchForgeDesktopApp {
                 upstream.behind
             ));
         }
+
+        ui.separator();
+        ui.label(RichText::new("Authentication").strong());
         ui.label(format!(
-            "Auth: ssh-agent={} credential-helper={}",
-            snapshot.remotes.auth.ssh_agent_available,
-            snapshot.remotes.auth.https_helper_configured
+            "SSH agent: {}",
+            bool_word(snapshot.remotes.auth.ssh_agent_available)
+        ));
+        ui.label(format!(
+            "Credential helper: {}",
+            bool_word(snapshot.remotes.auth.https_helper_configured)
         ));
         if let Some(error) = snapshot.remotes.auth.last_error.as_deref() {
-            ui.colored_label(Color32::from_rgb(248, 113, 113), error);
+            render_error_state(ui, "Authentication check failed.", error);
         }
         ui.horizontal(|ui| {
-            if ui
-                .add_enabled(!state.busy, egui::Button::new("Auth status"))
-                .clicked()
+            if action_button(
+                ui,
+                "Auth status",
+                ActionButtonKind::Secondary,
+                !state.busy,
+                None,
+            )
+            .clicked()
             {
                 self.execute_action_direct("auth.status", Vec::new(), false);
             }
-            ui.add(
-                egui::TextEdit::singleline(&mut self.auth_host_input)
-                    .desired_width(150.0)
-                    .hint_text("host"),
-            );
-            ui.add(
-                egui::TextEdit::singleline(&mut self.auth_username_input)
-                    .desired_width(150.0)
-                    .hint_text("username"),
-            );
-            ui.add(
-                egui::TextEdit::singleline(&mut self.auth_token_input)
-                    .password(true)
-                    .desired_width(220.0)
-                    .hint_text("token"),
-            );
-            if ui
-                .add_enabled(
-                    !self.auth_host_input.trim().is_empty()
-                        && !self.auth_username_input.trim().is_empty()
-                        && !self.auth_token_input.is_empty()
-                        && !state.busy,
-                    egui::Button::new("Store token"),
-                )
-                .clicked()
+            if action_button(
+                ui,
+                "Manage credentials",
+                ActionButtonKind::Secondary,
+                !state.busy,
+                None,
+            )
+            .clicked()
             {
-                self.execute_action_direct(
-                    "auth.login",
-                    vec![
-                        self.auth_host_input.trim().to_string(),
-                        self.auth_username_input.trim().to_string(),
-                        self.auth_token_input.clone(),
-                    ],
-                    false,
-                );
-                self.auth_token_input.clear();
+                self.show_credentials_dialog = true;
             }
         });
         if !snapshot.remotes.auth.accounts.is_empty() {
-            egui::Grid::new("auth.accounts.rows")
-                .striped(true)
-                .show(ui, |ui| {
-                    ui.label(RichText::new("Host").strong());
-                    ui.label(RichText::new("User").strong());
-                    ui.label(RichText::new("Provider").strong());
-                    ui.label(RichText::new("Token").strong());
-                    ui.label(RichText::new("Actions").strong());
-                    ui.end_row();
-                    for account in &snapshot.remotes.auth.accounts {
-                        ui.label(account.host.as_str());
-                        ui.label(account.username.as_deref().unwrap_or(""));
-                        ui.label(format!("{:?}", account.provider));
-                        ui.label(if account.token_present {
-                            "stored"
-                        } else {
-                            "missing"
-                        });
-                        ui.horizontal(|ui| {
-                            let username = account.username.clone().unwrap_or_default();
-                            if ui
-                                .add_enabled(
-                                    account.token_present && !state.busy,
-                                    egui::Button::new("Seed Git"),
-                                )
-                                .clicked()
-                            {
-                                self.execute_action_direct(
-                                    "auth.seed_git",
-                                    vec![account.host.clone(), username.clone()],
-                                    false,
-                                );
-                            }
-                            if ui
-                                .add_enabled(!state.busy, egui::Button::new("Logout"))
-                                .clicked()
-                            {
-                                self.preview_or_confirm(
-                                    "auth.logout",
-                                    vec![account.host.clone(), username],
-                                    "Preview credential removal".to_string(),
-                                    "Remove this stored credential?".to_string(),
-                                );
-                            }
-                        });
-                        ui.end_row();
+            for account in &snapshot.remotes.auth.accounts {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(account.host.as_str());
+                    ui.label(account.username.as_deref().unwrap_or("<unknown>"));
+                    ui.label(format!("{:?}", account.provider));
+                    ui.label(if account.token_present {
+                        "token stored"
+                    } else {
+                        "token missing"
+                    });
+                    let username = account.username.clone().unwrap_or_default();
+                    if action_button(
+                        ui,
+                        "Seed Git",
+                        ActionButtonKind::Secondary,
+                        account.token_present && !state.busy,
+                        Some("Stored token is required"),
+                    )
+                    .clicked()
+                    {
+                        self.execute_action_direct(
+                            "auth.seed_git",
+                            vec![account.host.clone(), username.clone()],
+                            false,
+                        );
+                    }
+                    if action_button(ui, "Logout", ActionButtonKind::Danger, !state.busy, None)
+                        .clicked()
+                    {
+                        self.preview_or_confirm(
+                            "auth.logout",
+                            vec![account.host.clone(), username],
+                            "Preview credential removal".to_string(),
+                            "Remove this stored credential?".to_string(),
+                        );
                     }
                 });
+            }
         }
         if let Some(message) = snapshot.remotes.last_sync_message.as_deref() {
             ui.label(message);
         }
-
-        ui.separator();
-        egui::Grid::new("remotes.rows")
-            .striped(true)
-            .show(ui, |ui| {
-                ui.label(RichText::new("Name").strong());
-                ui.label(RichText::new("Fetch").strong());
-                ui.label(RichText::new("Push").strong());
-                ui.label(RichText::new("Actions").strong());
-                ui.end_row();
-                for remote in &snapshot.remotes.remotes {
-                    ui.label(remote.name.as_str());
-                    ui.label(remote.fetch_url.as_deref().unwrap_or(""));
-                    ui.label(remote.push_url.as_deref().unwrap_or(""));
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_enabled(!state.busy, egui::Button::new("Fetch"))
-                            .clicked()
-                        {
-                            self.execute_action_direct(
-                                "remote.fetch",
-                                vec![remote.name.clone()],
-                                false,
-                            );
-                        }
-                        if ui
-                            .add_enabled(!state.busy, egui::Button::new("Remove"))
-                            .clicked()
-                        {
-                            self.preview_or_confirm(
-                                "remote.remove",
-                                vec![remote.name.clone()],
-                                "Preview remote remove".to_string(),
-                                format!("Remove remote {}?", remote.name),
-                            );
-                        }
-                        let branch = snapshot
-                            .repo
-                            .as_ref()
-                            .and_then(|repo| repo.head.clone())
-                            .unwrap_or_default();
-                        if ui
-                            .add_enabled(
-                                !branch.is_empty() && !state.busy,
-                                egui::Button::new("Lease"),
-                            )
-                            .clicked()
-                        {
-                            self.preview_or_confirm(
-                                "remote.push_force_with_lease",
-                                vec![remote.name.clone(), branch],
-                                "Preview force-with-lease".to_string(),
-                                "Force push with lease?".to_string(),
-                            );
-                        }
-                    });
-                    ui.end_row();
-                }
-            });
 
         if !snapshot.remotes.remote_branches.is_empty() {
             ui.separator();
@@ -2009,26 +2694,27 @@ impl BranchForgeDesktopApp {
         title: &str,
         actions: &[(&str, &str)],
     ) {
-        ui.heading(title);
+        render_panel_header(ui, title, "This panel is experimental.");
         if let Some(panel) = panel_for_title(title) {
             render_panel_notice(ui, panel);
         }
-        ui.separator();
         ui.horizontal(|ui| {
             for (label, action_id) in actions {
-                if ui
-                    .add_enabled(!state.busy, egui::Button::new(*label))
+                if action_button(ui, label, ActionButtonKind::Secondary, !state.busy, None)
                     .clicked()
                 {
                     self.execute_action_direct(action_id, Vec::new(), false);
                 }
             }
         });
-        ui.separator();
         if let Some(content) = state.snapshot.diff.content.as_deref() {
             render_diff_text(ui, content);
         } else {
-            ui.weak("<empty>");
+            render_empty_state(
+                ui,
+                "This panel is experimental.",
+                "Some actions may be unavailable until the workflow is stabilized.",
+            );
         }
     }
 
@@ -2214,6 +2900,37 @@ impl BranchForgeDesktopApp {
                 .unwrap_or_else(|| "<none>".to_string())
         ));
         ui.separator();
+        ui.label(RichText::new("Feature Flags").strong());
+        ui.label(format!(
+            "advanced_mode: {}",
+            self.ui_state.layout.advanced_mode
+        ));
+        ui.label(format!(
+            "developer_mode: {}",
+            self.ui_state.layout.developer_mode
+        ));
+        ui.label(format!("dark_mode: {}", self.ui_state.layout.dark_mode));
+        ui.separator();
+        ui.label(RichText::new("Job Queue").strong());
+        ui.label(format!("busy: {}", state.busy));
+        ui.label(format!(
+            "current_operation: {}",
+            state.current_operation.as_deref().unwrap_or("<none>")
+        ));
+        ui.separator();
+        ui.label(RichText::new("Capabilities").strong());
+        if let Some(capabilities) = state.snapshot.repo_capabilities.as_ref() {
+            ui.label(format!(
+                "linked_worktree: {}",
+                capabilities.is_linked_worktree
+            ));
+            ui.label(format!("submodules: {}", capabilities.has_submodules));
+            ui.label(format!("lfs_detected: {}", capabilities.lfs_detected));
+            ui.label(format!("lfs_available: {}", capabilities.lfs_available));
+        } else {
+            ui.weak("<none>");
+        }
+        ui.separator();
         ui.label(format!("Action catalog: {}", state.action_catalog.len()));
         ui.label(format!("Plugins: {}", state.snapshot.plugins.len()));
         for plugin in &state.snapshot.plugins {
@@ -2339,6 +3056,11 @@ impl BranchForgeDesktopApp {
                 });
         }
         ui.separator();
+        ui.label(RichText::new("Event Log").strong());
+        for entry in state.snapshot.journal.entries.iter().rev().take(8) {
+            ui.label(format!("#{} {} {:?}", entry.id, entry.op, entry.status));
+        }
+        ui.separator();
         ui.label(RichText::new("Actions").strong());
         egui::Grid::new("action.catalog")
             .striped(true)
@@ -2362,7 +3084,7 @@ impl BranchForgeDesktopApp {
     }
 
     fn render_journal_panel(&mut self, ui: &mut egui::Ui, state: &RuntimeAdapterState) {
-        ui.heading("Journal");
+        render_panel_header(ui, "Journal", "Operation recovery and safety preview.");
         render_panel_notice(ui, PanelId::Journal);
         ui.separator();
         ui.horizontal(|ui| {
@@ -2395,7 +3117,11 @@ impl BranchForgeDesktopApp {
         ui.separator();
 
         if state.snapshot.journal.entries.is_empty() {
-            ui.weak("<empty>");
+            render_empty_state(
+                ui,
+                "No operations recorded yet.",
+                "When repository-changing actions are performed, they will appear here.",
+            );
         } else {
             let filter = self.ui_state.journal_view_state.filter.to_lowercase();
             let entries = state
@@ -2516,7 +3242,7 @@ impl BranchForgeDesktopApp {
         }
 
         ui.separator();
-        ui.label(RichText::new("Reflog Recovery").strong());
+        ui.label(RichText::new("Recovery").strong());
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.ui_state.journal_view_state.reflog_reference)
@@ -2741,6 +3467,73 @@ impl BranchForgeDesktopApp {
             self.ui_state.pending_preview = Some(dialog);
         }
     }
+
+    fn render_credentials_dialog(&mut self, ctx: &egui::Context, state: &RuntimeAdapterState) {
+        if !self.show_credentials_dialog {
+            return;
+        }
+
+        let mut open = self.show_credentials_dialog;
+        egui::Window::new("Manage credentials")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(460.0)
+            .show(ctx, |ui| {
+                ui.label("Authentication");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.auth_host_input)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("host"),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.auth_username_input)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("username"),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.auth_token_input)
+                        .password(true)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("token"),
+                );
+                ui.horizontal(|ui| {
+                    if action_button(ui, "Cancel", ActionButtonKind::Ghost, true, None).clicked() {
+                        self.auth_token_input.clear();
+                        self.show_credentials_dialog = false;
+                    }
+                    if action_button(
+                        ui,
+                        "Store token",
+                        ActionButtonKind::Primary,
+                        !self.auth_host_input.trim().is_empty()
+                            && !self.auth_username_input.trim().is_empty()
+                            && !self.auth_token_input.is_empty()
+                            && !state.busy,
+                        Some("Host, username, and token are required"),
+                    )
+                    .clicked()
+                    {
+                        self.execute_action_direct(
+                            "auth.login",
+                            vec![
+                                self.auth_host_input.trim().to_string(),
+                                self.auth_username_input.trim().to_string(),
+                                self.auth_token_input.clone(),
+                            ],
+                            false,
+                        );
+                        self.auth_token_input.clear();
+                        self.show_credentials_dialog = false;
+                    }
+                });
+            });
+
+        if !open {
+            self.auth_token_input.clear();
+        }
+        self.show_credentials_dialog = open && self.show_credentials_dialog;
+    }
 }
 
 impl eframe::App for BranchForgeDesktopApp {
@@ -2755,6 +3548,7 @@ impl eframe::App for BranchForgeDesktopApp {
         self.render_status_bar(ui, &state);
         self.render_main_panel(ui, &state);
         self.render_command_palette(&ctx, &state);
+        self.render_credentials_dialog(&ctx, &state);
         self.render_confirmation(&ctx);
         self.render_preview(&ctx);
 
@@ -2774,6 +3568,284 @@ fn action_requires_confirmation(item: &HostActionCatalogItem) -> bool {
     }
 }
 
+const REPOSITORY_PANELS: &[PanelId] = &[
+    PanelId::Status,
+    PanelId::History,
+    PanelId::Diff,
+    PanelId::Branches,
+    PanelId::Tags,
+];
+const COLLABORATION_PANELS: &[PanelId] = &[PanelId::Remotes, PanelId::PullRequests];
+const ADVANCED_PANELS: &[PanelId] = &[
+    PanelId::Compare,
+    PanelId::Stash,
+    PanelId::Worktrees,
+    PanelId::Submodules,
+    PanelId::Conflicts,
+    PanelId::Workspaces,
+    PanelId::BranchStacks,
+];
+const DEVELOPER_PANELS: &[PanelId] = &[PanelId::Diagnostics, PanelId::Journal];
+const SIDEBAR_SECTIONS: &[(&str, &[PanelId])] = &[
+    ("Repository", REPOSITORY_PANELS),
+    ("Collaboration", COLLABORATION_PANELS),
+    ("Advanced", ADVANCED_PANELS),
+    ("Developer", DEVELOPER_PANELS),
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatusFileGroup {
+    Staged,
+    Unstaged,
+    Untracked,
+}
+
+fn sidebar_sections() -> &'static [(&'static str, &'static [PanelId])] {
+    SIDEBAR_SECTIONS
+}
+
+fn sidebar_badge(panel: PanelId) -> Option<&'static str> {
+    match panel.panel_status() {
+        PanelStatus::Core => None,
+        PanelStatus::Preview => Some("Preview"),
+        PanelStatus::Advanced => Some("Experimental"),
+        PanelStatus::Developer => Some("Dev"),
+        PanelStatus::DeveloperPreview => Some("Preview"),
+    }
+}
+
+fn action_button(
+    ui: &mut egui::Ui,
+    label: &str,
+    kind: ActionButtonKind,
+    enabled: bool,
+    tooltip: Option<&str>,
+) -> egui::Response {
+    let dark = ui.visuals().dark_mode;
+    let text_color = match kind {
+        ActionButtonKind::Primary => Color32::WHITE,
+        ActionButtonKind::Danger => design_tokens::danger(dark),
+        ActionButtonKind::Secondary | ActionButtonKind::Ghost => design_tokens::text(dark),
+    };
+    let mut button = egui::Button::new(
+        RichText::new(label)
+            .size(design_tokens::FONT_SIZE_SM)
+            .color(if enabled {
+                text_color
+            } else {
+                design_tokens::disabled(dark)
+            }),
+    )
+    .min_size(egui::vec2(0.0, design_tokens::BUTTON_HEIGHT_MD));
+
+    button = match kind {
+        ActionButtonKind::Primary => button.fill(design_tokens::accent(dark)),
+        ActionButtonKind::Secondary => button.fill(design_tokens::surface_alt(dark)),
+        ActionButtonKind::Danger => button
+            .fill(design_tokens::danger_soft(dark))
+            .stroke(egui::Stroke::new(1.0, design_tokens::danger(dark))),
+        ActionButtonKind::Ghost => button.fill(Color32::TRANSPARENT),
+    };
+
+    let response = ui.add_enabled(enabled, button);
+    match tooltip {
+        Some(text) if enabled => response.on_hover_text(text),
+        Some(text) => response.on_disabled_hover_text(text),
+        None => response,
+    }
+}
+
+fn render_panel_header(ui: &mut egui::Ui, title: &str, summary: &str) {
+    ui.horizontal_wrapped(|ui| {
+        ui.heading(title);
+        if !summary.is_empty() {
+            ui.label(
+                RichText::new(summary)
+                    .size(design_tokens::FONT_SIZE_SM)
+                    .color(design_tokens::text_muted(ui.visuals().dark_mode)),
+            );
+        }
+    });
+    ui.separator();
+}
+
+fn render_empty_state(ui: &mut egui::Ui, title: &str, description: &str) {
+    egui::Frame::group(ui.style())
+        .fill(design_tokens::surface_alt(ui.visuals().dark_mode))
+        .show(ui, |ui| {
+            ui.label(RichText::new(title).strong());
+            ui.label(
+                RichText::new(description).color(design_tokens::text_muted(ui.visuals().dark_mode)),
+            );
+        });
+}
+
+fn render_loading_state(ui: &mut egui::Ui, message: &str) {
+    ui.horizontal(|ui| {
+        ui.spinner();
+        ui.label(message);
+    });
+}
+
+fn render_error_state(ui: &mut egui::Ui, title: &str, detail: &str) {
+    egui::Frame::group(ui.style())
+        .fill(design_tokens::danger_soft(ui.visuals().dark_mode))
+        .show(ui, |ui| {
+            ui.colored_label(design_tokens::danger(ui.visuals().dark_mode), title);
+            ui.label(detail);
+        });
+}
+
+fn repo_display_name(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(path)
+        .to_string()
+}
+
+fn truncate_middle(value: &str, max_chars: usize) -> String {
+    let total = value.chars().count();
+    if total <= max_chars || max_chars <= 6 {
+        return value.to_string();
+    }
+    let side = (max_chars - 3) / 2;
+    let start = value.chars().take(side).collect::<String>();
+    let end_len = max_chars - 3 - side;
+    let end = value
+        .chars()
+        .rev()
+        .take(end_len)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    format!("{start}...{end}")
+}
+
+fn branch_badge_label(snapshot: &StoreSnapshot) -> Option<String> {
+    let repo = snapshot.repo.as_ref()?;
+    match repo.head.as_deref() {
+        Some(head) => Some(head.to_string()),
+        None => {
+            let oid = snapshot
+                .selection
+                .selected_commit_oid
+                .as_deref()
+                .or_else(|| {
+                    snapshot
+                        .history
+                        .commits
+                        .first()
+                        .map(|commit| commit.oid.as_str())
+                });
+            Some(match oid {
+                Some(oid) => format!("detached: {}", short_oid(oid)),
+                None => "detached HEAD".to_string(),
+            })
+        }
+    }
+}
+
+fn dirty_summary(snapshot: &StoreSnapshot) -> String {
+    if snapshot
+        .repo
+        .as_ref()
+        .and_then(|repo| repo.conflict_state.as_ref())
+        .is_some()
+    {
+        return "conflicts".to_string();
+    }
+    let staged = snapshot.status.staged.len();
+    let unstaged = snapshot.status.unstaged.len();
+    let untracked = snapshot.status.untracked.len();
+    if staged == 0 && unstaged == 0 && untracked == 0 {
+        return "Clean".to_string();
+    }
+    let mut parts = Vec::new();
+    if staged > 0 {
+        parts.push(format!("{staged} staged"));
+    }
+    if unstaged > 0 {
+        parts.push(format!("{unstaged} unstaged"));
+    }
+    if untracked > 0 {
+        parts.push(format!("{untracked} untracked"));
+    }
+    parts.join(" | ")
+}
+
+fn stageable_paths(snapshot: &StoreSnapshot) -> Vec<String> {
+    snapshot
+        .status
+        .unstaged
+        .iter()
+        .chain(snapshot.status.untracked.iter())
+        .cloned()
+        .collect()
+}
+
+fn selected_file_group(snapshot: &StoreSnapshot, file: &str) -> Option<StatusFileGroup> {
+    if snapshot.status.staged.iter().any(|path| path == file) {
+        Some(StatusFileGroup::Staged)
+    } else if snapshot.status.unstaged.iter().any(|path| path == file) {
+        Some(StatusFileGroup::Unstaged)
+    } else if snapshot.status.untracked.iter().any(|path| path == file) {
+        Some(StatusFileGroup::Untracked)
+    } else {
+        None
+    }
+}
+
+fn commit_disabled_reason(
+    snapshot: &StoreSnapshot,
+    commit_summary: &str,
+    busy: bool,
+) -> Option<&'static str> {
+    if busy {
+        Some("Repository operation is running")
+    } else if snapshot.status.staged.is_empty() {
+        Some("No staged changes")
+    } else if commit_summary.trim().is_empty() {
+        Some("Commit message is empty")
+    } else {
+        None
+    }
+}
+
+fn commit_button_label(staged_count: usize) -> String {
+    match staged_count {
+        1 => "Commit 1 file".to_string(),
+        count => format!("Commit {count} files"),
+    }
+}
+
+fn diff_header_summary(snapshot: &StoreSnapshot) -> String {
+    match snapshot.diff.source.as_ref() {
+        Some(DiffSource::Worktree { paths }) | Some(DiffSource::Index { paths }) => paths
+            .first()
+            .cloned()
+            .or_else(|| snapshot.diff.descriptor.as_ref()?.file_path.clone())
+            .unwrap_or_else(|| "Selected file".to_string()),
+        Some(DiffSource::Commit { oid }) => snapshot
+            .commit_cache
+            .get(oid)
+            .map(|details| format!("{} - {}", short_oid(oid), first_line(&details.message)))
+            .unwrap_or_else(|| format!("Commit {}", short_oid(oid))),
+        Some(DiffSource::Compare { base, head }) => format!("{base}..{head}"),
+        None => "No diff selected".to_string(),
+    }
+}
+
+fn first_line(value: &str) -> &str {
+    value.lines().next().unwrap_or(value)
+}
+
+fn bool_word(value: bool) -> &'static str {
+    if value { "available" } else { "not available" }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BottomStatusMessage {
     text: String,
@@ -2786,11 +3858,13 @@ fn bottom_status_message(
 ) -> BottomStatusMessage {
     if state.busy {
         return BottomStatusMessage {
-            text: state
-                .current_operation
-                .as_deref()
-                .unwrap_or("Operation running")
-                .to_string(),
+            text: format!(
+                "Running: {}",
+                state
+                    .current_operation
+                    .as_deref()
+                    .unwrap_or("repository operation")
+            ),
             is_error: false,
         };
     }
@@ -2827,7 +3901,7 @@ fn bottom_repo_context_label(snapshot: &StoreSnapshot) -> String {
     match snapshot.repo.as_ref() {
         Some(repo) => {
             let branch = repo.head.as_deref().unwrap_or("detached HEAD");
-            format!("Repo {} @ {branch}", repo.root)
+            format!("Repo: {} | Branch: {branch}", repo_display_name(&repo.root))
         }
         None => "Repo <not opened>".to_string(),
     }
@@ -2848,6 +3922,10 @@ fn render_panel_notice(ui: &mut egui::Ui, panel: PanelId) {
             ui.colored_label(Color32::from_rgb(125, 211, 252), "Developer");
             ui.weak("Runtime context, action availability, plugin health, and state diagnostics.");
         }
+        PanelStatus::DeveloperPreview => {
+            ui.colored_label(Color32::from_rgb(251, 191, 36), "Preview");
+            ui.weak("This developer-mode panel is a recovery and safety preview.");
+        }
     }
 }
 
@@ -2859,9 +3937,7 @@ fn preview_panel_copy(panel: PanelId) -> &'static str {
         PanelId::Compare => {
             "Ref comparison and diff preview are available; production compare workflow is still incomplete."
         }
-        PanelId::Remotes => {
-            "Remote and auth utilities are available; production credential UX is still under review."
-        }
+        PanelId::PullRequests => "Provider integration is not complete yet.",
         _ => "This panel is available as a preview and may not cover the full workflow yet.",
     }
 }
@@ -2881,7 +3957,6 @@ fn advanced_panel_copy(panel: PanelId) -> &'static str {
         PanelId::Conflicts => {
             "Conflict workflows are an advanced safety surface, not the full resolver."
         }
-        PanelId::Journal => "Operation history and recovery views are developer-oriented previews.",
         _ => "This panel is hidden until Advanced mode is enabled.",
     }
 }
@@ -3016,16 +4091,6 @@ fn format_diff_source(source: &DiffSource) -> String {
     }
 }
 
-fn current_branch_name(snapshot: &StoreSnapshot) -> Option<String> {
-    snapshot
-        .branches
-        .branches
-        .iter()
-        .find(|branch| branch.is_current)
-        .map(|branch| branch.name.clone())
-        .or_else(|| snapshot.repo.as_ref().and_then(|repo| repo.head.clone()))
-}
-
 fn status_is_dirty(snapshot: &StoreSnapshot) -> bool {
     !snapshot.status.staged.is_empty()
         || !snapshot.status.unstaged.is_empty()
@@ -3099,31 +4164,6 @@ fn build_visible_graph(snapshot: &StoreSnapshot) -> Vec<GraphCommit> {
     build_graph(&inputs, &refs)
 }
 
-fn graph_lane_text(commit: &GraphCommit) -> String {
-    let max_lane = commit
-        .edges
-        .iter()
-        .fold(commit.lane, |max_lane, edge| {
-            max_lane.max(edge.from_lane).max(edge.to_lane)
-        })
-        .min(5);
-    let mut cells = Vec::new();
-    for lane in 0..=max_lane {
-        if lane == commit.lane {
-            cells.push("o");
-        } else if commit
-            .edges
-            .iter()
-            .any(|edge| edge.from_lane == lane || edge.to_lane == lane)
-        {
-            cells.push("|");
-        } else {
-            cells.push(" ");
-        }
-    }
-    cells.join(" ")
-}
-
 fn ref_label_text(label: &GraphRefLabel) -> RichText {
     let color = match label.kind {
         GraphRefKind::Head | GraphRefKind::LocalBranch => Color32::from_rgb(125, 211, 252),
@@ -3176,8 +4216,8 @@ fn render_hunk_lines(
                             &mut selected_changed_lines,
                         );
                     } else {
-                        ui.label(diff_line_text(line));
-                        ui.label(diff_line_text(line));
+                        ui.label(diff_line_text(line, ui.visuals().dark_mode));
+                        ui.label(diff_line_text(line, ui.visuals().dark_mode));
                     }
                     ui.end_row();
                 }
@@ -3209,17 +4249,17 @@ fn render_selectable_diff_line(
     selected_changed_lines: &mut Option<&mut Vec<usize>>,
 ) {
     let Some(changed_index) = changed_index else {
-        ui.label(diff_line_text(line));
+        ui.label(diff_line_text(line, ui.visuals().dark_mode));
         return;
     };
     let Some(selected_lines) = selected_changed_lines.as_mut() else {
-        ui.label(diff_line_text(line));
+        ui.label(diff_line_text(line, ui.visuals().dark_mode));
         return;
     };
     let selected_lines = &mut **selected_lines;
     let selected = selected_lines.contains(&changed_index);
     if ui
-        .selectable_label(selected, diff_line_text(line))
+        .selectable_label(selected, diff_line_text(line, ui.visuals().dark_mode))
         .on_hover_text(format!("changed line index {changed_index}"))
         .clicked()
     {
@@ -3243,23 +4283,38 @@ fn render_diff_text(ui: &mut egui::Ui, content: &str) {
             ui.weak("<diff truncated in view>");
             break;
         }
-        ui.label(diff_line_text(line));
+        ui.label(diff_line_text(line, ui.visuals().dark_mode));
     }
 }
 
-fn diff_line_text(line: &str) -> RichText {
-    let color = if is_conflict_marker_line(line) {
-        Color32::from_rgb(251, 191, 36)
+fn diff_line_text(line: &str, dark: bool) -> RichText {
+    let (color, background) = if is_conflict_marker_line(line) {
+        (
+            design_tokens::warning(dark),
+            design_tokens::surface_alt(dark),
+        )
     } else if line.starts_with('+') {
-        Color32::from_rgb(74, 222, 128)
+        (
+            design_tokens::success(dark),
+            Color32::from_rgba_unmultiplied(31, 157, 85, 38),
+        )
     } else if line.starts_with('-') {
-        Color32::from_rgb(248, 113, 113)
+        (
+            design_tokens::danger(dark),
+            Color32::from_rgba_unmultiplied(214, 69, 69, 42),
+        )
     } else if line.starts_with("@@") {
-        Color32::from_rgb(125, 211, 252)
+        (
+            design_tokens::accent(dark),
+            design_tokens::accent_soft(dark),
+        )
     } else {
-        Color32::from_rgb(209, 213, 219)
+        (design_tokens::text(dark), design_tokens::surface(dark))
     };
-    RichText::new(line.to_string()).monospace().color(color)
+    RichText::new(line.to_string())
+        .monospace()
+        .color(color)
+        .background_color(background)
 }
 
 fn count_conflict_markers(content: &str) -> usize {
@@ -3496,17 +4551,21 @@ unchanged
         assert!(!message.is_error);
         assert_eq!(
             bottom_repo_context_label(&state.snapshot),
-            "Repo /tmp/branchforge-demo @ main"
+            "Repo: branchforge-demo | Branch: main"
         );
     }
 
     #[test]
     fn advanced_mode_controls_sidebar_visibility() {
-        assert!(PanelId::Status.is_visible(false));
-        assert!(PanelId::Remotes.is_visible(false));
-        assert!(!PanelId::Workspaces.is_visible(false));
-        assert!(PanelId::Workspaces.is_visible(true));
-        assert!(PanelId::Diagnostics.is_visible(false));
+        assert!(PanelId::Status.is_visible(false, false));
+        assert!(PanelId::Remotes.is_visible(false, false));
+        assert!(!PanelId::Workspaces.is_visible(false, false));
+        assert!(PanelId::Workspaces.is_visible(true, false));
+        assert!(PanelId::Workspaces.is_visible(false, true));
+        assert!(!PanelId::Diagnostics.is_visible(true, false));
+        assert!(PanelId::Diagnostics.is_visible(false, true));
+        assert!(!PanelId::Journal.is_visible(true, false));
+        assert!(PanelId::Journal.is_visible(false, true));
         assert_eq!(PanelId::History.label(), "History");
     }
 
