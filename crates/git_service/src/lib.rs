@@ -206,6 +206,8 @@ pub struct CommitDetails {
     pub author: String,
     pub time: String,
     pub message: String,
+    pub parents: Vec<String>,
+    pub refs: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -955,11 +957,11 @@ pub fn file_blame(
 }
 
 pub fn commit_details(cwd: &Path, oid: &str) -> Result<CommitDetails, GitServiceError> {
-    let format = "--format=%H%x1f%an%x1f%ad%x1f%B";
+    let format = "--format=%H%x1f%an%x1f%ad%x1f%P%x1f%D%x1f%B";
     let args = ["show", "--quiet", "--date=iso-strict", format, oid];
     let out = run_git(cwd, &args)?;
     let text = String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)?;
-    let mut parts = text.splitn(4, '\x1f');
+    let mut parts = text.splitn(6, '\x1f');
     let oid = parts
         .next()
         .ok_or_else(|| GitServiceError::ParseError("missing oid".to_string()))?
@@ -975,6 +977,20 @@ pub fn commit_details(cwd: &Path, oid: &str) -> Result<CommitDetails, GitService
         .ok_or_else(|| GitServiceError::ParseError("missing time".to_string()))?
         .trim()
         .to_string();
+    let parents = parts
+        .next()
+        .ok_or_else(|| GitServiceError::ParseError("missing parents".to_string()))?
+        .split_whitespace()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let refs = parts
+        .next()
+        .ok_or_else(|| GitServiceError::ParseError("missing refs".to_string()))?
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
     let message = parts
         .next()
         .ok_or_else(|| GitServiceError::ParseError("missing message".to_string()))?
@@ -986,6 +1002,8 @@ pub fn commit_details(cwd: &Path, oid: &str) -> Result<CommitDetails, GitService
         author,
         time,
         message,
+        parents,
+        refs,
     })
 }
 
@@ -2546,6 +2564,17 @@ pub fn rebase_branch_onto(cwd: &Path, branch: &str, new_base: &str) -> Result<()
 pub fn create_branch(cwd: &Path, name: &str) -> Result<(), GitServiceError> {
     let _ = run_git(cwd, &["branch", name])?;
     Ok(())
+}
+
+pub fn branch_name_is_valid(cwd: &Path, name: &str) -> Result<bool, GitServiceError> {
+    if name.trim().is_empty() {
+        return Ok(false);
+    }
+    match run_git(cwd, &["check-ref-format", "--branch", name]) {
+        Ok(_) => Ok(true),
+        Err(GitServiceError::GitError { exit_code: 1, .. }) => Ok(false),
+        Err(err) => Err(err),
+    }
 }
 
 pub fn rename_branch(cwd: &Path, old: &str, new: &str) -> Result<(), GitServiceError> {

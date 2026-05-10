@@ -35,6 +35,8 @@ pub struct CommitDetails {
     pub author: String,
     pub time: String,
     pub message: String,
+    pub parents: Vec<String>,
+    pub refs: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,10 +89,17 @@ pub struct DiffLoadRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DiffDescriptor {
+    pub repo_id: Option<String>,
+    pub source_type: String,
+    pub file_path: Option<String>,
+    pub commit_oid: Option<String>,
+    pub status: String,
     pub total_bytes: usize,
+    pub total_lines: usize,
     pub chunk_size: usize,
     pub loaded_chunks: usize,
     pub truncated: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -836,7 +845,17 @@ impl StateStore {
         filter_text: Option<String>,
     ) {
         if append {
-            self.snapshot.history.commits.extend(commits);
+            for commit in commits {
+                if !self
+                    .snapshot
+                    .history
+                    .commits
+                    .iter()
+                    .any(|existing| existing.oid == commit.oid)
+                {
+                    self.snapshot.history.commits.push(commit);
+                }
+            }
         } else {
             self.snapshot.history.commits = commits;
         }
@@ -1072,7 +1091,13 @@ impl StateStore {
         self.bump_version();
     }
 
-    pub fn update_diff(&mut self, diff: DiffState) {
+    pub fn update_diff(&mut self, mut diff: DiffState) {
+        if let Some(descriptor) = diff.descriptor.as_mut()
+            && descriptor.repo_id.is_none()
+            && let Some(repo) = self.snapshot.repo.as_ref()
+        {
+            descriptor.repo_id = Some(repo.root.clone());
+        }
         self.snapshot.diff = diff;
         self.bump_version();
     }
@@ -1728,6 +1753,8 @@ mod tests {
                 author: "Dev".to_string(),
                 time: "now".to_string(),
                 message: format!("msg-{idx}"),
+                parents: Vec::new(),
+                refs: Vec::new(),
             });
         }
         assert!(store.snapshot().commit_cache.len() <= COMMIT_CACHE_LIMIT);
