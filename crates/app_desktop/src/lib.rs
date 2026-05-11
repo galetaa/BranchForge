@@ -1,7 +1,8 @@
 pub mod runtime_adapter;
 pub mod ui_state;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 use app_host::HostActionCatalogItem;
@@ -881,6 +882,15 @@ impl BranchForgeDesktopApp {
                                     .map(format_diff_source)
                                     .unwrap_or_else(|| "No diff selected".to_string()),
                             );
+                            if let Some(hunk_index) = self.ui_state.diff_view_state.selected_hunk {
+                                ui.label(format!("Selected hunk: {}", hunk_index + 1));
+                            } else {
+                                ui.weak("No hunk selected");
+                            }
+                            ui.label(format!(
+                                "Selected lines: {}",
+                                self.ui_state.diff_view_state.selected_changed_lines.len()
+                            ));
                             ui.label(format!("Chunks: {}", state.snapshot.diff.chunks.len()));
                             ui.label(format!("Hunks: {}", state.snapshot.diff.hunks.len()));
                             if state.snapshot.diff.loading {
@@ -1225,6 +1235,22 @@ impl BranchForgeDesktopApp {
                 "Preview discard file".to_string(),
                 format!("Discard changes in {file}?"),
             );
+        }
+        if action_button(
+            ui,
+            "Reveal",
+            ActionButtonKind::Ghost,
+            snapshot.repo.is_some(),
+            Some("Reveal this file in the system file manager"),
+        )
+        .clicked()
+            && let Some(repo) = snapshot.repo.as_ref()
+            && let Err(error) = reveal_repo_path(&repo.root, &file)
+        {
+            self.ui_error = Some(error);
+        }
+        if action_button(ui, "Copy path", ActionButtonKind::Ghost, true, None).clicked() {
+            ui.ctx().copy_text(file);
         }
     }
 
@@ -1625,9 +1651,14 @@ impl BranchForgeDesktopApp {
             if let Some(hunk) = selected {
                 match snapshot.diff.source.as_ref() {
                     Some(DiffSource::Worktree { .. }) => {
-                        if ui
-                            .add_enabled(!busy, egui::Button::new("Stage hunk"))
-                            .clicked()
+                        if action_button(
+                            ui,
+                            "Stage hunk",
+                            ActionButtonKind::Secondary,
+                            !busy,
+                            Some("Open a worktree diff and select a hunk first"),
+                        )
+                        .clicked()
                         {
                             self.execute_action_direct(
                                 "index.stage_hunk",
@@ -1635,21 +1666,28 @@ impl BranchForgeDesktopApp {
                                 false,
                             );
                         }
-                        if ui
-                            .add_enabled(
-                                !busy && !selected_lines.is_empty(),
-                                egui::Button::new("Stage selected lines"),
-                            )
-                            .clicked()
+                        if action_button(
+                            ui,
+                            "Stage selected lines",
+                            ActionButtonKind::Secondary,
+                            !busy && !selected_lines.is_empty(),
+                            Some("Select changed lines inside the current hunk"),
+                        )
+                        .clicked()
                         {
                             let mut args =
                                 vec![hunk.file_path.clone(), hunk.hunk_index.to_string()];
                             args.extend(selected_lines.iter().map(usize::to_string));
                             self.execute_action_direct("index.stage_lines", args, false);
                         }
-                        if ui
-                            .add_enabled(!busy, egui::Button::new("Discard hunk"))
-                            .clicked()
+                        if action_button(
+                            ui,
+                            "Discard hunk",
+                            ActionButtonKind::Danger,
+                            !busy,
+                            Some("Discarding a hunk writes to the worktree and requires confirmation"),
+                        )
+                        .clicked()
                         {
                             self.preview_or_confirm(
                                 "file.discard_hunk",
@@ -1658,12 +1696,14 @@ impl BranchForgeDesktopApp {
                                 "Discarding a hunk writes to the worktree.".to_string(),
                             );
                         }
-                        if ui
-                            .add_enabled(
-                                !busy && !selected_lines.is_empty(),
-                                egui::Button::new("Discard selected lines"),
-                            )
-                            .clicked()
+                        if action_button(
+                            ui,
+                            "Discard selected lines",
+                            ActionButtonKind::Danger,
+                            !busy && !selected_lines.is_empty(),
+                            Some("Select changed lines before discarding selected lines"),
+                        )
+                        .clicked()
                         {
                             let mut args =
                                 vec![hunk.file_path.clone(), hunk.hunk_index.to_string()];
@@ -1677,9 +1717,14 @@ impl BranchForgeDesktopApp {
                         }
                     }
                     Some(DiffSource::Index { .. }) => {
-                        if ui
-                            .add_enabled(!busy, egui::Button::new("Unstage hunk"))
-                            .clicked()
+                        if action_button(
+                            ui,
+                            "Unstage hunk",
+                            ActionButtonKind::Secondary,
+                            !busy,
+                            Some("Open an index diff and select a hunk first"),
+                        )
+                        .clicked()
                         {
                             self.execute_action_direct(
                                 "index.unstage_hunk",
@@ -1687,12 +1732,14 @@ impl BranchForgeDesktopApp {
                                 false,
                             );
                         }
-                        if ui
-                            .add_enabled(
-                                !busy && !selected_lines.is_empty(),
-                                egui::Button::new("Unstage selected lines"),
-                            )
-                            .clicked()
+                        if action_button(
+                            ui,
+                            "Unstage selected lines",
+                            ActionButtonKind::Secondary,
+                            !busy && !selected_lines.is_empty(),
+                            Some("Select changed lines inside the current hunk"),
+                        )
+                        .clicked()
                         {
                             let mut args =
                                 vec![hunk.file_path.clone(), hunk.hunk_index.to_string()];
@@ -1705,7 +1752,34 @@ impl BranchForgeDesktopApp {
                     }
                 }
             } else {
-                ui.weak("Select a hunk");
+                let source = snapshot.diff.source.as_ref();
+                let worktree = matches!(source, Some(DiffSource::Worktree { .. }));
+                let index = matches!(source, Some(DiffSource::Index { .. }));
+                action_button(
+                    ui,
+                    "Stage hunk",
+                    ActionButtonKind::Secondary,
+                    false,
+                    Some("Open a worktree diff and select a hunk first"),
+                );
+                action_button(
+                    ui,
+                    "Unstage hunk",
+                    ActionButtonKind::Secondary,
+                    false,
+                    Some("Open an index diff and select a hunk first"),
+                );
+                action_button(
+                    ui,
+                    "Discard hunk",
+                    ActionButtonKind::Danger,
+                    false,
+                    Some(if worktree || index {
+                        "Select a hunk first"
+                    } else {
+                        "Open a mutable worktree diff first"
+                    }),
+                );
             }
         });
     }
@@ -3821,6 +3895,36 @@ fn repo_display_name(path: &str) -> String {
         .filter(|name| !name.is_empty())
         .unwrap_or(path)
         .to_string()
+}
+
+fn reveal_repo_path(repo_root: &str, file: &str) -> Result<(), String> {
+    let full_path = PathBuf::from(repo_root).join(file);
+    #[cfg(target_os = "macos")]
+    let status = Command::new("open")
+        .arg("-R")
+        .arg(&full_path)
+        .status()
+        .map_err(|error| format!("Could not reveal file: {error}"))?;
+
+    #[cfg(target_os = "windows")]
+    let status = Command::new("explorer")
+        .arg(format!("/select,{}", full_path.display()))
+        .status()
+        .map_err(|error| format!("Could not reveal file: {error}"))?;
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    let status = Command::new("xdg-open")
+        .arg(full_path.parent().unwrap_or_else(|| Path::new(repo_root)))
+        .status()
+        .map_err(|error| format!("Could not reveal file: {error}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Could not reveal file: file manager exited with {status}"
+        ))
+    }
 }
 
 fn truncate_middle(value: &str, max_chars: usize) -> String {
