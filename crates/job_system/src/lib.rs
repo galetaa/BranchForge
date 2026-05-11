@@ -1565,6 +1565,7 @@ pub fn execute_job_op(
                 }
             })?;
             ensure_valid_branch_name(cwd, name, "branch.create")?;
+            ensure_branch_does_not_exist(cwd, name, "branch.create")?;
             git_service::create_branch(cwd, name)?;
             refresh_refs(cwd, store)?;
             Ok(JobExecutionResult {
@@ -1581,6 +1582,7 @@ pub fn execute_job_op(
                 }
             })?;
             ensure_valid_branch_name(cwd, name, "branch.create_checkout")?;
+            ensure_branch_does_not_exist(cwd, name, "branch.create_checkout")?;
             let clean = git_service::worktree_is_clean(cwd)?;
             if !clean {
                 return Err(JobExecutionError::InvalidInput {
@@ -1610,8 +1612,13 @@ pub fn execute_job_op(
                 }
             })?;
             ensure_valid_branch_name(cwd, new, "branch.rename")?;
+            if old != new {
+                ensure_branch_does_not_exist(cwd, new, "branch.rename")?;
+            }
             git_service::rename_branch(cwd, old, new)?;
+            refresh_repo_and_status(cwd, store)?;
             refresh_refs(cwd, store)?;
+            store.update_selected_branch(Some(new.to_string()));
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -1636,6 +1643,9 @@ pub fn execute_job_op(
             }
             git_service::delete_branch(cwd, name)?;
             refresh_refs(cwd, store)?;
+            if store.snapshot().selection.selected_branch.as_deref() == Some(name) {
+                store.update_selected_branch(None);
+            }
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -2347,6 +2357,18 @@ fn ensure_valid_branch_name(cwd: &Path, name: &str, op: &str) -> Result<(), JobE
             message: format!("{op} received an invalid branch name: {name}"),
         })
     }
+}
+
+fn ensure_branch_does_not_exist(cwd: &Path, name: &str, op: &str) -> Result<(), JobExecutionError> {
+    if git_service::list_local_branches(cwd)?
+        .into_iter()
+        .any(|branch| branch.name == name)
+    {
+        return Err(JobExecutionError::InvalidInput {
+            message: format!("{op} cannot use existing branch: {name}"),
+        });
+    }
+    Ok(())
 }
 
 fn split_diff_chunks(text: &str, chunk_size: usize) -> Vec<DiffChunk> {
@@ -3524,6 +3546,82 @@ mod tests {
         assert_eq!(
             store.snapshot().active_view.as_deref(),
             Some("status.panel")
+        );
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn branch_create_rejects_duplicate_and_rename_current_refreshes_repo() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+        assert!(std::fs::write(repo_dir.join("README.md"), "hello\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["README.md".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "base").is_ok());
+
+        let current = git_service::repo_open(&repo_dir)
+            .expect("repo")
+            .head
+            .expect("head");
+        let mut store = StateStore::new();
+        let duplicate = execute_job_op(
+            &repo_dir,
+            &JobRequest {
+                op: "branch.create".to_string(),
+                lock: JobLock::RefsWrite,
+                paths: vec![current.clone()],
+                job_id: None,
+            },
+            &mut store,
+        );
+        assert!(matches!(
+            duplicate,
+            Err(JobExecutionError::InvalidInput { message })
+                if message.contains("existing branch")
+        ));
+
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "repo.open".to_string(),
+                    lock: JobLock::Read,
+                    paths: Vec::new(),
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "branch.rename".to_string(),
+                    lock: JobLock::RefsWrite,
+                    paths: vec![current, "daily-driver-renamed".to_string()],
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            store
+                .snapshot()
+                .repo
+                .as_ref()
+                .and_then(|repo| repo.head.as_deref()),
+            Some("daily-driver-renamed")
+        );
+        assert_eq!(
+            store.snapshot().selection.selected_branch.as_deref(),
+            Some("daily-driver-renamed")
         );
 
         let _ = std::fs::remove_dir_all(&repo_dir);

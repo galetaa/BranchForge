@@ -612,8 +612,9 @@ impl BranchForgeDesktopApp {
                                 ui,
                                 "Push",
                                 ActionButtonKind::Secondary,
-                                has_repo && !state.busy,
-                                Some("Push current branch"),
+                                remote_push_disabled_reason(&state.snapshot, state.busy).is_none(),
+                                remote_push_disabled_reason(&state.snapshot, state.busy)
+                                    .or(Some("Push current branch")),
                             )
                             .clicked()
                             {
@@ -628,8 +629,9 @@ impl BranchForgeDesktopApp {
                                 ui,
                                 "Pull",
                                 ActionButtonKind::Secondary,
-                                has_repo && !state.busy,
-                                Some("Pull current branch"),
+                                remote_pull_disabled_reason(&state.snapshot, state.busy).is_none(),
+                                remote_pull_disabled_reason(&state.snapshot, state.busy)
+                                    .or(Some("Pull current branch")),
                             )
                             .clicked()
                             {
@@ -644,8 +646,9 @@ impl BranchForgeDesktopApp {
                                 ui,
                                 "Fetch",
                                 ActionButtonKind::Secondary,
-                                has_repo && !state.busy,
-                                Some("Fetch all remotes"),
+                                remote_fetch_disabled_reason(&state.snapshot, state.busy).is_none(),
+                                remote_fetch_disabled_reason(&state.snapshot, state.busy)
+                                    .or(Some("Fetch all remotes")),
                             )
                             .clicked()
                             {
@@ -1360,15 +1363,13 @@ impl BranchForgeDesktopApp {
         }
 
         let rename_target = self.branch_name_input.trim();
+        let rename_reason = branch_rename_disabled_reason(snapshot, branch, rename_target, busy);
         if action_button(
             ui,
             "Rename",
             ActionButtonKind::Secondary,
-            !busy
-                && !selected_is_current
-                && branch_name_input_is_valid(rename_target)
-                && rename_target != branch,
-            Some("Enter a valid new branch name in the branch input"),
+            rename_reason.is_none(),
+            rename_reason,
         )
         .clicked()
         {
@@ -1843,13 +1844,14 @@ impl BranchForgeDesktopApp {
                     .desired_width(220.0)
                     .hint_text("New branch name"),
             );
-            let branch_name_valid = branch_name_input_is_valid(self.branch_name_input.trim());
+            let create_reason =
+                branch_create_disabled_reason(snapshot, &self.branch_name_input, state.busy);
             if action_button(
                 ui,
                 "Create",
                 ActionButtonKind::Primary,
-                branch_name_valid && !state.busy,
-                Some("Enter a valid Git branch name"),
+                create_reason.is_none(),
+                create_reason,
             )
             .clicked()
             {
@@ -1863,8 +1865,8 @@ impl BranchForgeDesktopApp {
                 ui,
                 "Create & Checkout",
                 ActionButtonKind::Secondary,
-                branch_name_valid && !state.busy,
-                Some("Create a branch and switch to it"),
+                create_reason.is_none(),
+                create_reason.or(Some("Create a branch and switch to it")),
             )
             .clicked()
             {
@@ -1885,10 +1887,12 @@ impl BranchForgeDesktopApp {
                     );
                 }
             }
-            if !self.branch_name_input.trim().is_empty() && !branch_name_valid {
+            if let Some(reason) = create_reason
+                && !self.branch_name_input.trim().is_empty()
+            {
                 ui.colored_label(
                     design_tokens::warning(ui.visuals().dark_mode),
-                    "Invalid branch name",
+                    reason,
                 );
             }
         });
@@ -2085,11 +2089,28 @@ impl BranchForgeDesktopApp {
             {
                 self.execute_action_direct("remote.refresh", Vec::new(), false);
             }
-            if action_button(ui, "Fetch", ActionButtonKind::Secondary, !state.busy, None).clicked()
+            let fetch_reason = remote_fetch_disabled_reason(snapshot, state.busy);
+            if action_button(
+                ui,
+                "Fetch",
+                ActionButtonKind::Secondary,
+                fetch_reason.is_none(),
+                fetch_reason,
+            )
+            .clicked()
             {
                 self.execute_action_direct("remote.fetch_all", Vec::new(), false);
             }
-            if action_button(ui, "Pull", ActionButtonKind::Secondary, !state.busy, None).clicked() {
+            let pull_reason = remote_pull_disabled_reason(snapshot, state.busy);
+            if action_button(
+                ui,
+                "Pull",
+                ActionButtonKind::Secondary,
+                pull_reason.is_none(),
+                pull_reason,
+            )
+            .clicked()
+            {
                 self.preview_or_confirm(
                     "remote.pull",
                     Vec::new(),
@@ -2097,7 +2118,16 @@ impl BranchForgeDesktopApp {
                     "Pull current branch from upstream?".to_string(),
                 );
             }
-            if action_button(ui, "Push", ActionButtonKind::Secondary, !state.busy, None).clicked() {
+            let push_reason = remote_push_disabled_reason(snapshot, state.busy);
+            if action_button(
+                ui,
+                "Push",
+                ActionButtonKind::Secondary,
+                push_reason.is_none(),
+                push_reason,
+            )
+            .clicked()
+            {
                 self.preview_or_confirm(
                     "remote.push",
                     Vec::new(),
@@ -2159,8 +2189,15 @@ impl BranchForgeDesktopApp {
                     remote.push_url.as_deref().unwrap_or("<none>")
                 ));
                 ui.horizontal_wrapped(|ui| {
-                    if action_button(ui, "Fetch", ActionButtonKind::Secondary, !state.busy, None)
-                        .clicked()
+                    let fetch_reason = remote_fetch_disabled_reason(snapshot, state.busy);
+                    if action_button(
+                        ui,
+                        "Fetch",
+                        ActionButtonKind::Secondary,
+                        fetch_reason.is_none(),
+                        fetch_reason,
+                    )
+                    .clicked()
                     {
                         self.execute_action_direct(
                             "remote.fetch",
@@ -2168,8 +2205,15 @@ impl BranchForgeDesktopApp {
                             false,
                         );
                     }
-                    if action_button(ui, "Pull", ActionButtonKind::Secondary, !state.busy, None)
-                        .clicked()
+                    let pull_reason = remote_pull_disabled_reason(snapshot, state.busy);
+                    if action_button(
+                        ui,
+                        "Pull",
+                        ActionButtonKind::Secondary,
+                        pull_reason.is_none(),
+                        pull_reason,
+                    )
+                    .clicked()
                     {
                         self.preview_or_confirm(
                             "remote.pull",
@@ -2178,8 +2222,15 @@ impl BranchForgeDesktopApp {
                             "Pull current branch from upstream?".to_string(),
                         );
                     }
-                    if action_button(ui, "Push", ActionButtonKind::Secondary, !state.busy, None)
-                        .clicked()
+                    let push_reason = remote_push_disabled_reason(snapshot, state.busy);
+                    if action_button(
+                        ui,
+                        "Push",
+                        ActionButtonKind::Secondary,
+                        push_reason.is_none(),
+                        push_reason,
+                    )
+                    .clicked()
                     {
                         self.preview_or_confirm(
                             "remote.push",
@@ -2239,6 +2290,9 @@ impl BranchForgeDesktopApp {
                 upstream.ahead,
                 upstream.behind
             ));
+        }
+        if let Some(message) = snapshot.remotes.last_sync_message.as_deref() {
+            ui.weak(format!("Last sync: {message}"));
         }
 
         ui.separator();
@@ -4580,6 +4634,99 @@ fn branch_name_input_is_valid(name: &str) -> bool {
             .any(|part| part.is_empty() || part.ends_with('.'))
 }
 
+fn branch_exists(snapshot: &StoreSnapshot, name: &str) -> bool {
+    snapshot
+        .branches
+        .branches
+        .iter()
+        .any(|branch| branch.name == name)
+}
+
+fn branch_create_disabled_reason(
+    snapshot: &StoreSnapshot,
+    branch_name: &str,
+    busy: bool,
+) -> Option<&'static str> {
+    let name = branch_name.trim();
+    if busy {
+        Some("Repository operation is running")
+    } else if name.is_empty() {
+        Some("Enter a branch name")
+    } else if !branch_name_input_is_valid(name) {
+        Some("Enter a valid Git branch name")
+    } else if branch_exists(snapshot, name) {
+        Some("Branch already exists")
+    } else {
+        None
+    }
+}
+
+fn branch_rename_disabled_reason(
+    snapshot: &StoreSnapshot,
+    current_name: &str,
+    new_name: &str,
+    busy: bool,
+) -> Option<&'static str> {
+    let name = new_name.trim();
+    if busy {
+        Some("Repository operation is running")
+    } else if name.is_empty() {
+        Some("Enter a new branch name")
+    } else if name == current_name {
+        Some("New branch name matches current name")
+    } else if !branch_name_input_is_valid(name) {
+        Some("Enter a valid Git branch name")
+    } else if branch_exists(snapshot, name) {
+        Some("Branch already exists")
+    } else {
+        None
+    }
+}
+
+fn remote_fetch_disabled_reason(snapshot: &StoreSnapshot, busy: bool) -> Option<&'static str> {
+    if busy {
+        Some("Repository operation is running")
+    } else if snapshot.repo.is_none() {
+        Some("Open a repository first")
+    } else if snapshot.remotes.remotes.is_empty() {
+        Some("No remotes configured")
+    } else {
+        None
+    }
+}
+
+fn remote_pull_disabled_reason(snapshot: &StoreSnapshot, busy: bool) -> Option<&'static str> {
+    if busy {
+        Some("Repository operation is running")
+    } else if snapshot.repo.is_none() {
+        Some("Open a repository first")
+    } else if snapshot.remotes.remotes.is_empty() {
+        Some("No remotes configured")
+    } else if snapshot
+        .remotes
+        .upstream
+        .as_ref()
+        .and_then(|upstream| upstream.current_branch.as_deref())
+        .is_none()
+    {
+        Some("Current HEAD is detached")
+    } else if snapshot
+        .remotes
+        .upstream
+        .as_ref()
+        .and_then(|upstream| upstream.upstream.as_deref())
+        .is_none()
+    {
+        Some("Current branch has no upstream")
+    } else {
+        None
+    }
+}
+
+fn remote_push_disabled_reason(snapshot: &StoreSnapshot, busy: bool) -> Option<&'static str> {
+    remote_pull_disabled_reason(snapshot, busy)
+}
+
 fn short_oid(oid: &str) -> String {
     oid.chars().take(8).collect()
 }
@@ -5037,6 +5184,81 @@ unchanged
         assert!(!branch_name_input_is_valid("bad name"));
         assert!(!branch_name_input_is_valid("bad..name"));
         assert!(!branch_name_input_is_valid("topic.lock"));
+    }
+
+    #[test]
+    fn branch_create_and_rename_reasons_cover_duplicates() {
+        let snapshot = StoreSnapshot {
+            branches: state_store::BranchesState {
+                branches: vec![state_store::BranchInfo {
+                    name: "main".to_string(),
+                    is_current: true,
+                    upstream: Some("origin/main".to_string()),
+                }],
+            },
+            ..StoreSnapshot::default()
+        };
+
+        assert_eq!(
+            branch_create_disabled_reason(&snapshot, "main", false),
+            Some("Branch already exists")
+        );
+        assert_eq!(
+            branch_create_disabled_reason(&snapshot, "feature/new", false),
+            None
+        );
+        assert_eq!(
+            branch_rename_disabled_reason(&snapshot, "main", "main", false),
+            Some("New branch name matches current name")
+        );
+        assert_eq!(
+            branch_rename_disabled_reason(&snapshot, "feature/old", "main", false),
+            Some("Branch already exists")
+        );
+    }
+
+    #[test]
+    fn remote_sync_reasons_require_upstream() {
+        let mut snapshot = StoreSnapshot {
+            repo: Some(plugin_api::RepoSnapshot {
+                root: "/tmp/repo".to_string(),
+                head: Some("feature".to_string()),
+                conflict_state: None,
+            }),
+            ..StoreSnapshot::default()
+        };
+
+        assert_eq!(
+            remote_fetch_disabled_reason(&snapshot, false),
+            Some("No remotes configured")
+        );
+
+        snapshot.remotes.remotes.push(state_store::RemoteInfo {
+            name: "origin".to_string(),
+            fetch_url: Some("git@example.com:repo.git".to_string()),
+            push_url: Some("git@example.com:repo.git".to_string()),
+        });
+        snapshot.remotes.upstream = Some(state_store::UpstreamStatus {
+            current_branch: Some("feature".to_string()),
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+        });
+
+        assert_eq!(remote_fetch_disabled_reason(&snapshot, false), None);
+        assert_eq!(
+            remote_push_disabled_reason(&snapshot, false),
+            Some("Current branch has no upstream")
+        );
+
+        snapshot.remotes.upstream = Some(state_store::UpstreamStatus {
+            current_branch: Some("feature".to_string()),
+            upstream: Some("origin/feature".to_string()),
+            ahead: 1,
+            behind: 0,
+        });
+        assert_eq!(remote_pull_disabled_reason(&snapshot, false), None);
+        assert_eq!(remote_push_disabled_reason(&snapshot, false), None);
     }
 
     #[test]

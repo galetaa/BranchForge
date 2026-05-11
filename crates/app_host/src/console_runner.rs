@@ -1230,6 +1230,34 @@ impl ConsoleRunner {
             "history.file" | "blame.file" if snapshot.selection.selected_paths.is_empty() => {
                 return (false, Some("No selected files.".to_string()));
             }
+            "remote.fetch" | "remote.fetch_all" if snapshot.remotes.remotes.is_empty() => {
+                return (false, Some("No remotes configured.".to_string()));
+            }
+            "remote.pull" | "remote.push" | "remote.push_force_with_lease"
+                if snapshot.remotes.remotes.is_empty() =>
+            {
+                return (false, Some("No remotes configured.".to_string()));
+            }
+            "remote.pull" | "remote.push" | "remote.push_force_with_lease"
+                if snapshot
+                    .remotes
+                    .upstream
+                    .as_ref()
+                    .and_then(|upstream| upstream.current_branch.as_ref())
+                    .is_none() =>
+            {
+                return (false, Some("Current HEAD is detached.".to_string()));
+            }
+            "remote.pull" | "remote.push" | "remote.push_force_with_lease"
+                if snapshot
+                    .remotes
+                    .upstream
+                    .as_ref()
+                    .and_then(|upstream| upstream.upstream.as_ref())
+                    .is_none() =>
+            {
+                return (false, Some("Current branch has no upstream.".to_string()));
+            }
             "branch.checkout" | "branch.rename" | "branch.delete"
                 if snapshot.selection.selected_branch.is_none() =>
             {
@@ -7214,6 +7242,64 @@ mod tests {
 
         assert!(missing.is_empty(), "missing explain templates: {missing:?}");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn remote_push_is_disabled_without_upstream() {
+        let repo_dir = unique_temp_dir("remote-no-upstream");
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+        assert!(std::fs::write(repo_dir.join("README.md"), "hello\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["README.md".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "base").is_ok());
+        assert!(
+            git_service::run_git(
+                &repo_dir,
+                &["remote", "add", "origin", "git@example.com:x/y.git"]
+            )
+            .is_ok()
+        );
+
+        let mut runner = ConsoleRunner::new(test_config(&repo_dir));
+        assert!(
+            runner
+                .execute(ConsoleCommand::Open {
+                    path: repo_dir.to_string_lossy().to_string(),
+                })
+                .is_ok()
+        );
+        assert!(
+            runner
+                .execute(ConsoleCommand::Run {
+                    target: "remote.refresh".to_string(),
+                    args: Vec::new(),
+                    confirmed: false,
+                })
+                .is_ok()
+        );
+        let push = runner
+            .action_catalog_items()
+            .into_iter()
+            .find(|item| item.action_id == "remote.push")
+            .expect("remote.push action");
+        assert!(!push.enabled);
+        assert_eq!(
+            push.disabled_reason.as_deref(),
+            Some("Current branch has no upstream.")
+        );
+
+        let set_upstream = runner
+            .action_catalog_items()
+            .into_iter()
+            .find(|item| item.action_id == "remote.push_set_upstream")
+            .expect("remote.push_set_upstream action");
+        assert!(set_upstream.enabled);
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
     }
 
     #[test]
