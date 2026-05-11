@@ -7,3 +7,4 @@ external_plugins/**/target/
 # Local working pack (tracked files remain tracked)
 /docs/
 /branchforge_next_stage_tz/
+/branchforge_daily_driver_beta_tz/
