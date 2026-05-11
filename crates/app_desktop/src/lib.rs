@@ -2208,21 +2208,27 @@ impl BranchForgeDesktopApp {
 
     fn render_workspaces_panel(&mut self, ui: &mut egui::Ui, state: &RuntimeAdapterState) {
         let snapshot = &state.snapshot;
-        ui.heading("Workspaces");
+        render_panel_header(
+            ui,
+            "Workspaces",
+            &format!("{} workspaces", snapshot.workspace.workspaces.len()),
+        );
         render_panel_notice(ui, PanelId::Workspaces);
-        ui.separator();
+        ui.add_space(design_tokens::SPACING_SM);
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.workspace_name_input)
                     .desired_width(220.0)
                     .hint_text("Workspace name"),
             );
-            if ui
-                .add_enabled(
-                    !self.workspace_name_input.trim().is_empty() && !state.busy,
-                    egui::Button::new("Create"),
-                )
-                .clicked()
+            if action_button(
+                ui,
+                "Create",
+                ActionButtonKind::Secondary,
+                !self.workspace_name_input.trim().is_empty() && !state.busy,
+                Some("Workspace name is required"),
+            )
+            .clicked()
             {
                 self.execute_action_direct(
                     "workspace.create",
@@ -2230,15 +2236,25 @@ impl BranchForgeDesktopApp {
                     false,
                 );
             }
-            if ui
-                .add_enabled(!state.busy, egui::Button::new("Refresh all"))
-                .clicked()
+            if action_button(
+                ui,
+                "Refresh all",
+                ActionButtonKind::Secondary,
+                !state.busy,
+                None,
+            )
+            .clicked()
             {
                 self.execute_action_direct("workspace.refresh_all", Vec::new(), false);
             }
-            if ui
-                .add_enabled(!state.busy, egui::Button::new("Fetch all"))
-                .clicked()
+            if action_button(
+                ui,
+                "Fetch all",
+                ActionButtonKind::Secondary,
+                !state.busy,
+                None,
+            )
+            .clicked()
             {
                 self.execute_action_direct("workspace.fetch_all", Vec::new(), false);
             }
@@ -2249,12 +2265,14 @@ impl BranchForgeDesktopApp {
                     .desired_width(420.0)
                     .hint_text("Repository path"),
             );
-            if ui
-                .add_enabled(
-                    !self.workspace_repo_input.trim().is_empty() && !state.busy,
-                    egui::Button::new("Add repo"),
-                )
-                .clicked()
+            if action_button(
+                ui,
+                "Add repo",
+                ActionButtonKind::Secondary,
+                !self.workspace_repo_input.trim().is_empty() && !state.busy,
+                Some("Repository path is required"),
+            )
+            .clicked()
             {
                 self.execute_action_direct(
                     "workspace.add_repo",
@@ -2263,19 +2281,33 @@ impl BranchForgeDesktopApp {
                 );
             }
             if let Some(repo) = snapshot.repo.as_ref()
-                && ui
-                    .add_enabled(!state.busy, egui::Button::new("Add current"))
-                    .clicked()
+                && action_button(
+                    ui,
+                    "Add current",
+                    ActionButtonKind::Secondary,
+                    !state.busy,
+                    None,
+                )
+                .clicked()
             {
                 self.execute_action_direct("workspace.add_repo", vec![repo.root.clone()], false);
             }
         });
 
-        ui.separator();
+        if snapshot.workspace.workspaces.is_empty() {
+            render_empty_state(
+                ui,
+                "No workspaces",
+                "Workspace orchestration is experimental and stays out of the core workflow.",
+            );
+            return;
+        }
+
+        ui.add_space(design_tokens::SPACING_MD);
         for workspace in &snapshot.workspace.workspaces {
             let active =
                 snapshot.workspace.active_workspace_id.as_deref() == Some(workspace.id.as_str());
-            ui.horizontal(|ui| {
+            egui::Frame::group(ui.style()).show(ui, |ui| {
                 ui.label(
                     RichText::new(format!("{} ({})", workspace.name, workspace.repos.len()))
                         .strong(),
@@ -2283,9 +2315,14 @@ impl BranchForgeDesktopApp {
                 if active {
                     ui.label("active");
                 }
-                if ui
-                    .add_enabled(!active && !state.busy, egui::Button::new("Switch"))
-                    .clicked()
+                if action_button(
+                    ui,
+                    "Switch",
+                    ActionButtonKind::Secondary,
+                    !active && !state.busy,
+                    Some("Workspace is already active"),
+                )
+                .clicked()
                 {
                     self.execute_action_direct(
                         "workspace.switch",
@@ -2293,18 +2330,9 @@ impl BranchForgeDesktopApp {
                         false,
                     );
                 }
-            });
-            egui::Grid::new(format!("workspace.{}.repos", workspace.id))
-                .striped(true)
-                .show(ui, |ui| {
-                    ui.label(RichText::new("Repo").strong());
-                    ui.label(RichText::new("Branch").strong());
-                    ui.label(RichText::new("Status").strong());
-                    ui.label(RichText::new("Ahead").strong());
-                    ui.label(RichText::new("Actions").strong());
-                    ui.end_row();
-                    for repo in &workspace.repos {
-                        ui.label(repo.display_name.as_str());
+                for repo in &workspace.repos {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(repo.display_name.as_str()).strong());
                         ui.label(repo.branch_summary.current_branch.as_deref().unwrap_or(""));
                         ui.label(if repo.status_summary.dirty {
                             "dirty"
@@ -2315,32 +2343,35 @@ impl BranchForgeDesktopApp {
                             "+{} / -{}",
                             repo.branch_summary.ahead, repo.branch_summary.behind
                         ));
-                        ui.horizontal(|ui| {
-                            if ui
-                                .add_enabled(!state.busy, egui::Button::new("Open"))
-                                .clicked()
-                            {
-                                self.execute_action_direct(
-                                    "workspace.switch_repo",
-                                    vec![repo.repo_id.clone()],
-                                    false,
-                                );
-                            }
-                            if ui
-                                .add_enabled(!state.busy, egui::Button::new("Remove"))
-                                .clicked()
-                            {
-                                self.preview_or_confirm(
-                                    "workspace.remove_repo",
-                                    vec![repo.repo_id.clone()],
-                                    "Preview workspace removal".to_string(),
-                                    "Remove repository from this workspace?".to_string(),
-                                );
-                            }
-                        });
-                        ui.end_row();
-                    }
-                });
+                        if action_button(ui, "Open", ActionButtonKind::Secondary, !state.busy, None)
+                            .clicked()
+                        {
+                            self.execute_action_direct(
+                                "workspace.switch_repo",
+                                vec![repo.repo_id.clone()],
+                                false,
+                            );
+                        }
+                        if action_button(
+                            ui,
+                            "Remove",
+                            ActionButtonKind::Danger,
+                            !state.busy,
+                            Some("Removing a repo from a workspace requires confirmation"),
+                        )
+                        .clicked()
+                        {
+                            self.preview_or_confirm(
+                                "workspace.remove_repo",
+                                vec![repo.repo_id.clone()],
+                                "Preview workspace removal".to_string(),
+                                "Remove repository from this workspace?".to_string(),
+                            );
+                        }
+                    });
+                }
+            });
+            ui.add_space(design_tokens::SPACING_XS);
         }
         if !snapshot.workspace.last_results.is_empty() {
             ui.separator();
@@ -2362,20 +2393,28 @@ impl BranchForgeDesktopApp {
 
     fn render_pull_requests_panel(&mut self, ui: &mut egui::Ui, state: &RuntimeAdapterState) {
         let snapshot = &state.snapshot;
-        ui.heading("Pull Requests");
+        render_panel_header(
+            ui,
+            "Pull Requests",
+            &format!(
+                "{} provider items",
+                snapshot.pull_requests.pull_requests.len()
+            ),
+        );
         render_panel_notice(ui, PanelId::PullRequests);
-        ui.separator();
         ui.horizontal(|ui| {
-            if ui
-                .add_enabled(!state.busy, egui::Button::new("Detect provider"))
-                .clicked()
+            if action_button(
+                ui,
+                "Detect provider",
+                ActionButtonKind::Secondary,
+                !state.busy,
+                None,
+            )
+            .clicked()
             {
                 self.execute_action_direct("pr.detect_provider", Vec::new(), false);
             }
-            if ui
-                .add_enabled(!state.busy, egui::Button::new("List"))
-                .clicked()
-            {
+            if action_button(ui, "List", ActionButtonKind::Secondary, !state.busy, None).clicked() {
                 let args = if self.pr_base_input.trim().is_empty() {
                     Vec::new()
                 } else {
@@ -2388,21 +2427,26 @@ impl BranchForgeDesktopApp {
             ui.add(
                 egui::TextEdit::singleline(&mut self.pr_base_input)
                     .desired_width(120.0)
-                    .hint_text("base"),
+                    .hint_text("base branch"),
             );
             ui.add(
                 egui::TextEdit::singleline(&mut self.pr_head_input)
                     .desired_width(180.0)
-                    .hint_text("head"),
+                    .hint_text("head branch"),
             );
             ui.add(
                 egui::TextEdit::singleline(&mut self.pr_title_input)
                     .desired_width(260.0)
                     .hint_text("title"),
             );
-            if ui
-                .add_enabled(!state.busy, egui::Button::new("Create URL"))
-                .clicked()
+            if action_button(
+                ui,
+                "Create URL",
+                ActionButtonKind::Secondary,
+                !state.busy,
+                None,
+            )
+            .clicked()
             {
                 let mut args = Vec::new();
                 if !self.pr_base_input.trim().is_empty() {
@@ -2420,10 +2464,7 @@ impl BranchForgeDesktopApp {
                 }
                 self.execute_action_direct("pr.create_url", args, false);
             }
-            if ui
-                .add_enabled(!state.busy, egui::Button::new("Open URL"))
-                .clicked()
-            {
+            if action_button(ui, "Open URL", ActionButtonKind::Ghost, !state.busy, None).clicked() {
                 self.execute_action_direct("pr.open", Vec::new(), false);
             }
         });
@@ -2433,12 +2474,14 @@ impl BranchForgeDesktopApp {
                     .desired_width(120.0)
                     .hint_text("PR/MR #"),
             );
-            if ui
-                .add_enabled(
-                    !self.pr_number_input.trim().is_empty() && !state.busy,
-                    egui::Button::new("Checkout"),
-                )
-                .clicked()
+            if action_button(
+                ui,
+                "Checkout",
+                ActionButtonKind::Primary,
+                !self.pr_number_input.trim().is_empty() && !state.busy,
+                Some("PR/MR number is required"),
+            )
+            .clicked()
             {
                 self.preview_or_confirm(
                     "pr.checkout",
@@ -2455,38 +2498,49 @@ impl BranchForgeDesktopApp {
                 provider.provider, provider.web_url
             ));
         }
-        ui.separator();
+        if snapshot.pull_requests.pull_requests.is_empty() {
+            render_empty_state(
+                ui,
+                "Pull Requests are experimental.",
+                "Provider integration is available in Advanced mode, but this is not a core workflow yet.",
+            );
+        } else {
+            ui.add_space(design_tokens::SPACING_MD);
+        }
         for pr in &snapshot.pull_requests.pull_requests {
-            ui.horizontal(|ui| {
+            egui::Frame::group(ui.style()).show(ui, |ui| {
                 ui.label(format!("{} -> {}", pr.source_branch, pr.target_branch));
                 ui.label(format!("{:?}", pr.state));
+                ui.label(RichText::new(format!("#{} {}", pr.number, pr.title)).strong());
                 if let Some(url) = pr.web_url.as_deref() {
                     ui.label(url);
                 }
+                for check in &pr.checks {
+                    ui.weak(format!("{} {:?}", check.name, check.status));
+                }
             });
-            for check in &pr.checks {
-                ui.weak(format!("{} {:?}", check.name, check.status));
-            }
+            ui.add_space(design_tokens::SPACING_XS);
         }
         if let Some(error) = snapshot.pull_requests.last_error.as_deref() {
-            ui.colored_label(Color32::from_rgb(248, 113, 113), error);
+            render_error_state(ui, "Could not load pull requests.", error);
         }
     }
 
     fn render_branch_stacks_panel(&mut self, ui: &mut egui::Ui, state: &RuntimeAdapterState) {
         let snapshot = &state.snapshot;
-        ui.heading("Branch Stacks");
+        render_panel_header(
+            ui,
+            "Branch Stacks",
+            &format!("{} stacks", snapshot.branch_stacks.stacks.len()),
+        );
         render_panel_notice(ui, PanelId::BranchStacks);
-        ui.separator();
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.stack_base_input)
                     .desired_width(140.0)
-                    .hint_text("base"),
+                    .hint_text("base ref"),
             );
-            if ui
-                .add_enabled(!state.busy, egui::Button::new("Detect"))
-                .clicked()
+            if action_button(ui, "Detect", ActionButtonKind::Secondary, !state.busy, None).clicked()
             {
                 let args = if self.stack_base_input.trim().is_empty() {
                     Vec::new()
@@ -2507,15 +2561,17 @@ impl BranchForgeDesktopApp {
                     .desired_width(360.0)
                     .hint_text("branch1 branch2"),
             );
-            if ui
-                .add_enabled(
-                    !self.stack_name_input.trim().is_empty()
-                        && !self.stack_base_input.trim().is_empty()
-                        && !self.stack_branches_input.trim().is_empty()
-                        && !state.busy,
-                    egui::Button::new("Create"),
-                )
-                .clicked()
+            if action_button(
+                ui,
+                "Create",
+                ActionButtonKind::Secondary,
+                !self.stack_name_input.trim().is_empty()
+                    && !self.stack_base_input.trim().is_empty()
+                    && !self.stack_branches_input.trim().is_empty()
+                    && !state.busy,
+                Some("Stack name, base ref, and branches are required"),
+            )
+            .clicked()
             {
                 let mut args = vec![
                     self.stack_name_input.trim().to_string(),
@@ -2528,12 +2584,14 @@ impl BranchForgeDesktopApp {
                 );
                 self.execute_action_direct("stack.create", args, false);
             }
-            if ui
-                .add_enabled(
-                    snapshot.branch_stacks.active_stack_id.is_some() && !state.busy,
-                    egui::Button::new("Restack active"),
-                )
-                .clicked()
+            if action_button(
+                ui,
+                "Restack active",
+                ActionButtonKind::Secondary,
+                snapshot.branch_stacks.active_stack_id.is_some() && !state.busy,
+                Some("No active stack"),
+            )
+            .clicked()
             {
                 let stack_id = snapshot
                     .branch_stacks
@@ -2548,18 +2606,29 @@ impl BranchForgeDesktopApp {
                 );
             }
         });
-        ui.separator();
+        if snapshot.branch_stacks.stacks.is_empty() {
+            render_empty_state(
+                ui,
+                "No branch stacks",
+                "Stacked branch workflows are experimental and stay behind Advanced mode.",
+            );
+        }
         for stack in &snapshot.branch_stacks.stacks {
-            ui.horizontal(|ui| {
+            egui::Frame::group(ui.style()).show(ui, |ui| {
                 ui.label(
                     RichText::new(format!("{} ({})", stack.name, stack.entries.len())).strong(),
                 );
                 if snapshot.branch_stacks.active_stack_id.as_deref() == Some(stack.id.as_str()) {
                     ui.label("active");
                 }
-                if ui
-                    .add_enabled(!state.busy, egui::Button::new("Restack"))
-                    .clicked()
+                if action_button(
+                    ui,
+                    "Restack",
+                    ActionButtonKind::Secondary,
+                    !state.busy,
+                    None,
+                )
+                .clicked()
                 {
                     self.preview_or_confirm(
                         "stack.restack",
@@ -2568,26 +2637,19 @@ impl BranchForgeDesktopApp {
                         format!("Restack {}?", stack.name),
                     );
                 }
-            });
-            egui::Grid::new(format!("stack.{}.entries", stack.id))
-                .striped(true)
-                .show(ui, |ui| {
-                    ui.label(RichText::new("Branch").strong());
-                    ui.label(RichText::new("Base").strong());
-                    ui.label(RichText::new("Ahead").strong());
-                    ui.label(RichText::new("Status").strong());
-                    ui.end_row();
-                    for entry in &stack.entries {
-                        ui.label(entry.branch.as_str());
-                        ui.label(entry.base_branch.as_str());
+                for entry in &stack.entries {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(entry.branch.as_str()).monospace());
+                        ui.label(format!("base: {}", entry.base_branch));
                         ui.label(format!("+{} / -{}", entry.ahead, entry.behind));
                         ui.label(format!("{:?}", entry.status));
-                        ui.end_row();
-                    }
-                });
+                    });
+                }
+            });
+            ui.add_space(design_tokens::SPACING_XS);
         }
         ui.separator();
-        ui.label(RichText::new("Virtual Branches Research").strong());
+        ui.label(RichText::new("Virtual Branches").strong());
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.virtual_branch_name_input)
@@ -2604,9 +2666,7 @@ impl BranchForgeDesktopApp {
                 .split_whitespace()
                 .map(str::to_string)
                 .collect::<Vec<_>>();
-            if ui
-                .add_enabled(!state.busy, egui::Button::new("Detect"))
-                .clicked()
+            if action_button(ui, "Detect", ActionButtonKind::Secondary, !state.busy, None).clicked()
             {
                 let mut args = Vec::new();
                 if !self.virtual_branch_name_input.trim().is_empty() {
@@ -2615,14 +2675,16 @@ impl BranchForgeDesktopApp {
                 args.extend(paths.clone());
                 self.execute_action_direct("virtual.detect", args, false);
             }
-            if ui
-                .add_enabled(
-                    !state.busy
-                        && !self.virtual_branch_name_input.trim().is_empty()
-                        && !paths.is_empty(),
-                    egui::Button::new("Create"),
-                )
-                .clicked()
+            if action_button(
+                ui,
+                "Create",
+                ActionButtonKind::Secondary,
+                !state.busy
+                    && !self.virtual_branch_name_input.trim().is_empty()
+                    && !paths.is_empty(),
+                Some("Context name and paths are required"),
+            )
+            .clicked()
             {
                 let mut args = vec![self.virtual_branch_name_input.trim().to_string()];
                 args.extend(paths);
@@ -2720,9 +2782,8 @@ impl BranchForgeDesktopApp {
 
     fn render_conflicts_panel(&mut self, ui: &mut egui::Ui, state: &RuntimeAdapterState) {
         let snapshot = &state.snapshot;
-        ui.heading("Conflicts");
+        render_panel_header(ui, "Conflicts", "Advanced conflict recovery tools.");
         render_panel_notice(ui, PanelId::Conflicts);
-        ui.separator();
         match snapshot
             .repo
             .as_ref()
@@ -2735,7 +2796,11 @@ impl BranchForgeDesktopApp {
                 );
             }
             None => {
-                ui.weak("No active conflict session.");
+                render_empty_state(
+                    ui,
+                    "No active conflict session.",
+                    "Conflict controls are available when merge, rebase, or cherry-pick markers exist.",
+                );
             }
         }
         let unresolved_markers = snapshot
@@ -2753,21 +2818,24 @@ impl BranchForgeDesktopApp {
         }
 
         ui.horizontal(|ui| {
-            if ui
-                .add_enabled(!state.busy, egui::Button::new("List conflicts"))
-                .clicked()
+            if action_button(
+                ui,
+                "List conflicts",
+                ActionButtonKind::Secondary,
+                !state.busy,
+                None,
+            )
+            .clicked()
             {
                 self.execute_action_direct("conflict.list", Vec::new(), false);
             }
             if let Some(file) = self.selected_file(snapshot) {
-                if ui
-                    .add_enabled(!state.busy, egui::Button::new("Focus"))
+                if action_button(ui, "Focus", ActionButtonKind::Secondary, !state.busy, None)
                     .clicked()
                 {
                     self.execute_action_direct("conflict.focus", vec![file.to_string()], false);
                 }
-                if ui
-                    .add_enabled(!state.busy, egui::Button::new("Use ours"))
+                if action_button(ui, "Use ours", ActionButtonKind::Secondary, !state.busy, None)
                     .clicked()
                 {
                     self.execute_action_direct(
@@ -2776,8 +2844,7 @@ impl BranchForgeDesktopApp {
                         false,
                     );
                 }
-                if ui
-                    .add_enabled(!state.busy, egui::Button::new("Use theirs"))
+                if action_button(ui, "Use theirs", ActionButtonKind::Secondary, !state.busy, None)
                     .clicked()
                 {
                     self.execute_action_direct(
@@ -2786,9 +2853,14 @@ impl BranchForgeDesktopApp {
                         false,
                     );
                 }
-                if ui
-                    .add_enabled(!state.busy, egui::Button::new("Mark resolved"))
-                    .clicked()
+                if action_button(
+                    ui,
+                    "Mark resolved",
+                    ActionButtonKind::Secondary,
+                    !state.busy,
+                    None,
+                )
+                .clicked()
                 {
                     self.execute_action_direct(
                         "conflict.mark_resolved",
@@ -2797,9 +2869,14 @@ impl BranchForgeDesktopApp {
                     );
                 }
             }
-            if ui
-                .add_enabled(!state.busy, egui::Button::new("Continue"))
-                .clicked()
+            if action_button(
+                ui,
+                "Continue",
+                ActionButtonKind::Primary,
+                !state.busy,
+                Some("Continue the active Git operation"),
+            )
+            .clicked()
             {
                 if unresolved_markers > 0 {
                     self.ui_state.pending_confirmation = Some(ConfirmationDialog {
@@ -2814,9 +2891,14 @@ impl BranchForgeDesktopApp {
                     self.execute_action_direct("conflict.continue", Vec::new(), false);
                 }
             }
-            if ui
-                .add_enabled(!state.busy, egui::Button::new("Abort"))
-                .clicked()
+            if action_button(
+                ui,
+                "Abort",
+                ActionButtonKind::Danger,
+                !state.busy,
+                Some("Abort requires confirmation"),
+            )
+            .clicked()
             {
                 self.preview_or_confirm(
                     "conflict.abort",
@@ -2844,8 +2926,30 @@ impl BranchForgeDesktopApp {
     }
 
     fn render_diagnostics_panel(&mut self, ui: &mut egui::Ui, state: &RuntimeAdapterState) {
-        ui.heading("Diagnostics");
+        render_panel_header(
+            ui,
+            "Diagnostics",
+            "Developer-only runtime and repository diagnostics.",
+        );
         render_panel_notice(ui, PanelId::Diagnostics);
+        ui.add_space(design_tokens::SPACING_SM);
+        ui.label(RichText::new("State Snapshot Summary").strong());
+        ui.label(format!("version: {}", state.snapshot.version));
+        ui.label(format!(
+            "status: staged={} unstaged={} untracked={}",
+            state.snapshot.status.staged.len(),
+            state.snapshot.status.unstaged.len(),
+            state.snapshot.status.untracked.len()
+        ));
+        ui.label(format!(
+            "history_commits: {}",
+            state.snapshot.history.commits.len()
+        ));
+        ui.label(format!("diff_hunks: {}", state.snapshot.diff.hunks.len()));
+        ui.label(format!(
+            "journal_entries: {}",
+            state.snapshot.journal.entries.len()
+        ));
         ui.separator();
         ui.label(RichText::new("RepoContext").strong());
         if let Some(repo) = state.snapshot.repo.as_ref() {
@@ -2943,9 +3047,14 @@ impl BranchForgeDesktopApp {
                     .desired_width(320.0)
                     .hint_text("registry path or URL"),
             );
-            if ui
-                .add_enabled(!state.busy, egui::Button::new("Marketplace"))
-                .clicked()
+            if action_button(
+                ui,
+                "Marketplace",
+                ActionButtonKind::Secondary,
+                !state.busy,
+                None,
+            )
+            .clicked()
             {
                 let args = if self.plugin_registry_input.trim().is_empty() {
                     Vec::new()
@@ -2954,9 +3063,14 @@ impl BranchForgeDesktopApp {
                 };
                 self.execute_action_direct("plugin.marketplace", args, false);
             }
-            if ui
-                .add_enabled(!state.busy, egui::Button::new("Discover"))
-                .clicked()
+            if action_button(
+                ui,
+                "Discover",
+                ActionButtonKind::Secondary,
+                !state.busy,
+                None,
+            )
+            .clicked()
             {
                 let args = if self.plugin_registry_input.trim().is_empty() {
                     Vec::new()
@@ -2978,12 +3092,14 @@ impl BranchForgeDesktopApp {
                 self.plugin_id_input = selected.to_string();
             }
             let registry = self.plugin_registry_input.trim().to_string();
-            if ui
-                .add_enabled(
-                    !self.plugin_id_input.trim().is_empty() && !state.busy,
-                    egui::Button::new("Install"),
-                )
-                .clicked()
+            if action_button(
+                ui,
+                "Install",
+                ActionButtonKind::Secondary,
+                !self.plugin_id_input.trim().is_empty() && !state.busy,
+                Some("Plugin id is required"),
+            )
+            .clicked()
             {
                 let mut args = vec![self.plugin_id_input.trim().to_string()];
                 if !registry.is_empty() {
@@ -2991,12 +3107,14 @@ impl BranchForgeDesktopApp {
                 }
                 self.execute_action_direct("plugin.install_registry", args, false);
             }
-            if ui
-                .add_enabled(
-                    !self.plugin_id_input.trim().is_empty() && !state.busy,
-                    egui::Button::new("Update"),
-                )
-                .clicked()
+            if action_button(
+                ui,
+                "Update",
+                ActionButtonKind::Secondary,
+                !self.plugin_id_input.trim().is_empty() && !state.busy,
+                Some("Plugin id is required"),
+            )
+            .clicked()
             {
                 let mut args = vec![self.plugin_id_input.trim().to_string()];
                 if !registry.is_empty() {
