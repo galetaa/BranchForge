@@ -48,6 +48,18 @@ fn build_register_payload() -> PluginRegister {
                 ConfirmPolicy::OnDanger,
             ),
             spec(
+                "branch.create_checkout",
+                "Create and Checkout Branch",
+                None,
+                ActionEffects {
+                    writes_refs: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
                 "branch.rename",
                 "Rename Branch",
                 None,

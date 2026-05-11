@@ -3403,6 +3403,7 @@ impl ConsoleRunner {
             | "revert.commit" => Some(PanelKind::History.view_id()),
             "branch.checkout"
             | "branch.create"
+            | "branch.create_checkout"
             | "branch.rename"
             | "branch.delete"
             | "rebase.plan.create"
@@ -4604,6 +4605,13 @@ pub fn explain_template_for_action(action_id: &str) -> Option<ExplainTemplate> {
             &["git branch <name> [base]"],
             &["Creating from the wrong base can start work from an unintended commit."],
             &["Delete or rename the branch, or recreate it from the intended base."],
+        ),
+        "branch.create_checkout" => explain(
+            action_id,
+            "This creates a new local branch and switches the working tree to it.",
+            &["git branch <name>", "git checkout <name>"],
+            &["Dirty files can block checkout or be affected by branch content changes."],
+            &["Switch back to the previous branch or delete the new branch if it was unintended."],
         ),
         "branch.rename" => explain(
             action_id,
@@ -5973,6 +5981,7 @@ fn ops_text() -> String {
         "[branches-and-tags]",
         "branch.checkout <name>",
         "branch.create <name> [base_ref]",
+        "branch.create_checkout <name>",
         "branch.rename <old> <new>",
         "branch.delete <name>",
         "tag.create <name> [target]",
@@ -6231,6 +6240,7 @@ fn lock_for_op(op: &str, _args: &[String]) -> Result<JobLock, UserFacingError> {
         | "rebase.abort"
         | "branch.checkout"
         | "branch.create"
+        | "branch.create_checkout"
         | "branch.rename"
         | "branch.delete"
         | "tag.create"
@@ -6328,6 +6338,7 @@ fn is_supported_direct_op(op: &str) -> bool {
             | "conflict.abort"
             | "branch.checkout"
             | "branch.create"
+            | "branch.create_checkout"
             | "branch.rename"
             | "branch.delete"
             | "tag.create"

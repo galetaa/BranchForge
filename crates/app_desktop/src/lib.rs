@@ -1828,6 +1828,32 @@ impl BranchForgeDesktopApp {
                     false,
                 );
             }
+            if action_button(
+                ui,
+                "Create & Checkout",
+                ActionButtonKind::Secondary,
+                branch_name_valid && !state.busy,
+                Some("Create a branch and switch to it"),
+            )
+            .clicked()
+            {
+                if status_is_dirty(snapshot) {
+                    self.ui_state.pending_confirmation = Some(ConfirmationDialog {
+                        action_id: "branch.create_checkout".to_string(),
+                        args: vec![self.branch_name_input.trim().to_string()],
+                        title: "You have local changes".to_string(),
+                        message:
+                            "Creating and checking out a branch may affect your working tree. Continue anyway?"
+                                .to_string(),
+                    });
+                } else {
+                    self.execute_action_direct(
+                        "branch.create_checkout",
+                        vec![self.branch_name_input.trim().to_string()],
+                        false,
+                    );
+                }
+            }
             if !self.branch_name_input.trim().is_empty() && !branch_name_valid {
                 ui.colored_label(
                     design_tokens::warning(ui.visuals().dark_mode),

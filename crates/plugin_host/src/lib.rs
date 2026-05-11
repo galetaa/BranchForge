@@ -1904,6 +1904,19 @@ pub fn branches_registration_payload() -> PluginRegister {
                 ConfirmPolicy::OnDanger,
             ),
             spec(
+                "branch.create_checkout",
+                "Create and Checkout Branch",
+                Some("repo.is_open"),
+                None,
+                ActionEffects {
+                    writes_refs: true,
+                    writes_worktree: true,
+                    danger_level: DangerLevel::Medium,
+                    ..ActionEffects::default()
+                },
+                ConfirmPolicy::OnDanger,
+            ),
+            spec(
                 "branch.rename",
                 "Rename Branch",
                 Some("repo.is_open"),
@@ -2899,6 +2912,12 @@ mod tests {
                 .actions
                 .iter()
                 .any(|a| a.action_id == "branch.create")
+        );
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "branch.create_checkout")
         );
         assert!(
             payload
