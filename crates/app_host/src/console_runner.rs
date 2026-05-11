@@ -3415,6 +3415,7 @@ impl ConsoleRunner {
             | "commit.amend"
             | "stash.create"
             | "stash.list"
+            | "stash.show_diff"
             | "stash.apply"
             | "stash.pop"
             | "stash.drop" => Some(PanelKind::Status.view_id()),
@@ -4773,6 +4774,13 @@ pub fn explain_template_for_action(action_id: &str) -> Option<ExplainTemplate> {
                 "Abort by resolving or resetting affected files, then inspect the journal if needed.",
             ],
         ),
+        "stash.show_diff" => explain(
+            action_id,
+            "This previews the patch stored in a stash entry.",
+            &["git stash show --patch <stash>"],
+            &["This is read-only and does not change the working tree."],
+            &["Apply or pop the stash if the preview is the work you need."],
+        ),
         "stash.pop" => explain(
             action_id,
             "This applies a stash to the working tree and drops it if the apply succeeds.",
@@ -5993,6 +6001,7 @@ fn ops_text() -> String {
         "[stash]",
         "stash.create <message>",
         "stash.list",
+        "stash.show_diff <selector>",
         "stash.apply <selector>",
         "stash.pop <selector>",
         "stash.drop <selector>",
@@ -6203,6 +6212,7 @@ fn lock_for_op(op: &str, _args: &[String]) -> Result<JobLock, UserFacingError> {
         | "history.details"
         | "blame.file"
         | "stash.list"
+        | "stash.show_diff"
         | "worktree.list"
         | "worktree.open"
         | "submodule.list"
@@ -6325,6 +6335,7 @@ fn is_supported_direct_op(op: &str) -> bool {
             | "commit.amend"
             | "stash.create"
             | "stash.list"
+            | "stash.show_diff"
             | "stash.apply"
             | "stash.pop"
             | "stash.drop"
@@ -6421,6 +6432,7 @@ fn is_replayable_op(op: &str) -> bool {
             | "history.details"
             | "blame.file"
             | "stash.list"
+            | "stash.show_diff"
             | "worktree.list"
             | "submodule.list"
             | "diagnostics.repo_capabilities"
@@ -7410,6 +7422,7 @@ mod tests {
         assert!(ops.contains("stack.restack <stack_id|name>"));
         assert!(ops.contains("commit.amend <message>"));
         assert!(ops.contains("stash.list"));
+        assert!(ops.contains("stash.show_diff <selector>"));
         assert!(ops.contains("worktree.create <path> <branch>"));
         assert!(ops.contains("submodule.init_update [path...]"));
         assert!(ops.contains("merge.execute <source_ref> [ff|fast-forward|no-ff|squash]"));

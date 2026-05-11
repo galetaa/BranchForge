@@ -1739,6 +1739,14 @@ pub fn status_registration_payload() -> PluginRegister {
                 ConfirmPolicy::Never,
             ),
             spec(
+                "stash.show_diff",
+                "Show Stash Diff",
+                Some("repo.is_open"),
+                None,
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
+            spec(
                 "stash.apply",
                 "Apply Stash",
                 Some("repo.is_open"),
@@ -2846,6 +2854,12 @@ mod tests {
                 .any(|a| a.action_id == "stash.create")
         );
         assert!(payload.actions.iter().any(|a| a.action_id == "stash.list"));
+        assert!(
+            payload
+                .actions
+                .iter()
+                .any(|a| a.action_id == "stash.show_diff")
+        );
         assert!(payload.views.iter().any(|v| v.view_id == "status.panel"));
     }
 

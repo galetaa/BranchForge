@@ -167,6 +167,13 @@ fn build_register_payload() -> PluginRegister {
                 ConfirmPolicy::Never,
             ),
             spec(
+                "stash.show_diff",
+                "Show Stash Diff",
+                None,
+                ActionEffects::read_only(),
+                ConfirmPolicy::Never,
+            ),
+            spec(
                 "stash.apply",
                 "Apply Stash",
                 Some(DangerLevel::Medium),

@@ -943,6 +943,30 @@ pub fn execute_job_op(
                 state_version: store.snapshot().version,
             })
         }
+        "stash.show_diff" => {
+            let reference = request.paths.first().map(String::as_str).ok_or_else(|| {
+                JobExecutionError::InvalidInput {
+                    message: "stash.show_diff requires stash ref in request.paths[0]".to_string(),
+                }
+            })?;
+            let text = git_service::stash_show_diff(cwd, reference)?;
+            store.update_diff(build_diff_state(
+                DiffSource::Commit {
+                    oid: reference.to_string(),
+                },
+                if text.is_empty() {
+                    format!("{reference}: empty stash diff")
+                } else {
+                    text
+                },
+                Vec::new(),
+            ));
+            Ok(JobExecutionResult {
+                op: request.op.clone(),
+                success: true,
+                state_version: store.snapshot().version,
+            })
+        }
         "stash.apply" => {
             let reference = request.paths.first().map(String::as_str).ok_or_else(|| {
                 JobExecutionError::InvalidInput {

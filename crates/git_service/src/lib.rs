@@ -837,6 +837,14 @@ pub fn stash_list(cwd: &Path) -> Result<Vec<StashEntry>, GitServiceError> {
     Ok(entries)
 }
 
+pub fn stash_show_diff(cwd: &Path, reference: &str) -> Result<String, GitServiceError> {
+    let out = run_git(
+        cwd,
+        &["stash", "show", "--patch", "--include-untracked", reference],
+    )?;
+    String::from_utf8(out.stdout).map_err(|_| GitServiceError::Utf8Decode)
+}
+
 pub fn stash_apply(cwd: &Path, reference: &str) -> Result<(), GitServiceError> {
     let _ = run_git(cwd, &["stash", "apply", reference])?;
     Ok(())

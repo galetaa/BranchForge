@@ -2984,6 +2984,18 @@ impl BranchForgeDesktopApp {
             let has_selector = !selector.is_empty();
             if action_button(
                 ui,
+                "Show diff",
+                ActionButtonKind::Secondary,
+                has_selector && !state.busy,
+                Some("Enter a stash selector such as stash@{0}"),
+            )
+            .clicked()
+            {
+                self.execute_action_direct("stash.show_diff", vec![selector.clone()], false);
+                self.activate_panel(PanelId::Diff);
+            }
+            if action_button(
+                ui,
                 "Apply",
                 ActionButtonKind::Secondary,
                 has_selector && !state.busy,

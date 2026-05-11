@@ -53,6 +53,29 @@ fn sprint20_productivity_suite_smoke() {
         execute_job_op(
             &repo_dir,
             &JobRequest {
+                op: "stash.show_diff".to_string(),
+                lock: JobLock::Read,
+                paths: vec![stash_ref.clone()],
+                job_id: None,
+            },
+            &mut store,
+        )
+        .is_ok()
+    );
+    assert!(
+        store
+            .snapshot()
+            .diff
+            .content
+            .as_deref()
+            .unwrap_or_default()
+            .contains("+work")
+    );
+
+    assert!(
+        execute_job_op(
+            &repo_dir,
+            &JobRequest {
                 op: "stash.apply".to_string(),
                 lock: JobLock::IndexWrite,
                 paths: vec![stash_ref.clone()],
