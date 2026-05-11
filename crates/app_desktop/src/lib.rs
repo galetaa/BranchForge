@@ -251,6 +251,8 @@ pub struct BranchForgeDesktopApp {
     stack_name_input: String,
     stack_base_input: String,
     stack_branches_input: String,
+    stash_message_input: String,
+    stash_selector_input: String,
     virtual_branch_name_input: String,
     virtual_branch_paths_input: String,
     ui_error: Option<String>,
@@ -295,6 +297,8 @@ impl BranchForgeDesktopApp {
             stack_name_input: "Feature Stack".to_string(),
             stack_base_input: "main".to_string(),
             stack_branches_input: String::new(),
+            stash_message_input: "WIP from BranchForge".to_string(),
+            stash_selector_input: "stash@{0}".to_string(),
             virtual_branch_name_input: "Working changes".to_string(),
             virtual_branch_paths_input: String::new(),
             ui_error,
@@ -1023,12 +1027,7 @@ impl BranchForgeDesktopApp {
                 PanelId::Workspaces => self.render_workspaces_panel(ui, state),
                 PanelId::PullRequests => self.render_pull_requests_panel(ui, state),
                 PanelId::BranchStacks => self.render_branch_stacks_panel(ui, state),
-                PanelId::Stash => self.render_simple_action_panel(
-                    ui,
-                    state,
-                    "Stash",
-                    &[("List stashes", "stash.list")],
-                ),
+                PanelId::Stash => self.render_stash_panel(ui, state),
                 PanelId::Worktrees => self.render_simple_action_panel(
                     ui,
                     state,
@@ -2820,6 +2819,151 @@ impl BranchForgeDesktopApp {
         }
         if let Some(error) = snapshot.branch_stacks.last_error.as_deref() {
             ui.colored_label(Color32::from_rgb(248, 113, 113), error);
+        }
+    }
+
+    fn render_stash_panel(&mut self, ui: &mut egui::Ui, state: &RuntimeAdapterState) {
+        let snapshot = &state.snapshot;
+        render_panel_header(ui, "Stash", "Advanced recovery tool for local work.");
+        render_panel_notice(ui, PanelId::Stash);
+        ui.add_space(design_tokens::SPACING_SM);
+        ui.label(RichText::new("Create stash").strong());
+        ui.horizontal_wrapped(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.stash_message_input)
+                    .desired_width(320.0)
+                    .hint_text("Stash message"),
+            );
+            if action_button(
+                ui,
+                "Create",
+                ActionButtonKind::Primary,
+                status_is_dirty(snapshot) && !state.busy,
+                Some("No local changes to stash"),
+            )
+            .clicked()
+            {
+                let message = self.stash_message_input.trim().to_string();
+                let args = if message.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![message]
+                };
+                self.preview_or_confirm(
+                    "stash.create",
+                    args,
+                    "Preview stash create".to_string(),
+                    "Create a stash from current local changes?".to_string(),
+                );
+            }
+            if action_button(ui, "List", ActionButtonKind::Secondary, !state.busy, None).clicked() {
+                self.execute_action_direct("stash.list", Vec::new(), false);
+            }
+        });
+
+        ui.add_space(design_tokens::SPACING_MD);
+        ui.label(RichText::new("Selected stash").strong());
+        ui.horizontal_wrapped(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.stash_selector_input)
+                    .desired_width(180.0)
+                    .hint_text("stash@{0}"),
+            );
+            let selector = self.stash_selector_input.trim().to_string();
+            let has_selector = !selector.is_empty();
+            if action_button(
+                ui,
+                "Apply",
+                ActionButtonKind::Secondary,
+                has_selector && !state.busy,
+                Some("Enter a stash selector such as stash@{0}"),
+            )
+            .clicked()
+            {
+                let fallback = if status_is_dirty(snapshot) {
+                    "Working tree has local changes. Applying a stash may conflict.".to_string()
+                } else {
+                    format!("Apply {selector} to the working tree?")
+                };
+                self.preview_or_confirm(
+                    "stash.apply",
+                    vec![selector.clone()],
+                    "Preview stash apply".to_string(),
+                    fallback,
+                );
+            }
+            if action_button(
+                ui,
+                "Pop",
+                ActionButtonKind::Danger,
+                has_selector && !state.busy,
+                Some("Pop applies and removes the stash after a successful apply"),
+            )
+            .clicked()
+            {
+                self.preview_or_confirm(
+                    "stash.pop",
+                    vec![selector.clone()],
+                    "Preview stash pop".to_string(),
+                    format!("Apply {selector} and remove it from the stash list?"),
+                );
+            }
+            if action_button(
+                ui,
+                "Drop",
+                ActionButtonKind::Danger,
+                has_selector && !state.busy,
+                Some("Drop removes a stash entry and requires confirmation"),
+            )
+            .clicked()
+            {
+                self.preview_or_confirm(
+                    "stash.drop",
+                    vec![selector.clone()],
+                    "Preview stash drop".to_string(),
+                    format!("Remove {selector} from the stash list?"),
+                );
+            }
+        });
+
+        ui.add_space(design_tokens::SPACING_MD);
+        ui.label(RichText::new("Stash entries").strong());
+        if let Some(content) = snapshot.diff.content.as_deref().filter(|_| {
+            matches!(
+                snapshot.diff.source.as_ref(),
+                Some(DiffSource::Commit { oid }) if oid == "stash:list"
+            )
+        }) {
+            if content.trim() == "stash: <empty>" {
+                render_empty_state(
+                    ui,
+                    "No stashes",
+                    "Create a stash to preserve local changes for later.",
+                );
+            } else {
+                for line in content.lines() {
+                    let (reference, message) = line.split_once(' ').unwrap_or((line, ""));
+                    let selected = self.stash_selector_input.trim() == reference;
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        if ui
+                            .selectable_label(selected, RichText::new(reference).monospace())
+                            .clicked()
+                        {
+                            self.stash_selector_input = reference.to_string();
+                        }
+                        if !message.is_empty() {
+                            ui.label(message);
+                        }
+                    });
+                    ui.add_space(design_tokens::SPACING_XS);
+                }
+            }
+        } else {
+            render_empty_state(
+                ui,
+                "Stash list not loaded",
+                "Click List to load current stash entries.",
+            );
         }
     }
 
