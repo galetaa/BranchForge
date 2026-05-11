@@ -3696,6 +3696,13 @@ impl BranchForgeDesktopApp {
                     .show(ui, |ui| {
                         for item in items.into_iter().take(80) {
                             let enabled = item.enabled && !state.busy;
+                            let disabled_reason = if !item.enabled {
+                                item.disabled_reason.as_deref()
+                            } else if state.busy {
+                                Some("Job is running.")
+                            } else {
+                                None
+                            };
                             ui.vertical(|ui| {
                                 ui.horizontal(|ui| {
                                     let response = ui.add_enabled(
@@ -3705,13 +3712,17 @@ impl BranchForgeDesktopApp {
                                             item.title, item.action_id
                                         )),
                                     );
-                                    if response.clicked() {
+                                    let clicked = response.clicked();
+                                    if let Some(reason) = disabled_reason {
+                                        response.on_disabled_hover_text(reason);
+                                    }
+                                    if clicked {
                                         self.run_palette_item(item);
                                         close_after_select = true;
                                     }
                                     ui.label(item.owner.as_str());
                                     ui.label(format_danger(&item.danger));
-                                    if let Some(reason) = item.disabled_reason.as_deref() {
+                                    if let Some(reason) = disabled_reason {
                                         ui.weak(reason);
                                     }
                                 });

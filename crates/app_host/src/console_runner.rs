@@ -1168,7 +1168,7 @@ impl ConsoleRunner {
     fn action_availability(&self, spec: &ActionSpec) -> (bool, Option<String>) {
         let repo_open = self.repo_dir.is_some();
         if matches!(spec.when.as_deref(), Some("repo.is_open")) && !repo_open {
-            return (false, Some("repository is not open".to_string()));
+            return (false, Some("Repository is not open.".to_string()));
         }
 
         if let Some(owner) = self.action_owner_for(&spec.action_id)
@@ -1180,7 +1180,7 @@ impl ConsoleRunner {
         {
             return (
                 false,
-                Some(format!("plugin {owner} unavailable: {message}")),
+                Some(format!("Plugin {owner} is unavailable: {message}")),
             );
         }
 
@@ -1189,7 +1189,7 @@ impl ConsoleRunner {
             "index.stage_selected" | "index.unstage_selected" | "file.discard"
                 if snapshot.selection.selected_paths.is_empty() =>
             {
-                return (false, Some("no selected files".to_string()));
+                return (false, Some("No selected files.".to_string()));
             }
             "index.stage_hunk" | "index.stage_lines" | "file.discard_hunk"
             | "file.discard_lines"
@@ -1201,7 +1201,7 @@ impl ConsoleRunner {
             {
                 return (
                     false,
-                    Some("load a worktree diff with hunks first".to_string()),
+                    Some("Load a worktree diff with hunks first.".to_string()),
                 );
             }
             "index.unstage_hunk" | "index.unstage_lines"
@@ -1213,27 +1213,27 @@ impl ConsoleRunner {
             {
                 return (
                     false,
-                    Some("load an index diff with hunks first".to_string()),
+                    Some("Load an index diff with hunks first.".to_string()),
                 );
             }
             "commit.create" if snapshot.status.staged.is_empty() => {
-                return (false, Some("no staged changes".to_string()));
+                return (false, Some("No staged changes.".to_string()));
             }
             "history.load_more" if snapshot.history.next_cursor.is_none() => {
-                return (false, Some("no next history page".to_string()));
+                return (false, Some("No next history page.".to_string()));
             }
             "history.select_commit" | "cherry_pick.commit" | "revert.commit"
                 if snapshot.selection.selected_commit_oid.is_none() =>
             {
-                return (false, Some("no selected commit".to_string()));
+                return (false, Some("No selected commit.".to_string()));
             }
             "history.file" | "blame.file" if snapshot.selection.selected_paths.is_empty() => {
-                return (false, Some("no selected files".to_string()));
+                return (false, Some("No selected files.".to_string()));
             }
             "branch.checkout" | "branch.rename" | "branch.delete"
                 if snapshot.selection.selected_branch.is_none() =>
             {
-                return (false, Some("no selected branch".to_string()));
+                return (false, Some("No selected branch.".to_string()));
             }
             "branch.delete"
                 if snapshot
@@ -1248,28 +1248,28 @@ impl ConsoleRunner {
                             .any(|branch| branch.name == selected && branch.is_current)
                     }) =>
             {
-                return (false, Some("cannot delete current branch".to_string()));
+                return (false, Some("Current branch cannot be deleted.".to_string()));
             }
             "rebase.execute" if snapshot.rebase.plan.is_none() => {
-                return (false, Some("no rebase plan".to_string()));
+                return (false, Some("No rebase plan.".to_string()));
             }
             "rebase.plan.set_action" | "rebase.plan.move" | "rebase.plan.clear"
                 if snapshot.rebase.plan.is_none() =>
             {
-                return (false, Some("no rebase plan".to_string()));
+                return (false, Some("No rebase plan.".to_string()));
             }
             "rebase.continue" | "rebase.skip" | "rebase.abort"
                 if snapshot.rebase.session.is_none() =>
             {
-                return (false, Some("no active rebase session".to_string()));
+                return (false, Some("No active rebase session.".to_string()));
             }
             "conflict.focus" if snapshot.selection.selected_paths.is_empty() => {
-                return (false, Some("no selected conflict files".to_string()));
+                return (false, Some("No selected conflict files.".to_string()));
             }
             "conflict.resolve.ours" | "conflict.resolve.theirs" | "conflict.mark_resolved"
                 if snapshot.selection.selected_paths.is_empty() =>
             {
-                return (false, Some("no selected conflict files".to_string()));
+                return (false, Some("No selected conflict files.".to_string()));
             }
             "conflict.continue" | "conflict.abort"
                 if snapshot
@@ -1278,14 +1278,14 @@ impl ConsoleRunner {
                     .and_then(|repo| repo.conflict_state.as_ref())
                     .is_none() =>
             {
-                return (false, Some("no active conflict session".to_string()));
+                return (false, Some("No active conflict session.".to_string()));
             }
             "plugin.enable" | "plugin.disable" | "plugin.remove"
                 if snapshot.selection.selected_plugin_id.is_none() =>
             {
                 return (
                     false,
-                    Some("no selected plugin (or pass id explicitly)".to_string()),
+                    Some("No selected plugin, or pass an id explicitly.".to_string()),
                 );
             }
             _ => {}
