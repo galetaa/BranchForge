@@ -105,11 +105,11 @@ fn build_register_payload() -> PluginRegister {
             spec(
                 "commit.amend",
                 "Amend Commit",
-                Some(DangerLevel::Medium),
+                Some(DangerLevel::High),
                 ActionEffects {
                     writes_refs: true,
                     writes_index: true,
-                    danger_level: DangerLevel::Medium,
+                    danger_level: DangerLevel::High,
                     ..ActionEffects::default()
                 },
                 ConfirmPolicy::OnDanger,

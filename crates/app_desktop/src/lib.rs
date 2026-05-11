@@ -1271,26 +1271,57 @@ impl BranchForgeDesktopApp {
                         .desired_width(f32::INFINITY)
                         .hint_text("Optional description"),
                 );
-                let staged_count = snapshot.status.staged.len();
-                let reason = commit_disabled_reason(snapshot, &self.commit_message, busy);
-                let can_commit = reason.is_none();
-                if action_button(
-                    ui,
-                    &commit_button_label(staged_count),
-                    ActionButtonKind::Primary,
-                    can_commit,
-                    reason,
-                )
-                .clicked()
-                {
-                    let mut message = self.commit_message.trim().to_string();
-                    let description = self.commit_description.trim();
-                    if !description.is_empty() {
-                        message.push_str("\n\n");
-                        message.push_str(description);
+                ui.horizontal_wrapped(|ui| {
+                    let staged_count = snapshot.status.staged.len();
+                    let reason = commit_disabled_reason(snapshot, &self.commit_message, busy);
+                    let can_commit = reason.is_none();
+                    if action_button(
+                        ui,
+                        &commit_button_label(staged_count),
+                        ActionButtonKind::Primary,
+                        can_commit,
+                        reason,
+                    )
+                    .clicked()
+                    {
+                        let message =
+                            build_commit_message(&self.commit_message, &self.commit_description);
+                        self.execute_action_direct("commit.create", vec![message], false);
                     }
-                    self.execute_action_direct("commit.create", vec![message], false);
-                }
+
+                    let amend_reason = amend_disabled_reason(
+                        snapshot,
+                        &self.commit_message,
+                        &self.commit_description,
+                        busy,
+                    );
+                    if action_button(
+                        ui,
+                        "Amend last commit",
+                        ActionButtonKind::Danger,
+                        amend_reason.is_none(),
+                        amend_reason,
+                    )
+                    .clicked()
+                    {
+                        let args = if self.commit_message.trim().is_empty() {
+                            Vec::new()
+                        } else {
+                            vec![build_commit_message(
+                                &self.commit_message,
+                                &self.commit_description,
+                            )]
+                        };
+                        self.ui_state.pending_confirmation = Some(ConfirmationDialog {
+                            action_id: "commit.amend".to_string(),
+                            args,
+                            title: "Amend last commit".to_string(),
+                            message:
+                                "This rewrites the latest commit using the staged index and message. Continue?"
+                                    .to_string(),
+                        });
+                    }
+                });
             });
     }
 
@@ -4215,6 +4246,33 @@ fn commit_disabled_reason(
     } else {
         None
     }
+}
+
+fn amend_disabled_reason(
+    snapshot: &StoreSnapshot,
+    commit_summary: &str,
+    commit_description: &str,
+    busy: bool,
+) -> Option<&'static str> {
+    if busy {
+        Some("Repository operation is running")
+    } else if commit_summary.trim().is_empty() && !commit_description.trim().is_empty() {
+        Some("Commit summary is required to use description")
+    } else if snapshot.status.staged.is_empty() && commit_summary.trim().is_empty() {
+        Some("No staged changes or replacement message")
+    } else {
+        None
+    }
+}
+
+fn build_commit_message(commit_summary: &str, commit_description: &str) -> String {
+    let mut message = commit_summary.trim().to_string();
+    let description = commit_description.trim();
+    if !description.is_empty() {
+        message.push_str("\n\n");
+        message.push_str(description);
+    }
+    message
 }
 
 fn commit_button_label(staged_count: usize) -> String {

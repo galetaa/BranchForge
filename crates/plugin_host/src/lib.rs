@@ -1672,11 +1672,11 @@ pub fn status_registration_payload() -> PluginRegister {
                 "commit.amend",
                 "Amend Commit",
                 Some("repo.is_open"),
-                Some(DangerLevel::Medium),
+                Some(DangerLevel::High),
                 ActionEffects {
                     writes_refs: true,
                     writes_index: true,
-                    danger_level: DangerLevel::Medium,
+                    danger_level: DangerLevel::High,
                     ..ActionEffects::default()
                 },
                 ConfirmPolicy::OnDanger,

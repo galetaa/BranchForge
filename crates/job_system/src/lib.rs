@@ -354,10 +354,12 @@ pub fn execute_job_op(
                 });
             }
 
+            let history_refresh = loaded_history_refresh_request(store);
             git_service::commit_create(cwd, message)?;
             store.update_commit_message(String::new(), None);
             refresh_repo_and_status(cwd, store)?;
             refresh_refs(cwd, store)?;
+            refresh_loaded_history(cwd, store, history_refresh)?;
 
             Ok(JobExecutionResult {
                 op: request.op.clone(),
@@ -1711,8 +1713,11 @@ pub fn execute_job_op(
         "commit.amend" => {
             ensure_no_conflicts(cwd, "commit.amend")?;
             let message = request.paths.first().map(String::as_str);
+            let history_refresh = loaded_history_refresh_request(store);
             git_service::commit_amend(cwd, message)?;
             refresh_repo_and_status(cwd, store)?;
+            refresh_refs(cwd, store)?;
+            refresh_loaded_history(cwd, store, history_refresh)?;
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -1828,6 +1833,74 @@ fn refresh_refs(cwd: &Path, store: &mut StateStore) -> Result<(), JobExecutionEr
         .map(|name| state_store::TagInfo { name })
         .collect();
     store.update_tags(mapped_tags);
+    Ok(())
+}
+
+struct LoadedHistoryRefresh {
+    limit: usize,
+    filter_author: Option<String>,
+    filter_text: Option<String>,
+}
+
+fn loaded_history_refresh_request(store: &StateStore) -> Option<LoadedHistoryRefresh> {
+    let snapshot = store.snapshot();
+    let loaded_count = snapshot.history.commits.len();
+    let has_history_state = loaded_count > 0
+        || snapshot.history.next_cursor.is_some()
+        || snapshot.history.filter_author.is_some()
+        || snapshot.history.filter_text.is_some();
+    if !has_history_state {
+        return None;
+    }
+
+    Some(LoadedHistoryRefresh {
+        limit: loaded_count.max(20),
+        filter_author: snapshot.history.filter_author.clone(),
+        filter_text: snapshot.history.filter_text.clone(),
+    })
+}
+
+fn refresh_loaded_history(
+    cwd: &Path,
+    store: &mut StateStore,
+    request: Option<LoadedHistoryRefresh>,
+) -> Result<(), JobExecutionError> {
+    let Some(request) = request else {
+        return Ok(());
+    };
+    let commits = git_service::commit_log_page_filtered_with_hash_prefix(
+        cwd,
+        0,
+        request.limit,
+        request.filter_author.as_deref(),
+        request.filter_text.as_deref(),
+        None,
+    )?;
+    let commit_len = commits.len();
+    let history_commits = commits
+        .into_iter()
+        .map(|commit| state_store::CommitSummary {
+            oid: commit.oid,
+            author: commit.author,
+            time: commit.time,
+            summary: commit.summary,
+        })
+        .collect();
+    let next_cursor = if commit_len == request.limit {
+        Some(HistoryCursor {
+            offset: commit_len,
+            page_size: request.limit,
+        })
+    } else {
+        None
+    };
+    store.update_history_page(
+        history_commits,
+        next_cursor,
+        false,
+        request.filter_author,
+        request.filter_text,
+    );
     Ok(())
 }
 
@@ -3835,6 +3908,53 @@ mod tests {
             &mut store,
         );
         assert!(commit_result.is_err());
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn commit_amend_refreshes_loaded_history() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+        assert!(std::fs::write(repo_dir.join("README.md"), "hello\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["README.md".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "old message").is_ok());
+
+        let mut store = StateStore::new();
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "history.page".to_string(),
+                    lock: JobLock::Read,
+                    paths: vec!["0".to_string(), "20".to_string()],
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert_eq!(store.snapshot().history.commits[0].summary, "old message");
+
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "commit.amend".to_string(),
+                    lock: JobLock::RefsWrite,
+                    paths: vec!["new message".to_string()],
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert_eq!(store.snapshot().history.commits[0].summary, "new message");
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }
