@@ -166,7 +166,6 @@ pub fn execute_job_op(
             refresh_repo_and_status(cwd, store)?;
             refresh_refs(cwd, store)?;
             sync_rebase_session_state(cwd, store)?;
-            store.clear_journal();
             Ok(JobExecutionResult {
                 op: request.op.clone(),
                 success: true,
@@ -2932,6 +2931,65 @@ mod tests {
         assert!(snapshot.repo.is_some());
         assert!(snapshot.status.untracked.iter().any(|p| p == "README.md"));
         assert!(snapshot.version >= 3);
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn repo_open_preserves_operation_journal() {
+        let repo_dir = unique_temp_dir();
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+        assert!(std::fs::write(repo_dir.join("README.md"), "hello\n").is_ok());
+
+        let mut store = StateStore::new();
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "index.stage_paths".to_string(),
+                    lock: JobLock::RefsWrite,
+                    paths: vec!["README.md".to_string()],
+                    job_id: Some(99),
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert!(
+            store
+                .snapshot()
+                .journal
+                .entries
+                .iter()
+                .any(|entry| entry.op == "index.stage_paths")
+        );
+
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "repo.open".to_string(),
+                    lock: JobLock::Read,
+                    paths: Vec::new(),
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert!(
+            store
+                .snapshot()
+                .journal
+                .entries
+                .iter()
+                .any(|entry| entry.op == "index.stage_paths")
+        );
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }

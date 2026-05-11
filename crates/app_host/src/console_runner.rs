@@ -7303,6 +7303,61 @@ mod tests {
     }
 
     #[test]
+    fn journal_export_writes_mutating_operations() {
+        let repo_dir = unique_temp_dir("journal-export");
+        assert!(std::fs::create_dir_all(&repo_dir).is_ok());
+        assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
+        assert!(
+            git_service::run_git(&repo_dir, &["config", "user.email", "dev@example.com"]).is_ok()
+        );
+        assert!(git_service::run_git(&repo_dir, &["config", "user.name", "Dev User"]).is_ok());
+        assert!(std::fs::write(repo_dir.join("README.md"), "hello\n").is_ok());
+
+        let mut runner = ConsoleRunner::new(test_config(&repo_dir));
+        assert!(
+            runner
+                .execute(ConsoleCommand::Open {
+                    path: repo_dir.to_string_lossy().to_string(),
+                })
+                .is_ok()
+        );
+        assert!(
+            runner
+                .execute(ConsoleCommand::Run {
+                    target: "index.stage_paths".to_string(),
+                    args: vec!["README.md".to_string()],
+                    confirmed: false,
+                })
+                .is_ok()
+        );
+        assert!(
+            runner
+                .execute(ConsoleCommand::Run {
+                    target: "commit.create".to_string(),
+                    args: vec!["journal export smoke".to_string()],
+                    confirmed: false,
+                })
+                .is_ok()
+        );
+
+        let export_path = repo_dir.join("target/tmp/journal-export.json");
+        assert!(
+            runner
+                .execute(ConsoleCommand::Run {
+                    target: "journal.export".to_string(),
+                    args: vec![export_path.to_string_lossy().to_string()],
+                    confirmed: false,
+                })
+                .is_ok()
+        );
+        let exported = std::fs::read_to_string(&export_path).expect("journal export");
+        assert!(exported.contains("index.stage_paths"));
+        assert!(exported.contains("commit.create"));
+
+        let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
     fn parses_plugin_install_registry_command() {
         let command = parse_command_line("plugin install-registry sample_status plugin_registry")
             .expect("parse");
