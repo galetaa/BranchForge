@@ -1566,12 +1566,6 @@ pub fn execute_job_op(
                     message: "branch.checkout requires name in request.paths[0]".to_string(),
                 }
             })?;
-            let clean = git_service::worktree_is_clean(cwd)?;
-            if !clean {
-                return Err(JobExecutionError::InvalidInput {
-                    message: "Working tree has uncommitted changes.".to_string(),
-                });
-            }
             git_service::checkout_branch(cwd, name)?;
             refresh_repo_and_status(cwd, store)?;
             refresh_refs(cwd, store)?;
@@ -1607,14 +1601,7 @@ pub fn execute_job_op(
             })?;
             ensure_valid_branch_name(cwd, name, "branch.create_checkout")?;
             ensure_branch_does_not_exist(cwd, name, "branch.create_checkout")?;
-            let clean = git_service::worktree_is_clean(cwd)?;
-            if !clean {
-                return Err(JobExecutionError::InvalidInput {
-                    message: "Working tree has uncommitted changes.".to_string(),
-                });
-            }
-            git_service::create_branch(cwd, name)?;
-            git_service::checkout_branch(cwd, name)?;
+            git_service::checkout_new_branch(cwd, name)?;
             refresh_repo_and_status(cwd, store)?;
             refresh_refs(cwd, store)?;
             Ok(JobExecutionResult {
@@ -2767,6 +2754,15 @@ mod tests {
         assert!(std::fs::write(repo_dir.join("README.md"), "base\n").is_ok());
         assert!(git_service::stage_paths(repo_dir, &["README.md".to_string()]).is_ok());
         assert!(git_service::commit_create(repo_dir, "base").is_ok());
+    }
+
+    fn current_branch_name(repo_dir: &std::path::Path) -> String {
+        let out = git_service::run_git(repo_dir, &["rev-parse", "--abbrev-ref", "HEAD"])
+            .expect("current branch");
+        String::from_utf8(out.stdout)
+            .expect("utf8 branch")
+            .trim()
+            .to_string()
     }
 
     #[test]
@@ -4062,7 +4058,7 @@ mod tests {
     }
 
     #[test]
-    fn checkout_blocked_when_dirty() {
+    fn checkout_allows_safe_dirty_tree_and_blocks_overwrite() {
         let repo_dir = unique_temp_dir();
         assert!(std::fs::create_dir_all(&repo_dir).is_ok());
         assert!(git_service::run_git(&repo_dir, &["init"]).is_ok());
@@ -4073,12 +4069,13 @@ mod tests {
         assert!(std::fs::write(repo_dir.join("README.md"), "hello\n").is_ok());
         assert!(git_service::stage_paths(&repo_dir, &["README.md".to_string()]).is_ok());
         assert!(git_service::commit_create(&repo_dir, "base").is_ok());
+        let base_branch = current_branch_name(&repo_dir);
         assert!(git_service::create_branch(&repo_dir, "feature").is_ok());
 
         assert!(std::fs::write(repo_dir.join("README.md"), "dirty\n").is_ok());
 
         let mut store = StateStore::new();
-        let result = execute_job_op(
+        let safe_checkout = execute_job_op(
             &repo_dir,
             &JobRequest {
                 op: "branch.checkout".to_string(),
@@ -4088,28 +4085,40 @@ mod tests {
             },
             &mut store,
         );
-        assert!(matches!(
-            result,
-            Err(JobExecutionError::InvalidInput { message })
-                if message == "Working tree has uncommitted changes."
-        ));
+        assert!(safe_checkout.is_ok());
+        assert_eq!(current_branch_name(&repo_dir), "feature");
 
         let create_checkout = execute_job_op(
             &repo_dir,
             &JobRequest {
                 op: "branch.create_checkout".to_string(),
                 lock: JobLock::RefsWrite,
-                paths: vec!["feature/dirty".to_string()],
+                paths: vec!["dirty-feature".to_string()],
                 job_id: None,
             },
             &mut store,
         );
-        assert!(matches!(
-            create_checkout,
-            Err(JobExecutionError::InvalidInput { message })
-                if message == "Working tree has uncommitted changes."
-        ));
-        assert!(git_service::resolve_ref_oid(&repo_dir, "feature/dirty").is_err());
+        assert!(create_checkout.is_ok());
+        assert_eq!(current_branch_name(&repo_dir), "dirty-feature");
+
+        assert!(git_service::run_git(&repo_dir, &["checkout", "feature"]).is_ok());
+        assert!(std::fs::write(repo_dir.join("README.md"), "feature\n").is_ok());
+        assert!(git_service::stage_paths(&repo_dir, &["README.md".to_string()]).is_ok());
+        assert!(git_service::commit_create(&repo_dir, "feature change").is_ok());
+        assert!(git_service::run_git(&repo_dir, &["checkout", &base_branch]).is_ok());
+        assert!(std::fs::write(repo_dir.join("README.md"), "dirty\n").is_ok());
+
+        let unsafe_checkout = execute_job_op(
+            &repo_dir,
+            &JobRequest {
+                op: "branch.checkout".to_string(),
+                lock: JobLock::RefsWrite,
+                paths: vec!["feature".to_string()],
+                job_id: None,
+            },
+            &mut store,
+        );
+        assert!(matches!(unsafe_checkout, Err(JobExecutionError::Git(_))));
 
         let _ = std::fs::remove_dir_all(&repo_dir);
     }

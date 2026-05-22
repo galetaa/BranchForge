@@ -2554,6 +2554,11 @@ pub fn checkout_branch(cwd: &Path, name: &str) -> Result<(), GitServiceError> {
     Ok(())
 }
 
+pub fn checkout_new_branch(cwd: &Path, name: &str) -> Result<(), GitServiceError> {
+    let _ = run_git(cwd, &["checkout", "-b", name])?;
+    Ok(())
+}
+
 pub fn rebase_branch_onto(cwd: &Path, branch: &str, new_base: &str) -> Result<(), GitServiceError> {
     if branch.trim().is_empty() || new_base.trim().is_empty() {
         return Err(GitServiceError::ParseError(
