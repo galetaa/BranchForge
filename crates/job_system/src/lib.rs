@@ -165,6 +165,7 @@ pub fn execute_job_op(
         "repo.open" => {
             refresh_repo_and_status(cwd, store)?;
             refresh_refs(cwd, store)?;
+            refresh_remotes(cwd, store)?;
             sync_rebase_session_state(cwd, store)?;
             Ok(JobExecutionResult {
                 op: request.op.clone(),
@@ -2957,6 +2958,54 @@ mod tests {
         assert!(snapshot.version >= 3);
 
         let _ = std::fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn repo_open_refreshes_remote_state() {
+        let root = unique_temp_dir();
+        let repo_dir = root.join("repo");
+        let origin = root.join("origin.git");
+        assert!(std::fs::create_dir_all(&root).is_ok());
+        init_basic_repo(&repo_dir);
+        assert!(
+            git_service::run_git(
+                &root,
+                &["init", "--bare", origin.to_string_lossy().as_ref()]
+            )
+            .is_ok()
+        );
+        assert!(
+            git_service::run_git(
+                &repo_dir,
+                &["remote", "add", "origin", origin.to_string_lossy().as_ref()]
+            )
+            .is_ok()
+        );
+
+        let mut store = StateStore::new();
+        assert!(
+            execute_job_op(
+                &repo_dir,
+                &JobRequest {
+                    op: "repo.open".to_string(),
+                    lock: JobLock::Read,
+                    paths: Vec::new(),
+                    job_id: None,
+                },
+                &mut store,
+            )
+            .is_ok()
+        );
+        assert!(
+            store
+                .snapshot()
+                .remotes
+                .remotes
+                .iter()
+                .any(|remote| remote.name == "origin")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

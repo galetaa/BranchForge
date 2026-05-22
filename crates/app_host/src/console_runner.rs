@@ -135,6 +135,7 @@ enum SelectionTarget {
 enum PanelKind {
     Status,
     History,
+    Diff,
     Branches,
     Tags,
     Compare,
@@ -147,6 +148,7 @@ impl PanelKind {
         match raw {
             "status" => Some(Self::Status),
             "history" => Some(Self::History),
+            "diff" => Some(Self::Diff),
             "branches" => Some(Self::Branches),
             "tags" => Some(Self::Tags),
             "compare" => Some(Self::Compare),
@@ -160,6 +162,7 @@ impl PanelKind {
         match self {
             Self::Status => "status",
             Self::History => "history",
+            Self::Diff => "diff",
             Self::Branches => "branches",
             Self::Tags => "tags",
             Self::Compare => "compare",
@@ -172,6 +175,7 @@ impl PanelKind {
         match self {
             Self::Status => "status.panel",
             Self::History => "history.panel",
+            Self::Diff => "diff.panel",
             Self::Branches => "branches.panel",
             Self::Tags => "tags.panel",
             Self::Compare => "compare.panel",
@@ -1375,6 +1379,11 @@ impl ConsoleRunner {
                         }
                     }
                 }
+                PanelKind::Diff => {
+                    if !self.store.snapshot().selection.selected_paths.is_empty() {
+                        let _ = self.refresh_selected_file_diff();
+                    }
+                }
                 PanelKind::Branches | PanelKind::Tags => {
                     self.execute_in_open_repo("refs.refresh", Vec::new(), false)?;
                 }
@@ -1758,6 +1767,13 @@ impl ConsoleRunner {
             false,
         )?;
         self.execute_job(&repo_dir, "refs.refresh", JobLock::Read, Vec::new(), false)?;
+        self.execute_job(
+            &repo_dir,
+            "remote.refresh",
+            JobLock::Read,
+            Vec::new(),
+            false,
+        )?;
 
         if let Some(replayable) = self.last_replayable.clone() {
             self.run_replayable(replayable)?;
@@ -3415,7 +3431,6 @@ impl ConsoleRunner {
             | "commit.amend"
             | "stash.create"
             | "stash.list"
-            | "stash.show_diff"
             | "stash.apply"
             | "stash.pop"
             | "stash.drop" => Some(PanelKind::Status.view_id()),
@@ -3427,9 +3442,11 @@ impl ConsoleRunner {
             | "history.select_commit"
             | "history.details"
             | "blame.file"
-            | "diff.commit"
             | "cherry_pick.commit"
             | "revert.commit" => Some(PanelKind::History.view_id()),
+            "diff.worktree" | "diff.index" | "diff.commit" | "stash.show_diff" => {
+                Some(PanelKind::Diff.view_id())
+            }
             "branch.checkout"
             | "branch.create"
             | "branch.create_checkout"
@@ -5696,10 +5713,10 @@ fn parse_command_line(line: &str) -> Result<ConsoleCommand, String> {
         }
         "panel" => {
             let raw = tokens.get(1).ok_or_else(|| {
-                "usage: panel <status|history|branches|tags|compare|diagnostics>".to_string()
+                "usage: panel <status|history|diff|branches|tags|compare|diagnostics>".to_string()
             })?;
             let panel = PanelKind::parse(raw).ok_or_else(|| {
-                "panel must be one of: status, history, branches, tags, compare, diagnostics"
+                "panel must be one of: status, history, diff, branches, tags, compare, diagnostics"
                     .to_string()
             })?;
             Ok(ConsoleCommand::Panel { panel })
@@ -5870,7 +5887,7 @@ fn help_text() -> String {
         "Commands",
         "help",
         "open <path>",
-        "panel <status|history|branches|tags|compare|diagnostics>",
+        "panel <status|history|diff|branches|tags|compare|diagnostics>",
         "show",
         "actions",
         "ops",
@@ -6836,6 +6853,7 @@ fn view_to_owner(view_id: &str) -> Option<&'static str> {
     match view_id {
         "status.panel" => Some("status"),
         "history.panel" => Some("history"),
+        "diff.panel" => Some("diff"),
         "branches.panel" => Some("branches"),
         "tags.panel" => Some("tags"),
         "compare.panel" => Some("compare"),
@@ -7281,15 +7299,6 @@ mod tests {
             runner
                 .execute(ConsoleCommand::Open {
                     path: repo_dir.to_string_lossy().to_string(),
-                })
-                .is_ok()
-        );
-        assert!(
-            runner
-                .execute(ConsoleCommand::Run {
-                    target: "remote.refresh".to_string(),
-                    args: Vec::new(),
-                    confirmed: false,
                 })
                 .is_ok()
         );
@@ -7911,6 +7920,31 @@ mod tests {
             runner.store.snapshot().active_view.as_deref(),
             Some("logs.panel")
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn diff_operations_route_to_diff_panel() {
+        let root = unique_temp_dir("diff-panel-routing");
+        assert!(std::fs::create_dir_all(&root).is_ok());
+        let mut runner = ConsoleRunner::new(test_config(&root));
+
+        for op in [
+            "diff.worktree",
+            "diff.index",
+            "diff.commit",
+            "stash.show_diff",
+        ] {
+            runner.sync_active_panel_after_op(op);
+            assert_eq!(
+                runner.store.snapshot().active_view.as_deref(),
+                Some("diff.panel"),
+                "{op} should select the diff panel"
+            );
+        }
+
+        assert_eq!(view_to_owner("diff.panel"), Some("diff"));
 
         let _ = std::fs::remove_dir_all(&root);
     }
