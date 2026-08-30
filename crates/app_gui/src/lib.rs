@@ -187,10 +187,9 @@ fn build_command_from_form(form: &HashMap<String, String>) -> Option<String> {
 
 fn build_gui_action_command(action: &str, form: &HashMap<String, String>) -> Option<String> {
     match action {
-        "repo_open" => Some(build_run_command(
-            "repo.open",
-            vec![form_value(form, "repo_path")?.to_string()],
-            false,
+        "repo_open" => Some(format!(
+            "open {}",
+            shell_quote(form_value(form, "repo_path")?)
         )),
         "commit_create" => Some(build_run_command(
             "commit.create",
@@ -794,7 +793,7 @@ fn render_page(
 
 fn render_masthead(snapshot: &StoreSnapshot, repo_root: &str, repo_state: &str) -> String {
     format!(
-        "<div><p class=\"eyebrow\">Branchforge</p><h1>Runtime GUI</h1><p class=\"sub\">Focused controls over the same host runtime, jobs, state store, and action catalog.</p><div class=\"hero-metrics\"><span class=\"badge\">state v{}</span><span class=\"badge\">{}</span>{}</div></div><div class=\"masthead-tools\">{}{} </div>",
+        "<div class=\"brand-block\"><div class=\"brand-line\"><span class=\"brand-mark\" aria-hidden=\"true\">BF</span><div><p class=\"eyebrow\">BranchForge</p><h1>Repository Workspace</h1></div></div><p class=\"sub\">A focused Git environment for daily work, advanced operations, and safe recovery.</p><div class=\"hero-metrics\"><span class=\"badge\">state v{}</span><span class=\"badge\">{}</span>{}</div></div><div class=\"masthead-tools\">{}{} </div>",
         snapshot.version,
         repo_state,
         snapshot
@@ -810,13 +809,13 @@ fn render_masthead(snapshot: &StoreSnapshot, repo_root: &str, repo_state: &str) 
 
 fn render_open_form(repo_root: &str) -> String {
     format!(
-        "<form method=\"post\" action=\"/command\" class=\"card tight open-form\"><label>Repository</label><input type=\"hidden\" name=\"gui_action\" value=\"repo_open\"><div class=\"row row-stretch\"><input type=\"text\" name=\"repo_path\" value=\"{}\" placeholder=\"/path/to/repo\"><button type=\"submit\">Open</button></div></form>",
+        "<form method=\"post\" action=\"/command\" class=\"card tight open-form\"><label>Open repository</label><input type=\"hidden\" name=\"gui_action\" value=\"repo_open\"><div class=\"row row-stretch\"><input type=\"text\" name=\"repo_path\" value=\"{}\" placeholder=\"/path/to/repo\"><button type=\"submit\">Open</button></div></form>",
         escape_html(repo_root)
     )
 }
 
 fn render_command_bar() -> String {
-    "<form method=\"post\" action=\"/command\" class=\"card tight command-bar\"><label>Command Bar</label><div class=\"row row-stretch\"><input type=\"text\" name=\"command\" placeholder=\"run diagnostics.repo_capabilities\"><button type=\"submit\">Run</button></div><p class=\"meta\">Accepts the same runtime commands as the console runner.</p></form>".to_string()
+    "<form method=\"post\" action=\"/command\" class=\"card tight command-bar\"><label>Command palette</label><div class=\"row row-stretch\"><input type=\"text\" name=\"command\" placeholder=\"run diagnostics.repo_capabilities\"><button type=\"submit\">Run</button></div><p class=\"meta\">Direct access to the shared BranchForge runtime.</p></form>".to_string()
 }
 
 fn render_sidebar(
@@ -969,6 +968,7 @@ fn active_view_title(active_view: &str) -> &'static str {
         "empty.state" => "Getting Started",
         "status.panel" => "Status",
         "history.panel" => "History",
+        "diff.panel" => "Diff",
         "branches.panel" => "Branches",
         "tags.panel" => "Tags",
         "compare.panel" => "Compare",
@@ -991,63 +991,93 @@ fn resolved_active_view(snapshot: &StoreSnapshot) -> String {
 fn styles() -> &'static str {
     r#"
 :root{
-  --bg:#f3f6f9;
-  --surface:#ffffff;
-  --surface-muted:#f8fafc;
-  --ink:#18212b;
-  --muted:#667085;
-  --line:#d9e1ea;
-  --accent:#2563eb;
-  --accent-soft:#eef4ff;
-  --accent-strong:#1d4ed8;
-  --warn:#b42318;
+  color-scheme:dark;
+  --bg:#0d0f12;
+  --surface:#14171b;
+  --surface-raised:#181c21;
+  --surface-muted:#101317;
+  --ink:#e7e9ed;
+  --muted:#929aa7;
+  --subtle:#69717d;
+  --line:#2a3038;
+  --line-strong:#38404a;
+  --accent:#e59456;
+  --accent-hover:#f0a56a;
+  --accent-soft:#2b211a;
+  --accent-strong:#ffc18f;
+  --focus:#78a9ff;
+  --warn:#ff7b72;
 }
 *{box-sizing:border-box}
+html{background:var(--bg)}
 body{
   margin:0;
-  font-family:"SF Pro Text","Segoe UI",sans-serif;
+  min-width:760px;
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;
   color:var(--ink);
   background:var(--bg);
+  font-size:14px;
+  -webkit-font-smoothing:antialiased;
 }
-.shell{max-width:1360px;margin:0 auto;padding:24px}
+.shell{max-width:1540px;margin:0 auto;padding:18px 22px 32px}
 .masthead{
   display:grid;
-  grid-template-columns:minmax(0,1fr) minmax(280px,420px);
-  gap:12px;
-  align-items:start;
+  grid-template-columns:310px minmax(0,1fr);
+  gap:18px;
+  align-items:stretch;
+  padding-bottom:14px;
   margin-bottom:12px;
+  border-bottom:1px solid var(--line);
 }
-.masthead-tools{display:grid;gap:10px}
+.masthead-tools{display:grid;grid-template-columns:minmax(290px,.85fr) minmax(360px,1.15fr);gap:10px}
+.brand-block{padding:5px 0 2px}
+.brand-line{display:flex;align-items:center;gap:11px}
+.brand-mark{
+  display:grid;
+  place-items:center;
+  width:36px;
+  height:36px;
+  border:1px solid #8a5834;
+  border-radius:7px;
+  background:#211a15;
+  color:#ffc18f;
+  font:700 .76rem/1 "SFMono-Regular",Consolas,monospace;
+  letter-spacing:.06em;
+}
 .eyebrow{
-  margin:0 0 6px;
+  margin:0 0 3px;
   text-transform:uppercase;
-  letter-spacing:.12em;
-  font-size:.75rem;
-  color:var(--accent);
+  letter-spacing:.14em;
+  font-size:.68rem;
+  font-weight:700;
+  color:var(--accent-strong);
 }
-.eyebrow-small{font-size:.68rem;margin-bottom:4px}
+.eyebrow-small{font-size:.64rem;margin-bottom:3px}
 h1,h2,h3{
   margin:0;
   font-family:inherit;
-  font-weight:600;
+  font-weight:650;
 }
-h1{font-size:clamp(1.8rem,4vw,2.5rem);line-height:1.05}
-h2{font-size:.98rem;margin-bottom:8px}
-.sub{max-width:46rem;color:var(--muted);font-size:.96rem;line-height:1.45}
+h1{font-size:1.24rem;line-height:1.15;letter-spacing:-.015em}
+h2{font-size:.86rem;margin-bottom:9px;letter-spacing:.005em}
+h3{font-size:.82rem}
+.sub{margin:10px 0 0;max-width:30rem;color:var(--muted);font-size:.78rem;line-height:1.45}
 .workspace{
   display:grid;
-  grid-template-columns:280px minmax(0,1fr);
-  gap:12px;
+  grid-template-columns:232px minmax(0,1fr);
+  gap:10px;
 }
-.sidebar,.content{display:grid;gap:10px;align-content:start}
-.sidebar{position:sticky;top:12px;height:max-content}
+.sidebar,.content{display:grid;gap:8px;align-content:start;min-width:0}
+.sidebar{position:sticky;top:10px;height:max-content;overflow:hidden}
 .card{
   background:var(--surface);
   border:1px solid var(--line);
-  border-radius:14px;
-  padding:12px;
+  border-radius:7px;
+  padding:12px 13px;
 }
-.card.tight{padding:10px 12px}
+.card.tight{padding:10px 11px}
+.content>.card,.content>.grid-two{min-width:0}
+.content>.card:not(.workspace-summary){box-shadow:0 10px 28px rgba(0,0,0,.08)}
 .fold summary{
   display:flex;
   justify-content:space-between;
@@ -1057,133 +1087,193 @@ h2{font-size:.98rem;margin-bottom:8px}
   list-style:none;
 }
 .fold summary::-webkit-details-marker{display:none}
-.fold-icon::before{content:"+";font-weight:700;color:var(--muted)}
+.fold-icon::before{content:"+";font:600 .9rem/1 monospace;color:var(--subtle)}
 .fold[open] .fold-icon::before{content:"−"}
-.fold-body{display:grid;gap:10px;margin-top:10px}
+.fold-body{display:grid;gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}
+.sidebar .card{background:var(--surface-muted)}
+.sidebar .tabs{display:grid;gap:3px}
+.sidebar .tabs form{width:100%}
+.sidebar .tabs button{width:100%;justify-content:flex-start;text-align:left}
+.sidebar .chip-list{min-width:0}
+.sidebar .badge{display:block;width:100%;min-width:0;white-space:nowrap}
 .workspace-summary .summary-head{
   display:flex;
   justify-content:space-between;
   gap:10px;
   align-items:flex-start;
 }
+.workspace-summary{background:var(--surface-muted);border-color:var(--line-strong)}
 .flash{
-  border-radius:12px;
-  min-height:16px;
-  padding:10px 12px;
-  margin-bottom:12px;
+  border-radius:6px;
+  padding:9px 12px;
+  margin-bottom:10px;
   border:1px solid var(--line);
+  font-size:.82rem;
 }
-.flash.info{background:var(--accent-soft);color:var(--accent-strong)}
-.flash.error{background:#fff1ee;color:var(--warn)}
-.stack,.open-form{display:grid;gap:10px}
-.command-bar,.open-form{gap:8px}
-.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.flash.info{background:#14231d;border-color:#284838;color:#a2e7c4}
+.flash.error{background:#2a1717;border-color:#5a2929;color:#ffaaa3}
+.stack,.open-form{display:grid;gap:8px}
+.command-bar,.open-form{gap:7px;background:var(--surface-muted)}
+label{font-size:.72rem;font-weight:650;color:#b9bec7;letter-spacing:.01em}
+.row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 .row-stretch > *{flex:1}
 .row-stretch button{flex:0 0 auto}
 input[type=text],textarea,select{
   width:100%;
-  border:1px solid var(--line);
-  border-radius:10px;
-  padding:9px 11px;
-  background:var(--surface);
+  border:1px solid var(--line-strong);
+  border-radius:5px;
+  padding:8px 9px;
+  background:#0e1115;
   color:var(--ink);
+  font:500 .79rem/1.2 "SFMono-Regular",Consolas,monospace;
+  outline:none;
+  transition:border-color .12s ease,box-shadow .12s ease;
 }
+input[type=text]:focus,textarea:focus,select:focus{border-color:var(--focus);box-shadow:0 0 0 2px rgba(120,169,255,.15)}
+input::placeholder,textarea::placeholder{color:#59616c}
 textarea{min-height:104px;resize:vertical}
 button{
-  border:1px solid transparent;
-  border-radius:10px;
-  padding:8px 11px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-height:30px;
+  border:1px solid #a5663e;
+  border-radius:5px;
+  padding:6px 10px;
   background:var(--accent);
-  color:white;
+  color:#17110d;
   cursor:pointer;
-  font-weight:600;
-  font-size:.88rem;
+  font-weight:680;
+  font-size:.76rem;
+  line-height:1.15;
+  transition:background .12s ease,border-color .12s ease,transform .12s ease;
 }
+button:hover{background:var(--accent-hover);border-color:#c77a48}
+button:active{transform:translateY(1px)}
+button:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 button.secondary{
-  background:var(--surface-muted);
-  border-color:var(--line);
-  color:var(--ink);
+  background:#191d22;
+  border-color:var(--line-strong);
+  color:#c7ccd4;
 }
+button.secondary:hover{background:#22272e;border-color:#4a535f;color:#f1f3f5}
 button.ghost{
-  background:var(--accent-soft);
-  border-color:#cfe0ff;
-  color:var(--accent-strong);
+  background:#171b20;
+  border-color:#343b45;
+  color:#bfc6d0;
 }
+button.ghost:hover{background:#20252c;border-color:#4a535f;color:#f0f2f5}
 button:disabled{
   cursor:not-allowed;
-  opacity:.55;
+  opacity:.42;
 }
 .disabled-action{display:grid;gap:6px}
-.tabs,.inline-actions,.list-actions,.chip-list{display:flex;gap:8px;flex-wrap:wrap}
-.facts{display:grid;gap:10px;margin:0}
+.tabs,.inline-actions,.list-actions,.chip-list{display:flex;gap:5px;flex-wrap:wrap}
+.facts{display:grid;gap:8px;margin:0}
 .facts div{display:grid;gap:4px}
-dt{font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
-dd{margin:0;font-weight:600}
-ul.clean{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+dt{font-size:.65rem;text-transform:uppercase;letter-spacing:.09em;color:var(--subtle)}
+dd{margin:0;font-weight:620}
+ul.clean{list-style:none;margin:0;padding:0;display:grid;gap:5px}
 li.item{
-  padding:10px;
+  padding:9px 10px;
   border:1px solid var(--line);
-  border-radius:12px;
+  border-radius:5px;
   background:var(--surface-muted);
 }
-.meta{color:var(--muted);font-size:.92rem}
+.meta{color:var(--muted);font-size:.76rem;line-height:1.4}
 pre{
   margin:0;
   white-space:pre-wrap;
   word-break:break-word;
-  font-family:"IBM Plex Mono","SFMono-Regular",monospace;
-  font-size:.9rem;
-  line-height:1.45;
+  font-family:"SFMono-Regular",Consolas,monospace;
+  font-size:.75rem;
+  line-height:1.55;
   max-height:28rem;
   overflow:auto;
+  padding:10px;
+  border:1px solid #252b33;
+  border-radius:5px;
+  background:#0c0f12;
+  color:#cbd1d8;
 }
-.grid-two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.grid-two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 .badge{
   display:inline-flex;
   align-items:center;
-  border-radius:999px;
-  padding:4px 9px;
+  max-width:100%;
+  border-radius:4px;
+  padding:3px 7px;
   border:1px solid var(--line);
-  background:var(--surface-muted);
+  background:#11151a;
   color:var(--muted);
-  font-size:.82rem;
-  font-weight:600;
+  font:600 .66rem/1.25 "SFMono-Regular",Consolas,monospace;
+  overflow:hidden;
+  text-overflow:ellipsis;
 }
 .badge-strong{
   background:var(--accent-soft);
-  border-color:#cfe0ff;
+  border-color:#5b3d29;
   color:var(--accent-strong);
 }
-.hero-metrics{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
-.widget-grid{display:grid;gap:10px}
+.hero-metrics{display:flex;gap:5px;flex-wrap:wrap;margin-top:9px}
+.widget-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
 .widget-grid form{display:grid;gap:8px}
+.widget-grid>.inline-actions{align-self:end;align-items:center}
 .flow-grid{
   display:grid;
   grid-template-columns:repeat(2,minmax(0,1fr));
-  gap:8px;
+  gap:7px;
 }
 .mini-form{
   display:grid;
-  gap:8px;
-  padding:10px;
+  gap:7px;
+  padding:9px;
   border:1px solid var(--line);
-  border-radius:12px;
+  border-radius:5px;
   background:var(--surface-muted);
 }
 .checkbox{display:flex;gap:10px;align-items:center;color:var(--muted)}
 .checkbox input{width:auto;margin:0}
-.hunk-list{display:grid;gap:12px;margin-top:16px}
+.hunk-list{display:grid;gap:8px;margin-top:12px}
 .hunk-card{
   border:1px solid var(--line);
-  border-radius:12px;
+  border-radius:5px;
   background:var(--surface-muted);
-  padding:14px;
+  padding:11px;
 }
 .hunk-meta{margin-bottom:10px}
 .line-guide{max-height:20rem;overflow:auto}
+.advanced-drawer{
+  grid-column:1/-1;
+  padding:10px 12px;
+  border:1px solid var(--line);
+  border-radius:6px;
+  background:var(--surface-muted);
+}
+.advanced-drawer>summary{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  cursor:pointer;
+  list-style:none;
+  font-weight:650;
+}
+.advanced-drawer>summary::-webkit-details-marker{display:none}
+.advanced-drawer>summary::after{content:"+";color:var(--subtle);font:600 .9rem/1 monospace}
+.advanced-drawer[open]>summary::after{content:"−"}
+.advanced-drawer>.card{margin-top:10px;border-color:var(--line-strong)}
+.content section.card>h2:first-child{display:flex;align-items:center;gap:8px}
+.content section.card>h2:first-child::before{content:"";width:3px;height:13px;border-radius:2px;background:var(--accent)}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:#0c0f12}
+::-webkit-scrollbar-thumb{background:#303741;border:2px solid #0c0f12;border-radius:6px}
+::-webkit-scrollbar-thumb:hover{background:#444d59}
 @media (max-width: 1080px){
   .masthead,.workspace,.grid-two{grid-template-columns:1fr}
+  .masthead-tools{grid-template-columns:1fr}
   .flow-grid{grid-template-columns:1fr}
+  .widget-grid{grid-template-columns:1fr}
   .sidebar{position:static}
   .shell{padding:16px}
 }
@@ -1279,6 +1369,7 @@ fn render_panel_tabs(active_view: &str, repo_open: bool) -> String {
             [
                 ("Status", "panel status", "status.panel"),
                 ("History", "panel history", "history.panel"),
+                ("Diff", "panel diff", "diff.panel"),
                 ("Branches", "panel branches", "branches.panel"),
                 ("Tags", "panel tags", "tags.panel"),
                 ("Compare", "panel compare", "compare.panel"),
@@ -1446,11 +1537,18 @@ fn render_context_widgets(
             render_history_controls(snapshot),
             render_history_commit_controls(snapshot),
         ],
+        "diff.panel" => vec![render_diff_controls(snapshot)],
         "branches.panel" => vec![
             render_branch_controls(snapshot),
-            render_advanced_branch_controls(snapshot),
-            render_rebase_controls(snapshot),
-            render_conflict_controls(snapshot),
+            render_collapsible_toolbox(
+                "Advanced ref operations",
+                [
+                    render_advanced_branch_controls(snapshot),
+                    render_rebase_controls(snapshot),
+                    render_conflict_controls(snapshot),
+                ]
+                .join(""),
+            ),
         ],
         "tags.panel" => vec![render_tag_controls(snapshot)],
         "compare.panel" => vec![render_compare_controls(compare_base, compare_head)],
@@ -1462,13 +1560,24 @@ fn render_context_widgets(
         "logs.panel" => vec![render_logs_controls(snapshot)],
         _ => vec![
             render_status_controls(snapshot),
-            render_stash_worktree_controls(),
             render_diff_controls(snapshot),
+            render_collapsible_toolbox(
+                "Stash, worktrees & submodules",
+                render_stash_worktree_controls(),
+            ),
         ],
     };
     format!(
         "<section class=\"grid-two\">{}</section>",
         sections.join("")
+    )
+}
+
+fn render_collapsible_toolbox(title: &str, body: String) -> String {
+    format!(
+        "<details class=\"advanced-drawer\"><summary><span>{}</span><span class=\"meta\">Advanced workspace tools</span></summary>{}</details>",
+        escape_html(title),
+        body
     )
 }
 
@@ -2135,6 +2244,7 @@ fn render_active_panel(
     match active_view {
         "empty.state" => render_empty_view(),
         "history.panel" => render_history_view(snapshot),
+        "diff.panel" => render_diff_card(snapshot),
         "branches.panel" => render_branches_view(snapshot),
         "tags.panel" => render_tags_view(snapshot),
         "compare.panel" => render_compare_view(snapshot),
@@ -2916,6 +3026,14 @@ mod tests {
     #[test]
     fn workflow_widgets_build_runtime_commands() {
         let mut form = HashMap::new();
+        form.insert("gui_action".to_string(), "repo_open".to_string());
+        form.insert("repo_path".to_string(), "/tmp/branchforge demo".to_string());
+        assert_eq!(
+            build_command_from_form(&form).as_deref(),
+            Some("open \"/tmp/branchforge demo\"")
+        );
+
+        let mut form = HashMap::new();
         form.insert("gui_action".to_string(), "commit_create".to_string());
         form.insert("commit_message".to_string(), "ship gui".to_string());
         assert_eq!(
@@ -3041,7 +3159,7 @@ mod tests {
 
         let page = render_page(&runtime, Some("ready"), None);
         assert!(page.contains("Branchforge"));
-        assert!(page.contains("Runtime GUI"));
+        assert!(page.contains("Repository Workspace"));
         assert!(page.contains("Quick Actions"));
         assert!(page.contains("Primary Flows"));
         assert!(page.contains("Open a repository to unlock runtime panels."));
