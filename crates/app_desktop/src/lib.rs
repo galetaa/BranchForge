@@ -4113,7 +4113,7 @@ fn action_button(
         ActionButtonKind::Secondary => button.fill(design_tokens::surface_alt(dark)),
         ActionButtonKind::Danger => button
             .fill(design_tokens::danger_soft(dark))
-            .stroke(egui::Stroke::new(1.0, design_tokens::danger(dark))),
+            .stroke(egui::Stroke::new(1.0_f32, design_tokens::danger(dark))),
         ActionButtonKind::Ghost => button.fill(Color32::TRANSPARENT),
     };
 
